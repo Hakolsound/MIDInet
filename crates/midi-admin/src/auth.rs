@@ -24,7 +24,7 @@ pub async fn require_auth(
     let expected = &token.0;
 
     // If no token configured, allow everything
-    let expected = match expected {
+    let expected = match &expected.0 {
         Some(t) => t,
         None => return Ok(next.run(req).await),
     };

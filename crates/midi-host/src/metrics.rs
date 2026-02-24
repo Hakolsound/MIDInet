@@ -23,12 +23,14 @@ pub struct HostMetrics {
 }
 
 /// Metrics collector that accumulates data from the hot path
+#[allow(dead_code)]
 pub struct MetricsCollector {
     pub start_time: Instant,
     pub message_count: u64,
     pub byte_count: u64,
 }
 
+#[allow(dead_code)]
 impl MetricsCollector {
     pub fn new() -> Self {
         Self {

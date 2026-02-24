@@ -22,7 +22,7 @@ fn now_us() -> u64 {
 
 /// Create a multicast UDP socket bound to the specified port
 fn create_multicast_socket(
-    multicast_addr: Ipv4Addr,
+    _multicast_addr: Ipv4Addr,
     port: u16,
     interface: Ipv4Addr,
 ) -> std::io::Result<std::net::UdpSocket> {

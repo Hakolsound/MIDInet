@@ -1,0 +1,35 @@
+[Unit]
+Description=MIDInet Host Daemon
+After=network.target sound.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=midi
+Group=midi
+ExecStart=/usr/local/bin/midi-host --config /etc/midinet/midinet.toml
+Restart=always
+RestartSec=1
+
+Environment=RUST_LOG=info
+
+# Real-time scheduling
+Nice=-20
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=80
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/midinet
+NoNewPrivileges=false
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midinet-host
+
+[Install]
+WantedBy=multi-user.target

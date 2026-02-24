@@ -131,16 +131,27 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
             last_feedback_check = Instant::now();
 
             let vdev = state.virtual_device.read().await;
+            let pipeline = state.pipeline_config.read().await;
             loop {
                 match vdev.receive() {
                     Ok(Some(midi_data)) => {
+                        // Apply pipeline processing to feedback MIDI before sending upstream
+                        let processed = pipeline.process(&midi_data);
+                        let send_data = match processed {
+                            Some(ref data) => data,
+                            None => {
+                                debug!(bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
+                                continue;
+                            }
+                        };
+
                         // Send feedback to the active host via the data port
                         // The host will forward it to the physical controller
                         let active_host = state.active_host_id.read().await;
                         if active_host.is_some() {
                             // For now, send feedback on the control multicast group
                             // In production, this would be unicast to the active host's IP
-                            debug!(bytes = midi_data.len(), "Sending feedback MIDI");
+                            debug!(bytes = send_data.len(), "Sending feedback MIDI");
                         }
                     }
                     Ok(None) => break,

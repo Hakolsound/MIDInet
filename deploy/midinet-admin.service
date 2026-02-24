@@ -1,0 +1,27 @@
+[Unit]
+Description=MIDInet Web Admin Panel
+After=network.target midinet-host.service
+
+[Service]
+Type=simple
+User=midi
+Group=midi
+ExecStart=/usr/local/bin/midi-admin --listen 0.0.0.0:8080 --metrics-db /var/lib/midinet/metrics.db --config /etc/midinet/midinet.toml
+Restart=always
+RestartSec=1
+
+Environment=RUST_LOG=info
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/midinet
+NoNewPrivileges=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midinet-admin
+
+[Install]
+WantedBy=multi-user.target

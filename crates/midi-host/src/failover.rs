@@ -11,7 +11,7 @@ use tracing::info;
 
 pub struct FailoverManager {
     lockout_seconds: u64,
-    role_tx: watch::Sender<HostRole>,
+    _role_tx: watch::Sender<HostRole>,
     last_switch: Mutex<Option<Instant>>,
 }
 
@@ -19,7 +19,7 @@ impl FailoverManager {
     pub fn new(lockout_seconds: u64, role_tx: watch::Sender<HostRole>) -> Self {
         Self {
             lockout_seconds,
-            role_tx,
+            _role_tx: role_tx,
             last_switch: Mutex::new(None),
         }
     }
@@ -66,7 +66,8 @@ impl FailoverManager {
     }
 
     /// Get the current role
+    #[allow(dead_code)]
     pub fn current_role(&self) -> HostRole {
-        *self.role_tx.borrow()
+        *self._role_tx.borrow()
     }
 }

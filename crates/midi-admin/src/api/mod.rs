@@ -87,7 +87,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/alerts", get(alerts::get_alerts))
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))
         // Config
-        .route("/api/config", get(config::get_config))
+        .route("/api/config", get(config::get_config).put(config::put_config))
         // WebSocket streams
         .route("/ws/status", get(websocket::ws_status_handler))
         .route("/ws/midi", get(websocket::ws_midi_handler))

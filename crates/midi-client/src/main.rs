@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use midi_protocol::identity::DeviceIdentity;
+use midi_protocol::pipeline::PipelineConfig;
 
 use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
 
@@ -117,6 +118,8 @@ pub struct ClientState {
     pub virtual_device: RwLock<Box<dyn VirtualMidiDevice>>,
     /// Whether the virtual device has been initialized
     pub device_ready: RwLock<bool>,
+    /// MIDI processing pipeline config (hot-reloadable via admin API)
+    pub pipeline_config: RwLock<PipelineConfig>,
 }
 
 #[tokio::main]
@@ -165,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
         client_id,
         virtual_device: RwLock::new(virtual_device),
         device_ready: RwLock::new(false),
+        pipeline_config: RwLock::new(PipelineConfig::default()),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
@@ -195,6 +199,16 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             if let Err(e) = failover::run(state).await {
                 error!("Failover monitor error: {}", e);
+            }
+        })
+    };
+
+    // Spawn focus manager — claims focus and sends feedback MIDI upstream
+    let focus_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = focus::run(state).await {
+                error!("Focus manager error: {}", e);
             }
         })
     };
@@ -265,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
     discovery_handle.abort();
     receiver_handle.abort();
     failover_handle.abort();
+    focus_handle.abort();
     init_handle.abort();
 
     Ok(())

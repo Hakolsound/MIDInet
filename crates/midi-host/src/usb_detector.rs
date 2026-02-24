@@ -5,6 +5,7 @@ use midi_protocol::identity::DeviceIdentity;
 
 /// List all available MIDI devices on the system.
 /// Returns a vector of (device_path, device_name) pairs.
+#[allow(dead_code)]
 #[cfg(target_os = "linux")]
 pub fn list_midi_devices() -> Vec<(String, String)> {
     // Read from /proc/asound/cards or use ALSA APIs
@@ -25,6 +26,7 @@ pub fn list_midi_devices() -> Vec<(String, String)> {
     devices
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub fn list_midi_devices() -> Vec<(String, String)> {
     Vec::new()
@@ -32,6 +34,7 @@ pub fn list_midi_devices() -> Vec<(String, String)> {
 
 /// Read device identity from an ALSA device.
 /// Extracts name, manufacturer, VID/PID from the ALSA card info.
+#[allow(dead_code)]
 #[cfg(target_os = "linux")]
 pub fn read_device_identity(device: &str) -> DeviceIdentity {
     // In a full implementation, this would:
@@ -49,6 +52,7 @@ pub fn read_device_identity(device: &str) -> DeviceIdentity {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub fn read_device_identity(device: &str) -> DeviceIdentity {
     DeviceIdentity {

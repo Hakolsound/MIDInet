@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use sysinfo::{Disks, System};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::alerting::EvalMetrics;
 use crate::metrics_store::MetricsSample;

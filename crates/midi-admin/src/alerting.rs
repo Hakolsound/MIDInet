@@ -93,6 +93,7 @@ impl AlertManager {
 
         // CPU temperature
         self.check_threshold(
+            &config,
             "cpu_temp",
             metrics.cpu_temp_c > config.cpu_temp_max_c,
             AlertSeverity::Critical,
@@ -102,6 +103,7 @@ impl AlertManager {
 
         // Packet loss
         self.check_threshold(
+            &config,
             "packet_loss",
             metrics.packet_loss_percent > config.packet_loss_max_percent,
             AlertSeverity::Warning,
@@ -111,6 +113,7 @@ impl AlertManager {
 
         // Latency
         self.check_threshold(
+            &config,
             "latency",
             metrics.latency_p95_ms > config.latency_p95_max_ms,
             AlertSeverity::Warning,
@@ -120,6 +123,7 @@ impl AlertManager {
 
         // MIDI device disconnected
         self.check_threshold(
+            &config,
             "midi_device",
             !metrics.midi_device_connected,
             AlertSeverity::Critical,
@@ -129,6 +133,7 @@ impl AlertManager {
 
         // Standby host unreachable
         self.check_threshold(
+            &config,
             "standby_host",
             !metrics.standby_host_healthy,
             AlertSeverity::Warning,
@@ -139,6 +144,7 @@ impl AlertManager {
         // Disk space low
         if config.disk_free_min_mb > 0 {
             self.check_threshold(
+                &config,
                 "disk_space",
                 metrics.disk_free_mb < config.disk_free_min_mb,
                 AlertSeverity::Warning,
@@ -150,13 +156,13 @@ impl AlertManager {
 
     fn check_threshold(
         &self,
+        config: &AlertConfig,
         source: &str,
         condition_met: bool,
         severity: AlertSeverity,
         message: String,
         now: u64,
     ) {
-        let config = self.config.lock().unwrap().clone();
         let mut active = self.active_alerts.lock().unwrap();
 
         if condition_met {

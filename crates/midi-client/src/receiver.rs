@@ -83,14 +83,31 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                     }
                     last_sequence = Some(packet.sequence);
 
-                    // Update MIDI state model
-                    midi_state.process_message(&packet.midi_data);
+                    // Apply pipeline processing to incoming MIDI
+                    let pipeline = state.pipeline_config.read().await;
+                    let processed = pipeline.process(&packet.midi_data);
+                    drop(pipeline);
+
+                    let forward_data = match processed {
+                        Some(data) => data,
+                        None => {
+                            debug!(
+                                seq = packet.sequence,
+                                bytes = packet.midi_data.len(),
+                                "Incoming MIDI filtered by pipeline"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Update MIDI state model with processed data
+                    midi_state.process_message(&forward_data);
 
                     // Forward to virtual MIDI device if it's ready
                     let device_ready = *state.device_ready.read().await;
                     if device_ready {
                         let vdev = state.virtual_device.read().await;
-                        if let Err(e) = vdev.send(&packet.midi_data) {
+                        if let Err(e) = vdev.send(&forward_data) {
                             error!("Failed to send MIDI to virtual device: {}", e);
                         }
                     }
@@ -98,7 +115,7 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                     debug!(
                         seq = packet.sequence,
                         host = packet.host_id,
-                        bytes = packet.midi_data.len(),
+                        bytes = forward_data.len(),
                         from = %addr,
                         "Received and forwarded MIDI data"
                     );

@@ -15,7 +15,7 @@ use midi_protocol::packets::HeartbeatPacket;
 use crate::ClientState;
 
 struct HostTracker {
-    host_id: u8,
+    _host_id: u8,
     last_heartbeat: Option<Instant>,
     last_sequence: u16,
     miss_count: u32,
@@ -24,7 +24,7 @@ struct HostTracker {
 impl HostTracker {
     fn new(host_id: u8) -> Self {
         Self {
-            host_id,
+            _host_id: host_id,
             last_heartbeat: None,
             last_sequence: 0,
             miss_count: 0,

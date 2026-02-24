@@ -26,6 +26,10 @@ struct Args {
     /// API bearer token (if set, /api/* routes require Authorization header)
     #[arg(long, env = "MIDINET_API_TOKEN")]
     api_token: Option<String>,
+
+    /// Path to MIDInet TOML configuration file
+    #[arg(short, long, default_value = "midinet.toml")]
+    config: String,
 }
 
 #[tokio::main]
@@ -39,10 +43,29 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    info!(listen = %args.listen, "MIDInet admin panel starting");
+    info!(listen = %args.listen, config = %args.config, "MIDInet admin panel starting");
 
-    // Initialize shared state
-    let state = AppState::new();
+    // Initialize shared state with config path
+    let state = AppState::new(args.config.clone());
+
+    // Load config from disk if the file exists
+    if std::path::Path::new(&args.config).exists() {
+        match load_config(&args.config) {
+            Ok(config) => {
+                info!(path = %args.config, "Loaded configuration from disk");
+                state.apply_config(config).await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %args.config,
+                    error = %e,
+                    "Failed to load config file (starting with defaults)"
+                );
+            }
+        }
+    } else {
+        info!(path = %args.config, "No config file found, using defaults");
+    }
 
     // Initialize metrics database
     if let Err(e) = state.inner.metrics_store.init_db(&args.metrics_db) {
