@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────
+# MIDInet — macOS Client Installer
+# Clones from GitHub, builds natively, and installs as a launchd service.
+#
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-macos.sh | bash
+#
+# Or clone first:
+#   git clone https://github.com/Hakolsound/MIDInet.git
+#   cd MIDInet && bash scripts/client-install-macos.sh
+#
+# Environment variables:
+#   MIDINET_BRANCH  — git branch (default: main)
+# ──────────────────────────────────────────────────────────────
+set -euo pipefail
+
+BRANCH="${MIDINET_BRANCH:-main}"
+REPO_URL="https://github.com/Hakolsound/MIDInet.git"
+INSTALL_DIR="$HOME/.midinet"
+SRC_DIR="$INSTALL_DIR/src"
+BIN_DIR="/usr/local/bin"
+PLIST_NAME="co.hakol.midinet-client"
+PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+step() { echo -e "\n${CYAN}[$1/6]${NC} $2"; }
+ok()   { echo -e "    ${GREEN}✓${NC} $1"; }
+warn() { echo -e "    ${YELLOW}!${NC} $1"; }
+fail() { echo -e "    ${RED}✗${NC} $1"; exit 1; }
+
+echo -e "${CYAN}"
+echo "  ┌──────────────────────────────────────┐"
+echo "  │   MIDInet — macOS Client Installer    │"
+echo "  │   Hakol Fine AV Services              │"
+echo "  └──────────────────────────────────────┘"
+echo -e "${NC}"
+
+# ── Prerequisites ─────────────────────────────────────────────
+step 1 "Checking prerequisites..."
+
+# Xcode Command Line Tools (needed for CoreMIDI headers)
+if ! xcode-select -p &>/dev/null; then
+    warn "Installing Xcode Command Line Tools..."
+    xcode-select --install
+    echo "    Press any key after installation completes..."
+    read -n 1 -s
+fi
+ok "Xcode Command Line Tools available"
+
+# Rust
+if ! command -v cargo &>/dev/null; then
+    warn "Installing Rust toolchain..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    source "$HOME/.cargo/env"
+    ok "Rust installed ($(rustc --version))"
+else
+    ok "Rust already installed ($(rustc --version))"
+fi
+
+# Git
+if ! command -v git &>/dev/null; then
+    fail "Git not found. Install Xcode Command Line Tools first."
+fi
+
+# ── Clone / Update ────────────────────────────────────────────
+step 2 "Fetching MIDInet source..."
+mkdir -p "$INSTALL_DIR"
+
+if [ -d "$SRC_DIR/.git" ]; then
+    cd "$SRC_DIR"
+    git fetch origin
+    git checkout "$BRANCH"
+    git reset --hard "origin/$BRANCH"
+    ok "Updated to latest $BRANCH"
+else
+    git clone --branch "$BRANCH" "$REPO_URL" "$SRC_DIR"
+    cd "$SRC_DIR"
+    ok "Cloned $REPO_URL ($BRANCH)"
+fi
+
+# ── Build ─────────────────────────────────────────────────────
+step 3 "Building midi-client (release mode)..."
+cd "$SRC_DIR"
+cargo build --release -p midi-client -p midi-cli 2>&1 | tail -5
+ok "Build complete"
+
+# ── Install ───────────────────────────────────────────────────
+step 4 "Installing binaries..."
+
+# May need sudo for /usr/local/bin
+if [ -w "$BIN_DIR" ]; then
+    cp "$SRC_DIR/target/release/midi-client" "$BIN_DIR/midinet-client"
+    cp "$SRC_DIR/target/release/midi-cli"    "$BIN_DIR/midinet-cli"
+else
+    sudo cp "$SRC_DIR/target/release/midi-client" "$BIN_DIR/midinet-client"
+    sudo cp "$SRC_DIR/target/release/midi-cli"    "$BIN_DIR/midinet-cli"
+fi
+ok "Installed midinet-client and midinet-cli to $BIN_DIR"
+
+# ── Config ────────────────────────────────────────────────────
+step 5 "Setting up configuration..."
+mkdir -p "$INSTALL_DIR/config"
+
+if [ ! -f "$INSTALL_DIR/config/client.toml" ]; then
+    cp "$SRC_DIR/config/client.toml" "$INSTALL_DIR/config/client.toml"
+    ok "Default config installed to $INSTALL_DIR/config/client.toml"
+else
+    warn "Config already exists — not overwriting"
+fi
+
+# ── LaunchAgent (auto-start) ─────────────────────────────────
+step 6 "Installing launchd service..."
+
+# Stop existing service if running
+launchctl unload "$PLIST_PATH" 2>/dev/null || true
+
+mkdir -p "$HOME/Library/LaunchAgents"
+cat > "$PLIST_PATH" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_NAME</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$BIN_DIR/midinet-client</string>
+        <string>--config</string>
+        <string>$INSTALL_DIR/config/client.toml</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$INSTALL_DIR/midinet-client.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$INSTALL_DIR/midinet-client.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+launchctl load "$PLIST_PATH"
+ok "LaunchAgent installed and started"
+
+# ── Done ──────────────────────────────────────────────────────
+echo ""
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  MIDInet client installed!${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
+echo ""
+echo "  The client is running and will auto-discover hosts on your LAN."
+echo "  Open Audio MIDI Setup to see the virtual MIDI device."
+echo ""
+echo "  Config:  $INSTALL_DIR/config/client.toml"
+echo "  Logs:    $INSTALL_DIR/midinet-client.log"
+echo "  Source:  $SRC_DIR"
+echo ""
+echo "  Commands:"
+echo "    midinet-cli status                 # Check connection"
+echo "    midinet-cli focus                  # View/claim focus"
+echo "    launchctl unload $PLIST_PATH       # Stop"
+echo "    launchctl load $PLIST_PATH         # Start"
+echo ""
+echo "  Update:  bash $SRC_DIR/scripts/client-install-macos.sh"
+echo ""

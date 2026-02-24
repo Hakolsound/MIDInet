@@ -207,6 +207,103 @@ The host daemon runs with `SCHED_FIFO` priority 80 and locked memory for real-ti
 
 ---
 
+## Client Installation
+
+One-command installers for each platform. Each script clones the repo, builds natively, installs as a background service, and sets up auto-start.
+
+### macOS
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-macos.sh | bash
+```
+
+Installs:
+- `midinet-client` and `midinet-cli` to `/usr/local/bin/`
+- LaunchAgent for auto-start at login
+- Config at `~/.midinet/config/client.toml`
+
+The virtual MIDI device appears in Audio MIDI Setup once a host is discovered.
+
+```bash
+# Manage the service
+launchctl unload ~/Library/LaunchAgents/co.hakol.midinet-client.plist   # Stop
+launchctl load ~/Library/LaunchAgents/co.hakol.midinet-client.plist     # Start
+
+# View logs
+tail -f ~/.midinet/midinet-client.log
+
+# Update to latest
+bash ~/.midinet/src/scripts/client-install-macos.sh
+```
+
+### Windows
+
+Run in PowerShell (as Administrator):
+
+```powershell
+irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex
+```
+
+**Prerequisite:** Install the [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html) for virtual MIDI port creation. The installer will prompt you if it's missing.
+
+Installs:
+- `midinet-client.exe` and `midinet-cli.exe` to `%LOCALAPPDATA%\MIDInet\bin\` (added to PATH)
+- Scheduled Task for auto-start at logon
+- Config at `%LOCALAPPDATA%\MIDInet\config\client.toml`
+
+```powershell
+# Manage the service
+Stop-ScheduledTask -TaskName "MIDInet Client"     # Stop
+Start-ScheduledTask -TaskName "MIDInet Client"     # Start
+
+# Update to latest
+cd $env:LOCALAPPDATA\MIDInet\src; .\scripts\client-install-windows.ps1
+```
+
+### Linux
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-linux.sh | bash
+```
+
+Installs:
+- `midinet-client` and `midinet-cli` to `~/.midinet/bin/` (symlinked to `~/.local/bin/`)
+- Systemd user service for auto-start
+- Config at `~/.midinet/config/client.toml`
+- Adds user to `audio` group for ALSA access
+
+```bash
+# Manage the service
+systemctl --user stop midinet-client       # Stop
+systemctl --user start midinet-client      # Start
+systemctl --user status midinet-client     # Status
+
+# View logs
+journalctl --user -u midinet-client -f
+
+# Update to latest
+bash ~/.midinet/src/scripts/client-install-linux.sh
+```
+
+### Client Configuration
+
+Client config is **optional** — mDNS discovery handles everything automatically. The client will auto-discover hosts on the LAN and connect without any configuration.
+
+Edit the config only if you need to override defaults (e.g., force a specific network interface or device name):
+
+```bash
+# macOS
+nano ~/.midinet/config/client.toml
+
+# Linux
+nano ~/.midinet/config/client.toml
+
+# Windows
+notepad %LOCALAPPDATA%\MIDInet\config\client.toml
+```
+
+---
+
 ## Configuration
 
 ### Host (`/etc/midinet/midinet.toml`)
@@ -492,6 +589,9 @@ MIDInet/
 └── scripts/
     ├── pi-provision.sh           # Full Pi provisioning (git clone + build)
     ├── pi-update.sh              # Pull + rebuild + restart
+    ├── client-install-macos.sh   # macOS client installer (LaunchAgent)
+    ├── client-install-linux.sh   # Linux client installer (systemd user)
+    ├── client-install-windows.ps1 # Windows client installer (Scheduled Task)
     ├── setup-pi.sh               # System tuning (RT kernel, sysctl)
     └── install-service.sh        # Systemd service setup
 ```
