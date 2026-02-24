@@ -13,6 +13,7 @@ use midi_protocol::journal::decode_journal;
 use midi_protocol::midi_state::MidiState;
 use midi_protocol::packets::MidiDataPacket;
 
+use crate::health::TaskPulse;
 use crate::ClientState;
 
 /// Create a multicast listener socket that joins the specified group.
@@ -39,7 +40,7 @@ fn create_multicast_listener(
     Ok(socket.into())
 }
 
-pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
+pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
     let primary_addr: Ipv4Addr = state.config.network.primary_group.parse()?;
     let port = state.config.network.data_port;
 
@@ -59,12 +60,15 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
     loop {
         match socket.recv_from(&mut buf).await {
             Ok((len, addr)) => {
+                pulse.tick();
                 if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
+                    state.health.counters.packets_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // Check for sequence gaps (packet loss detection)
                     if let Some(last_seq) = last_sequence {
                         let expected = last_seq.wrapping_add(1);
                         if packet.sequence != expected {
                             let gap = packet.sequence.wrapping_sub(last_seq);
+                            state.health.counters.sequence_gaps.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             warn!(
                                 expected = expected,
                                 got = packet.sequence,
@@ -83,6 +87,16 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                     }
                     last_sequence = Some(packet.sequence);
 
+                    // Check if failover requested state reconciliation
+                    if state.needs_reconciliation.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Some(ref journal_data) = packet.journal {
+                            if let Some(recovered_state) = decode_journal(journal_data) {
+                                midi_state = recovered_state;
+                                info!("State reconciled from journal after failover");
+                            }
+                        }
+                    }
+
                     // Apply pipeline processing to incoming MIDI
                     let pipeline = state.pipeline_config.read().await;
                     let processed = pipeline.process(&packet.midi_data);
@@ -99,6 +113,9 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                             continue;
                         }
                     };
+
+                    // Track MIDI throughput
+                    state.health.counters.midi_in.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     // Update MIDI state model with processed data
                     midi_state.process_message(&forward_data);

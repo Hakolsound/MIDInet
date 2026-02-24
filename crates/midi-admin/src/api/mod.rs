@@ -5,12 +5,14 @@ pub mod failover;
 pub mod focus;
 pub mod metrics;
 pub mod pipeline;
+pub mod settings;
 pub mod status;
 
 use axum::{
     body::Body,
-    http::{header, StatusCode, Uri},
-    middleware,
+    extract::State,
+    http::{header, Request, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Extension, Router,
@@ -63,8 +65,45 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     }
 }
 
+/// Lightweight middleware to count API requests and log details for the traffic sniffer.
+async fn count_api_requests(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    state
+        .inner
+        .traffic_counters
+        .api_requests
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let start = std::time::Instant::now();
+    let resp = next.run(req).await;
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let status = resp.status().as_u16();
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let _ = state.inner.traffic_log_tx.send(
+        serde_json::json!({
+            "ch": "api",
+            "ts": ts,
+            "msg": format!("{method} {path} {status} {duration_ms:.1}ms")
+        })
+        .to_string(),
+    );
+
+    resp
+}
+
 pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
-    Router::new()
+    // API routes with request counting middleware
+    let api_routes = Router::new()
         // System status
         .route("/api/status", get(status::get_status))
         .route("/api/hosts", get(status::get_hosts))
@@ -88,10 +127,23 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))
         // Config
         .route("/api/config", get(config::get_config).put(config::put_config))
-        // WebSocket streams
+        // Settings
+        .route("/api/settings", get(settings::get_settings))
+        .route("/api/settings/midi-device", put(settings::set_midi_device))
+        .route("/api/settings/osc-port", put(settings::set_osc_port))
+        .route("/api/settings/failover", put(settings::set_failover))
+        .route("/api/settings/presets", get(settings::list_presets))
+        .route("/api/settings/preset", post(settings::apply_preset))
+        // Count API requests for traffic monitor
+        .layer(middleware::from_fn_with_state(state.clone(), count_api_requests));
+
+    Router::new()
+        .merge(api_routes)
+        // WebSocket streams (not counted as API requests)
         .route("/ws/status", get(websocket::ws_status_handler))
         .route("/ws/midi", get(websocket::ws_midi_handler))
         .route("/ws/alerts", get(websocket::ws_alerts_handler))
+        .route("/ws/traffic", get(websocket::ws_traffic_handler))
         // Auth middleware (only checks /api/* paths, static + ws are exempt)
         .layer(middleware::from_fn(require_auth))
         .layer(Extension(ApiToken(api_token)))

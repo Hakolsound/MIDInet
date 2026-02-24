@@ -8,8 +8,9 @@ use tracing::{debug, error, info};
 
 use midi_protocol::journal::encode_journal;
 use midi_protocol::packets::{HeartbeatPacket, MidiDataPacket};
-use midi_protocol::ringbuf::{MidiConsumer, SLOT_SIZE};
+use midi_protocol::ringbuf::SLOT_SIZE;
 
+use crate::input_mux::InputMux;
 use crate::SharedState;
 
 /// Timestamp in microseconds since UNIX epoch
@@ -48,10 +49,11 @@ fn create_multicast_socket(
 }
 
 /// Run the MIDI data broadcaster.
-/// Reads MIDI from the lock-free ring buffer, applies the pipeline, sends via UDP multicast.
+/// Reads MIDI from the InputMux (which handles dual-controller failover),
+/// applies the pipeline, sends via UDP multicast.
 pub async fn run(
     state: Arc<SharedState>,
-    consumer: MidiConsumer,
+    mux: Arc<InputMux>,
 ) -> anyhow::Result<()> {
     let multicast_addr: Ipv4Addr = state.config.network.multicast_group.parse()?;
     let port = state.config.network.data_port;
@@ -80,8 +82,8 @@ pub async fn run(
     );
 
     loop {
-        // Wait for MIDI data from the ring buffer (async, no spin)
-        let len = consumer.pop(&mut midi_buf).await;
+        // Wait for MIDI data from the active input (async, no spin)
+        let len = mux.pop(&mut midi_buf).await;
         let raw_midi = &midi_buf[..len];
 
         // Apply the MIDI processing pipeline (filter, remap, velocity curve, etc.)
@@ -128,8 +130,9 @@ pub async fn run(
             metrics.bytes_sent += processed_buf.len() as u64;
         }
 
-        // Optionally attach journal for state recovery
-        let journal = if last_journal_time.elapsed() >= journal_interval {
+        // Attach journal for state recovery — periodically or forced after input switch
+        let force = mux.take_force_journal();
+        let journal = if force || last_journal_time.elapsed() >= journal_interval {
             last_journal_time = Instant::now();
             let midi_state = state.midi_state.read().await;
             Some(encode_journal(&midi_state))

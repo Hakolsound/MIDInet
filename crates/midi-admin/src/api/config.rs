@@ -5,61 +5,66 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::alerting::AlertConfig;
-use crate::state::{AppState, PipelineConfig};
+use crate::state::{AppState, FailoverSettings, PipelineConfig};
 
 /// Top-level TOML configuration file structure.
-/// Wraps pipeline config, failover settings, and alert thresholds
-/// into a single file that can be loaded/saved to disk.
+/// Wraps pipeline config, failover settings, alert thresholds,
+/// and optional OSC/MIDI sections into a single file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MidinetConfig {
     #[serde(default)]
     pub pipeline: PipelineConfig,
     #[serde(default)]
-    pub failover: FailoverConfig,
+    pub failover: FailoverSettings,
     #[serde(default)]
     pub alerts: AlertConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osc: Option<OscConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub midi: Option<MidiConfig>,
 }
 
 impl Default for MidinetConfig {
     fn default() -> Self {
         Self {
             pipeline: PipelineConfig::default(),
-            failover: FailoverConfig::default(),
+            failover: FailoverSettings::default(),
             alerts: AlertConfig::default(),
+            osc: None,
+            midi: None,
         }
     }
 }
 
-/// Persisted failover settings (subset of FailoverState — only the
-/// user-configurable fields, not runtime status like failover_count).
+/// Persisted OSC monitor configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FailoverConfig {
-    #[serde(default = "default_true")]
-    pub auto_enabled: bool,
-    #[serde(default = "default_lockout")]
-    pub lockout_seconds: u64,
-    #[serde(default = "default_confirmation_mode")]
-    pub confirmation_mode: String,
+pub struct OscConfig {
+    #[serde(default = "default_osc_port")]
+    pub listen_port: u16,
 }
 
-fn default_true() -> bool {
-    true
+fn default_osc_port() -> u16 {
+    8000
 }
 
-fn default_lockout() -> u64 {
-    5
-}
-
-fn default_confirmation_mode() -> String {
-    "immediate".to_string()
-}
-
-impl Default for FailoverConfig {
+impl Default for OscConfig {
     fn default() -> Self {
         Self {
-            auto_enabled: true,
-            lockout_seconds: 5,
-            confirmation_mode: "immediate".to_string(),
+            listen_port: 8000,
+        }
+    }
+}
+
+/// Persisted MIDI device configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MidiConfig {
+    pub active_device: Option<String>,
+}
+
+impl Default for MidiConfig {
+    fn default() -> Self {
+        Self {
+            active_device: None,
         }
     }
 }
@@ -85,22 +90,42 @@ pub fn save_config(path: &str, config: &MidinetConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Assemble a MidinetConfig from current in-memory state.
+pub async fn build_config_from_state(state: &AppState) -> MidinetConfig {
+    let pipeline = state.inner.pipeline_config.read().await.clone();
+    let failover = state.inner.failover_config.read().await.clone();
+    let alert_config = state.inner.alert_manager.get_config();
+    let osc_state = state.inner.osc_port_state.read().await;
+    let active_device = state.inner.active_device.read().await;
+
+    MidinetConfig {
+        pipeline,
+        failover,
+        alerts: alert_config,
+        osc: Some(OscConfig {
+            listen_port: osc_state.port,
+        }),
+        midi: Some(MidiConfig {
+            active_device: active_device.clone(),
+        }),
+    }
+}
+
+/// Persist the current in-memory state to disk.
+pub async fn persist_config(state: &AppState) -> Result<(), String> {
+    let config = build_config_from_state(state).await;
+    let config_path = state.inner.config_path.read().await;
+    save_config(&config_path, &config).map_err(|e| {
+        warn!(path = %config_path, error = %e, "Failed to save configuration to disk");
+        format!("Failed to save: {}", e)
+    })?;
+    info!(path = %config_path, "Configuration saved to disk");
+    Ok(())
+}
+
 /// GET /api/config — return the full current configuration.
 pub async fn get_config(State(state): State<AppState>) -> Json<Value> {
-    let pipeline = state.inner.pipeline_config.read().await.clone();
-    let failover = state.inner.failover_state.read().await;
-    let alert_config = state.inner.alert_manager.get_config();
-
-    let config = MidinetConfig {
-        pipeline,
-        failover: FailoverConfig {
-            auto_enabled: failover.auto_enabled,
-            lockout_seconds: failover.lockout_seconds,
-            confirmation_mode: failover.confirmation_mode.clone(),
-        },
-        alerts: alert_config,
-    };
-
+    let config = build_config_from_state(&state).await;
     Json(json!({ "config": config }))
 }
 
@@ -109,36 +134,15 @@ pub async fn put_config(
     State(state): State<AppState>,
     Json(config): Json<MidinetConfig>,
 ) -> Json<Value> {
-    // Update pipeline config
-    {
-        let mut pipeline = state.inner.pipeline_config.write().await;
-        *pipeline = config.pipeline.clone();
-    }
-
-    // Update failover settings (only the configurable fields)
-    {
-        let mut failover = state.inner.failover_state.write().await;
-        failover.auto_enabled = config.failover.auto_enabled;
-        failover.lockout_seconds = config.failover.lockout_seconds;
-        failover.confirmation_mode = config.failover.confirmation_mode.clone();
-    }
-
-    // Update alert thresholds
-    state.inner.alert_manager.update_config(config.alerts.clone());
+    // Apply all config via the shared method
+    state.apply_config(config).await;
 
     // Persist to disk
-    let config_path = state.inner.config_path.read().await;
-    match save_config(&config_path, &config) {
-        Ok(()) => {
-            info!(path = %config_path, "Configuration saved to disk");
-            Json(json!({ "success": true }))
-        }
-        Err(e) => {
-            warn!(path = %config_path, error = %e, "Failed to save configuration to disk");
-            Json(json!({
-                "success": false,
-                "error": format!("Config applied in memory but failed to save: {}", e)
-            }))
-        }
+    match persist_config(&state).await {
+        Ok(()) => Json(json!({ "success": true })),
+        Err(e) => Json(json!({
+            "success": false,
+            "error": format!("Config applied in memory but failed to save: {}", e)
+        })),
     }
 }

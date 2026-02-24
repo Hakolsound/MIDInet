@@ -3,151 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MIDInet — Hakol Fine AV Services</title>
+    <title>MIDInet</title>
     <link rel="stylesheet" href="/style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><g transform='translate(16,16) rotate(-12) translate(-16,-16)'><rect x='4' y='6' width='24' height='20' rx='3' fill='none' stroke='white' stroke-width='1.5'/><rect x='6' y='8' width='20' height='16' rx='2' fill='none' stroke='white' stroke-width='1'/><text x='16' y='19' text-anchor='middle' font-family='sans-serif' font-weight='900' font-size='9' fill='white'>H</text></g></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%233b82f6'/><text x='16' y='23' font-size='18' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'>M</text></svg>">
+    <link rel="modulepreload" href="https://esm.sh/preact@10.25.4">
+    <link rel="modulepreload" href="https://esm.sh/preact@10.25.4/hooks">
+    <link rel="modulepreload" href="https://esm.sh/htm@3.1.1/preact">
 </head>
 <body>
-    <header class="navbar">
-        <div class="navbar-brand">
-            <img class="logo" src="/logo.png" alt="Hakol" width="40" height="40">
-            <span class="navbar-title">MIDInet</span>
-        </div>
-        <div class="navbar-end">
-            <span class="conn-indicator">
-                <span class="conn-dot" id="connDot"></span>
-                <span class="conn-label" id="connText">Connecting</span>
-            </span>
-        </div>
-    </header>
-
-    <main class="dashboard">
-        <section class="kpi-row">
-            <div class="kpi-card" id="kpiHealth" data-level="ok">
-                <div class="kpi-label">System Health</div>
-                <div class="kpi-value" id="healthScore">&mdash;</div>
-                <div class="kpi-sub">/ 100</div>
-            </div>
-            <div class="kpi-card" data-level="ok">
-                <div class="kpi-label">MIDI Throughput</div>
-                <div class="kpi-value" id="midiRate">&mdash;</div>
-                <div class="kpi-sub">msg/s</div>
-            </div>
-            <div class="kpi-card" data-level="ok">
-                <div class="kpi-label">Clients</div>
-                <div class="kpi-value" id="clientCount">&mdash;</div>
-                <div class="kpi-sub">connected</div>
-            </div>
-            <div class="kpi-card" id="kpiAlerts" data-level="ok">
-                <div class="kpi-label">Alerts</div>
-                <div class="kpi-value" id="alertCount">0</div>
-                <div class="kpi-sub">active</div>
-            </div>
-        </section>
-
-        <section class="grid">
-            <div class="card" id="hostsCard">
-                <div class="card-head">
-                    <h2>Hosts</h2>
-                    <span class="pill" id="activeHostPill">Primary</span>
-                </div>
-                <div class="card-body" id="hostList">
-                    <div class="placeholder">Waiting for hosts&hellip;</div>
-                </div>
-            </div>
-
-            <div class="card" id="failoverCard">
-                <div class="card-head"><h2>Failover</h2></div>
-                <div class="card-body">
-                    <div class="prop-row">
-                        <span class="prop-label">Active Host</span>
-                        <span class="prop-value" id="foHost">primary</span>
-                    </div>
-                    <div class="prop-row">
-                        <span class="prop-label">Standby</span>
-                        <span class="status-dot" id="standbyDot"></span>
-                    </div>
-                    <div class="prop-row">
-                        <span class="prop-label">Auto-failover</span>
-                        <label class="toggle">
-                            <input type="checkbox" id="autoFailoverToggle" checked>
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                        </label>
-                    </div>
-                    <div class="prop-row">
-                        <span class="prop-label">Switches</span>
-                        <span class="prop-value" id="foCount">0</span>
-                    </div>
-                    <button class="btn btn-warn" id="failoverBtn">Switch Host</button>
-                </div>
-            </div>
-
-            <div class="card card-wide" id="midiCard">
-                <div class="card-head">
-                    <h2>MIDI Activity</h2>
-                    <div class="midi-badges">
-                        <span class="midi-badge"><em id="midiIn">0</em> in</span>
-                        <span class="midi-badge"><em id="midiOut">0</em> out</span>
-                        <span class="midi-badge accent"><em id="activeNotes">0</em> notes</span>
-                    </div>
-                </div>
-                <div class="card-body card-body-flush">
-                    <canvas id="sparkCanvas"></canvas>
-                </div>
-            </div>
-
-            <div class="card" id="clientsCard">
-                <div class="card-head"><h2>Clients</h2></div>
-                <div class="card-body" id="clientList">
-                    <div class="placeholder">No clients connected</div>
-                </div>
-            </div>
-
-            <div class="card" id="systemCard">
-                <div class="card-head"><h2>System</h2></div>
-                <div class="card-body">
-                    <div class="meter-row">
-                        <span class="meter-label">CPU</span>
-                        <div class="meter"><div class="meter-fill" id="cpuFill"></div></div>
-                        <span class="meter-val" id="cpuVal">0%</span>
-                    </div>
-                    <div class="meter-row">
-                        <span class="meter-label">Memory</span>
-                        <div class="meter"><div class="meter-fill" id="memFill"></div></div>
-                        <span class="meter-val" id="memVal">0 MB</span>
-                    </div>
-                    <div class="meter-row">
-                        <span class="meter-label">Temp</span>
-                        <div class="meter"><div class="meter-fill meter-fill-temp" id="tempFill"></div></div>
-                        <span class="meter-val" id="tempVal">0 &deg;C</span>
-                    </div>
-                    <div class="prop-row" style="margin-top:8px">
-                        <span class="prop-label">Uptime</span>
-                        <span class="prop-value mono" id="uptimeVal">&mdash;</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card card-wide" id="alertsCard">
-                <div class="card-head"><h2>Alerts</h2></div>
-                <div class="card-body" id="alertList">
-                    <div class="placeholder ok">All systems healthy</div>
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <div class="modal-backdrop" id="modalBg">
-        <div class="modal">
-            <h3>Confirm Failover</h3>
-            <p>Switch the active host? MIDI output will be briefly interrupted.</p>
-            <div class="modal-actions">
-                <button class="btn btn-ghost" id="modalCancel">Cancel</button>
-                <button class="btn btn-warn" id="modalConfirm">Switch</button>
-            </div>
-        </div>
-    </div>
-
-    <script src="/app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="/app.js"></script>
 </body>
 </html>

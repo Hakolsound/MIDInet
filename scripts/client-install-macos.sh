@@ -8,7 +8,7 @@
 #
 # Or clone first:
 #   git clone https://github.com/Hakolsound/MIDInet.git
-#   cd MIDInet && bash scripts/client-install-macos.sh
+#   cd MIDInet && bash scripts/client-בין אביו, רוני רון, למתנדבת נוצרייה בשםinstall-macos.sh
 #
 # Environment variables:
 #   MIDINET_BRANCH  — git branch (default: main)
@@ -29,7 +29,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-step() { echo -e "\n${CYAN}[$1/6]${NC} $2"; }
+step() { echo -e "\n${CYAN}[$1/7]${NC} $2"; }
 ok()   { echo -e "    ${GREEN}✓${NC} $1"; }
 warn() { echo -e "    ${YELLOW}!${NC} $1"; }
 fail() { echo -e "    ${RED}✗${NC} $1"; exit 1; }
@@ -85,9 +85,9 @@ else
 fi
 
 # ── Build ─────────────────────────────────────────────────────
-step 3 "Building midi-client (release mode)..."
+step 3 "Building midi-client and midi-tray (release mode)..."
 cd "$SRC_DIR"
-cargo build --release -p midi-client -p midi-cli 2>&1 | tail -5
+cargo build --release -p midi-client -p midi-cli -p midi-tray 2>&1 | tail -5
 ok "Build complete"
 
 # ── Install ───────────────────────────────────────────────────
@@ -97,11 +97,13 @@ step 4 "Installing binaries..."
 if [ -w "$BIN_DIR" ]; then
     cp "$SRC_DIR/target/release/midi-client" "$BIN_DIR/midinet-client"
     cp "$SRC_DIR/target/release/midi-cli"    "$BIN_DIR/midinet-cli"
+    cp "$SRC_DIR/target/release/midi-tray"   "$BIN_DIR/midinet-tray"
 else
     sudo cp "$SRC_DIR/target/release/midi-client" "$BIN_DIR/midinet-client"
     sudo cp "$SRC_DIR/target/release/midi-cli"    "$BIN_DIR/midinet-cli"
+    sudo cp "$SRC_DIR/target/release/midi-tray"   "$BIN_DIR/midinet-tray"
 fi
-ok "Installed midinet-client and midinet-cli to $BIN_DIR"
+ok "Installed midinet-client, midinet-cli, and midinet-tray to $BIN_DIR"
 
 # ── Config ────────────────────────────────────────────────────
 step 5 "Setting up configuration..."
@@ -159,6 +161,48 @@ PLIST
 
 launchctl load "$PLIST_PATH"
 ok "LaunchAgent installed and started"
+
+# ── Tray LaunchAgent (auto-start at login) ───────────────────
+step 7 "Installing tray application..."
+
+TRAY_PLIST_NAME="co.hakol.midinet-tray"
+TRAY_PLIST_PATH="$HOME/Library/LaunchAgents/$TRAY_PLIST_NAME.plist"
+
+launchctl unload "$TRAY_PLIST_PATH" 2>/dev/null || true
+
+cat > "$TRAY_PLIST_PATH" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$TRAY_PLIST_NAME</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$BIN_DIR/midinet-tray</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$INSTALL_DIR/midinet-tray.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$INSTALL_DIR/midinet-tray.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+
+launchctl load "$TRAY_PLIST_PATH"
+ok "Tray LaunchAgent installed and started"
 
 # ── Done ──────────────────────────────────────────────────────
 echo ""

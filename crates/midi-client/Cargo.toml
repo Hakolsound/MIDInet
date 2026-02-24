@@ -15,6 +15,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+axum = { version = "0.7", features = ["ws"] }
+sysinfo = "0.32"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.9"

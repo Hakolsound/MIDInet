@@ -1,0 +1,36 @@
+[package]
+name = "midi-tray"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+midi-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# System tray (cross-platform, by tauri team)
+tray-icon = "0.19"
+muda = "0.15"
+
+# Icon generation
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# WebSocket client (sync, for native event loop thread)
+tungstenite = "0.24"
+
+# Open URLs in default browser
+open = "5"
+
+# Desktop notifications
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+notify-rust = "4"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+notify-rust = "4"

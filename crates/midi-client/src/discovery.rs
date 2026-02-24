@@ -12,9 +12,10 @@ use tracing::{debug, error, info, warn};
 
 use midi_protocol::MDNS_SERVICE_TYPE;
 
+use crate::health::TaskPulse;
 use crate::{ClientState, DiscoveredHost};
 
-pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
+pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
     let mdns = ServiceDaemon::new()?;
     let receiver = mdns.browse(MDNS_SERVICE_TYPE)?;
 
@@ -36,6 +37,8 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("mDNS browse channel closed unexpectedly"));
             }
         };
+
+        pulse.tick();
 
         match event {
             ServiceEvent::ServiceResolved(info) => {

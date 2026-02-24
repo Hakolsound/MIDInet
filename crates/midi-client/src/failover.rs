@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use midi_protocol::packets::HeartbeatPacket;
 
+use crate::health::TaskPulse;
 use crate::ClientState;
 
 struct HostTracker {
@@ -45,7 +46,7 @@ impl HostTracker {
     }
 }
 
-pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
+pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
     let primary_addr: Ipv4Addr = state.config.network.primary_group.parse()?;
     let heartbeat_port = state.config.network.heartbeat_port;
 
@@ -104,6 +105,7 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                 }
             }
             _ = check_interval.tick() => {
+                pulse.tick();
                 let current_active = state.active_host_id.read().await.unwrap_or(1);
 
                 let primary_alive = primary_tracker.is_alive(heartbeat_timeout_ms);
@@ -113,14 +115,34 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
                 if current_active == 1 && !primary_alive && standby_alive {
                     warn!("Primary host lost! Switching to standby");
                     *state.active_host_id.write().await = Some(2);
-                    // TODO: Send All Notes Off + state reconciliation
+                    send_all_notes_off(&state).await;
+                    state.needs_reconciliation.store(true, std::sync::atomic::Ordering::Relaxed);
+                    state.health.failover.record();
                 } else if current_active == 2 && !standby_alive && primary_alive {
                     info!("Standby host lost, primary available — switching back");
                     *state.active_host_id.write().await = Some(1);
+                    send_all_notes_off(&state).await;
+                    state.needs_reconciliation.store(true, std::sync::atomic::Ordering::Relaxed);
+                    state.health.failover.record();
                 } else if current_active == 1 && !primary_alive && !standby_alive {
                     warn!("Both hosts unreachable!");
                 }
             }
         }
     }
+}
+
+/// Send All Sound Off (CC 120) and All Notes Off (CC 123) on all 16
+/// channels to the virtual device, preventing stuck notes during failover.
+async fn send_all_notes_off(state: &Arc<ClientState>) {
+    let device_ready = *state.device_ready.read().await;
+    if !device_ready {
+        return;
+    }
+    let vdev = state.virtual_device.read().await;
+    for ch in 0..16u8 {
+        let _ = vdev.send(&[0xB0 | ch, 120, 0]); // All Sound Off
+        let _ = vdev.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+    }
+    info!("Sent All Notes Off on all channels (failover safety)");
 }

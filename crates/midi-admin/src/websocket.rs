@@ -1,10 +1,11 @@
-/// WebSocket hub for real-time status, MIDI, log, and alert streaming.
+/// WebSocket hub for real-time status, MIDI, log, alert, and traffic streaming.
 ///
 /// Channels:
 ///   /ws/status   — System status + metrics pushed every 1s
 ///   /ws/midi     — Real-time MIDI message stream
 ///   /ws/logs     — Log stream (filtered by severity)
 ///   /ws/alerts   — Alert notifications
+///   /ws/traffic  — Live traffic log for sniffer panel
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -44,6 +45,7 @@ pub async fn ws_status_handler(
 
 async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
     info!("WebSocket status client connected");
+    log_ws_event(&state, "status client connected");
 
     {
         let mut count = state.inner.ws_client_count.write().await;
@@ -64,6 +66,10 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let hosts = state.inner.hosts.read().await;
             let clients = state.inner.clients.read().await;
             let alerts = state.inner.alert_manager.active_alerts();
+            let traffic = state.inner.traffic_rates.read().await;
+            let osc_state = state.inner.osc_port_state.read().await;
+            let midi_device_status = state.inner.midi_device_status.read().await;
+            let active_preset = state.inner.active_preset.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -83,11 +89,25 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                 "failover": {
                     "active_host": failover.active_host,
                     "standby_healthy": failover.standby_healthy,
+                    "auto_enabled": failover.auto_enabled,
+                },
+                "traffic": {
+                    "midi_in_per_sec": traffic.midi_in_per_sec,
+                    "midi_out_per_sec": traffic.midi_out_per_sec,
+                    "osc_per_sec": traffic.osc_per_sec,
+                    "api_per_sec": traffic.api_per_sec,
+                    "ws_connections": traffic.ws_connections,
                 },
                 "focus_holder": focus.holder.as_ref().map(|h| h.client_id),
                 "host_count": hosts.len(),
                 "client_count": clients.len(),
                 "active_alerts": alerts.len(),
+                "settings": {
+                    "midi_device_status": midi_device_status.status,
+                    "osc_port": osc_state.port,
+                    "osc_status": osc_state.status,
+                    "active_preset": *active_preset,
+                },
             })
         };
 
@@ -102,6 +122,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
         *count = count.saturating_sub(1);
     }
 
+    log_ws_event(&state, "status client disconnected");
     debug!("WebSocket status client disconnected");
 }
 
@@ -113,8 +134,9 @@ pub async fn ws_midi_handler(
     ws.on_upgrade(move |socket| handle_midi_ws(socket, state))
 }
 
-async fn handle_midi_ws(mut socket: WebSocket, _state: AppState) {
+async fn handle_midi_ws(mut socket: WebSocket, state: AppState) {
     info!("WebSocket MIDI client connected");
+    log_ws_event(&state, "midi client connected");
 
     // For now, keep the connection alive.
     // In production, this would subscribe to a broadcast channel
@@ -133,6 +155,7 @@ async fn handle_midi_ws(mut socket: WebSocket, _state: AppState) {
         }
     }
 
+    log_ws_event(&state, "midi client disconnected");
     debug!("WebSocket MIDI client disconnected");
 }
 
@@ -146,6 +169,7 @@ pub async fn ws_alerts_handler(
 
 async fn handle_alerts_ws(mut socket: WebSocket, state: AppState) {
     info!("WebSocket alerts client connected");
+    log_ws_event(&state, "alerts client connected");
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     let mut last_alert_count = 0usize;
@@ -170,5 +194,64 @@ async fn handle_alerts_ws(mut socket: WebSocket, state: AppState) {
         }
     }
 
+    log_ws_event(&state, "alerts client disconnected");
     debug!("WebSocket alerts client disconnected");
+}
+
+// ── Traffic log helpers ──
+
+/// Push a WebSocket event into the traffic log broadcast channel.
+fn log_ws_event(state: &AppState, msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = state.inner.traffic_log_tx.send(
+        json!({ "ch": "ws", "ts": ts, "msg": msg }).to_string(),
+    );
+}
+
+/// Handler for /ws/traffic — live traffic sniffer stream
+pub async fn ws_traffic_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_traffic_ws(socket, state))
+}
+
+async fn handle_traffic_ws(mut socket: WebSocket, state: AppState) {
+    info!("WebSocket traffic sniffer connected");
+
+    let mut rx = state.inner.traffic_log_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("traffic sniffer lagged by {n} messages");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    debug!("WebSocket traffic sniffer disconnected");
 }

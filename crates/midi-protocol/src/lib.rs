@@ -1,3 +1,4 @@
+pub mod health;
 pub mod identity;
 pub mod journal;
 pub mod midi_state;

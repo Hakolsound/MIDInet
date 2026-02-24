@@ -20,6 +20,12 @@ pub struct HostMetrics {
     pub heartbeats_sent: u64,
     /// Failover events
     pub failover_count: u32,
+    /// Currently active input controller (0 = primary, 1 = secondary)
+    pub input_active: u8,
+    /// Total input controller switches
+    pub input_switch_count: u64,
+    /// Whether input redundancy is configured
+    pub input_redundancy_enabled: bool,
 }
 
 /// Metrics collector that accumulates data from the hot path

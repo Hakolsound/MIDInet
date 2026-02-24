@@ -1,22 +1,28 @@
 mod discovery;
 mod failover;
 mod focus;
+mod health;
+mod health_server;
 mod platform;
 mod receiver;
 mod virtual_device;
+mod watchdog;
 
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::pipeline::PipelineConfig;
 
+use crate::health::{task_pulse, HealthCollector};
 use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
 
 #[derive(Parser, Debug)]
@@ -120,6 +126,10 @@ pub struct ClientState {
     pub device_ready: RwLock<bool>,
     /// MIDI processing pipeline config (hot-reloadable via admin API)
     pub pipeline_config: RwLock<PipelineConfig>,
+    /// Health collector (metrics, task pulses, rates)
+    pub health: Arc<HealthCollector>,
+    /// Set to true after a failover to request journal reconciliation
+    pub needs_reconciliation: AtomicBool,
 }
 
 #[tokio::main]
@@ -156,9 +166,20 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let client_id: u32 = rand_client_id();
-
-    // Create the platform virtual MIDI device
     let virtual_device = create_virtual_device();
+    let health = Arc::new(HealthCollector::new());
+
+    // Create task pulse pairs
+    let (discovery_pulse, discovery_monitor) = task_pulse("discovery");
+    let (receiver_pulse, receiver_monitor) = task_pulse("receiver");
+    let (failover_pulse, failover_monitor) = task_pulse("failover");
+    let (focus_pulse, focus_monitor) = task_pulse("focus");
+
+    // Register monitors with the health collector
+    health.register_monitor(discovery_monitor);
+    health.register_monitor(receiver_monitor);
+    health.register_monitor(failover_monitor);
+    health.register_monitor(focus_monitor);
 
     let state = Arc::new(ClientState {
         config: config.clone(),
@@ -169,26 +190,42 @@ async fn main() -> anyhow::Result<()> {
         virtual_device: RwLock::new(virtual_device),
         device_ready: RwLock::new(false),
         pipeline_config: RwLock::new(PipelineConfig::default()),
+        health: Arc::clone(&health),
+        needs_reconciliation: AtomicBool::new(false),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
 
-    // Spawn discovery — finds hosts via mDNS and initializes virtual device with identity
+    let cancel = CancellationToken::new();
+
+    // Spawn discovery
     let discovery_handle = {
         let state = Arc::clone(&state);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = discovery::run(state).await {
-                error!("Discovery error: {}", e);
+            tokio::select! {
+                result = discovery::run(state, discovery_pulse) => {
+                    if let Err(e) = result {
+                        error!("Discovery error: {}", e);
+                    }
+                }
+                _ = cancel.cancelled() => {}
             }
         })
     };
 
-    // Spawn receiver — receives MIDI via multicast and forwards to virtual device
+    // Spawn receiver
     let receiver_handle = {
         let state = Arc::clone(&state);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = receiver::run(state).await {
-                error!("Receiver error: {}", e);
+            tokio::select! {
+                result = receiver::run(state, receiver_pulse) => {
+                    if let Err(e) = result {
+                        error!("Receiver error: {}", e);
+                    }
+                }
+                _ = cancel.cancelled() => {}
             }
         })
     };
@@ -196,39 +233,51 @@ async fn main() -> anyhow::Result<()> {
     // Spawn failover monitor
     let failover_handle = {
         let state = Arc::clone(&state);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = failover::run(state).await {
-                error!("Failover monitor error: {}", e);
+            tokio::select! {
+                result = failover::run(state, failover_pulse) => {
+                    if let Err(e) = result {
+                        error!("Failover monitor error: {}", e);
+                    }
+                }
+                _ = cancel.cancelled() => {}
             }
         })
     };
 
-    // Spawn focus manager — claims focus and sends feedback MIDI upstream
+    // Spawn focus manager
     let focus_handle = {
         let state = Arc::clone(&state);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Err(e) = focus::run(state).await {
-                error!("Focus manager error: {}", e);
+            tokio::select! {
+                result = focus::run(state, focus_pulse) => {
+                    if let Err(e) = result {
+                        error!("Focus manager error: {}", e);
+                    }
+                }
+                _ = cancel.cancelled() => {}
             }
         })
     };
 
-    // Spawn a task that initializes the virtual device once identity is discovered.
-    // The discovery module populates `state.identity` when a host is resolved
-    // via mDNS. This loop polls until a valid identity appears, then creates the
-    // virtual MIDI device so that DAWs/media servers can see it.
+    // Spawn virtual device init loop
     let init_handle = {
         let state = Arc::clone(&state);
+        let cancel = cancel.clone();
         tokio::spawn(async move {
             loop {
+                if cancel.is_cancelled() {
+                    return;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
                 let identity = state.identity.read().await;
                 if !identity.is_valid() {
-                    continue; // Not yet discovered via mDNS
+                    continue;
                 }
 
-                // Apply device name override from config if set
                 let device_identity = if let Some(ref override_name) = state.config.midi.device_name {
                     let mut custom = identity.clone();
                     custom.name = override_name.clone();
@@ -238,7 +287,6 @@ async fn main() -> anyhow::Result<()> {
                 };
                 drop(identity);
 
-                // Initialize the virtual device
                 let mut vdev = state.virtual_device.write().await;
                 match vdev.create(&device_identity) {
                     Ok(()) => {
@@ -262,11 +310,30 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Spawn health server (localhost-only WebSocket + REST)
+    let health_server_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            health_server::run(state).await;
+        })
+    };
+
+    // Spawn watchdog
+    let watchdog_handle = {
+        let health = Arc::clone(&health);
+        tokio::spawn(async move {
+            watchdog::run(health).await;
+        })
+    };
+
     info!("Client daemon running, waiting for hosts via mDNS...");
 
-    // Wait for shutdown
+    // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
+
+    // Signal all tasks to stop
+    cancel.cancel();
 
     // Close virtual device gracefully
     {
@@ -276,11 +343,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Abort remaining tasks
     discovery_handle.abort();
     receiver_handle.abort();
     failover_handle.abort();
     focus_handle.abort();
     init_handle.abort();
+    health_server_handle.abort();
+    watchdog_handle.abort();
 
     Ok(())
 }

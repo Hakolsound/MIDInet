@@ -158,5 +158,17 @@ pub async fn run(state: AppState) {
         };
 
         state.inner.alert_manager.evaluate(&eval);
+
+        // --- Traffic rate sampling ---
+        let (midi_in, midi_out, osc, api) = state.inner.traffic_counters.snapshot_and_reset();
+        let ws_conns = *state.inner.ws_client_count.read().await;
+        {
+            let mut rates = state.inner.traffic_rates.write().await;
+            rates.midi_in_per_sec = midi_in;
+            rates.midi_out_per_sec = midi_out;
+            rates.osc_per_sec = osc;
+            rates.api_per_sec = api;
+            rates.ws_connections = ws_conns;
+        }
     }
 }

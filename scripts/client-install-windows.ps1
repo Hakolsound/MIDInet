@@ -44,7 +44,7 @@ Write-Host "    Hakol Fine AV Services" -ForegroundColor Cyan
 Write-Host "  ========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$TotalSteps = 7
+$TotalSteps = 8
 
 # ── Prerequisites ─────────────────────────────────────────────
 Write-Step 1 $TotalSteps "Checking prerequisites..."
@@ -137,7 +137,7 @@ if (Test-Path "$SrcDir\.git") {
 # ── Build ─────────────────────────────────────────────────────
 Write-Step 4 $TotalSteps "Building midi-client (release mode — this may take a while)..."
 Set-Location $SrcDir
-cargo build --release -p midi-client -p midi-cli
+cargo build --release -p midi-client -p midi-cli -p midi-tray
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "Build failed. Check errors above."
 }
@@ -149,6 +149,7 @@ Write-Step 5 $TotalSteps "Installing binaries..."
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 Copy-Item "$SrcDir\target\release\midi-client.exe" "$BinDir\midinet-client.exe" -Force
 Copy-Item "$SrcDir\target\release\midi-cli.exe"    "$BinDir\midinet-cli.exe" -Force
+Copy-Item "$SrcDir\target\release\midi-tray.exe"   "$BinDir\midinet-tray.exe" -Force
 Write-Ok "Binaries installed to $BinDir"
 
 # Add to PATH if not already there
@@ -204,6 +205,18 @@ Register-ScheduledTask `
 # Start it now
 Start-ScheduledTask -TaskName $TaskName
 Write-Ok "Scheduled task installed and started"
+
+# ── Tray Auto-Start ──────────────────────────────────────────
+Write-Step 8 $TotalSteps "Installing tray application (auto-start at login)..."
+
+# Register tray in user startup via Registry Run key
+$regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+Set-ItemProperty -Path $regPath -Name "MIDInet Tray" -Value "`"$BinDir\midinet-tray.exe`""
+Write-Ok "Tray registered to start at login"
+
+# Start tray now
+Start-Process -FilePath "$BinDir\midinet-tray.exe" -WindowStyle Hidden
+Write-Ok "Tray started"
 
 # ── Done ──────────────────────────────────────────────────────
 Write-Host ""

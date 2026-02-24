@@ -19,6 +19,7 @@ use tracing::{debug, error, info, warn};
 
 use midi_protocol::packets::{FocusAction, FocusPacket};
 
+use crate::health::TaskPulse;
 use crate::ClientState;
 
 /// Whether this client currently holds focus
@@ -39,7 +40,7 @@ fn now_us() -> u64 {
 /// Run the focus manager.
 /// Claims focus on startup if auto_claim is enabled, then monitors for acks.
 /// Also sends feedback from the virtual device to the active host.
-pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
+pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
     let control_group: Ipv4Addr = state.config.network.control_group.parse()?;
     let control_port = state.config.network.control_port;
 
@@ -163,6 +164,7 @@ pub async fn run(state: Arc<ClientState>) -> anyhow::Result<()> {
             }
         }
 
+        pulse.tick();
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }

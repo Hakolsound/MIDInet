@@ -1,6 +1,9 @@
 /// Feedback receiver for bidirectional MIDI.
 /// Listens on the control multicast group for focus claims,
-/// manages which client has focus, and forwards feedback MIDI to the controller.
+/// manages which client has focus, and forwards feedback MIDI to all controllers.
+///
+/// In dual-controller mode, feedback MIDI is sent to BOTH controllers
+/// simultaneously so LED state, displays, and motorized faders stay in sync.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -9,10 +12,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use midi_protocol::packets::{FocusAction, FocusPacket, MAGIC_FOCUS};
+use midi_protocol::packets::{FocusAction, FocusPacket, MidiDataPacket, MAGIC_FOCUS, MAGIC_MIDI};
 
+use crate::midi_output::platform::MidiOutputWriter;
 use crate::SharedState;
 
 /// Tracks the current focus holder
@@ -46,14 +50,16 @@ fn now_us() -> u64 {
 }
 
 /// Run the feedback receiver and focus manager.
+/// `midi_output` writes feedback MIDI to all connected controllers.
 pub async fn run(
     state: Arc<SharedState>,
     focus_state: Arc<RwLock<FocusState>>,
+    midi_output: Arc<MidiOutputWriter>,
 ) -> anyhow::Result<()> {
     let control_group: Ipv4Addr = state.config.network.control_group.parse()?;
     let control_port = state.config.network.control_port;
 
-    // Socket for receiving focus packets
+    // Socket for receiving focus + feedback packets
     let recv_socket = {
         let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         sock.set_reuse_address(true)?;
@@ -81,32 +87,50 @@ pub async fn run(
     info!(
         group = %control_group,
         port = control_port,
+        output_devices = midi_output.device_count(),
         "Focus/feedback receiver started"
     );
 
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 512];
     let focus_timeout = std::time::Duration::from_secs(10);
 
     loop {
-        // Check for incoming focus packets
         match recv_socket.try_recv_from(&mut buf) {
             Ok((len, addr)) => {
-                if len >= 4 && &buf[0..4] == &MAGIC_FOCUS {
-                    if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
-                        handle_focus_packet(
-                            &packet,
-                            &focus_state,
-                            &send_socket,
-                            dest,
-                            &addr,
-                        )
-                        .await;
+                if len >= 4 {
+                    if &buf[0..4] == &MAGIC_FOCUS {
+                        // Focus control packet
+                        if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
+                            handle_focus_packet(
+                                &packet,
+                                &focus_state,
+                                &send_socket,
+                                dest,
+                                &addr,
+                            )
+                            .await;
+                        }
+                    } else if &buf[0..4] == &MAGIC_MIDI {
+                        // Feedback MIDI data from a client
+                        if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
+                            // Only forward if the sender has focus
+                            let fs = focus_state.read().await;
+                            if fs.holder.is_some() {
+                                debug!(
+                                    from = %addr,
+                                    midi_bytes = packet.midi_data.len(),
+                                    "Forwarding feedback MIDI to controllers"
+                                );
+                                // Write to ALL connected controllers (primary + secondary)
+                                midi_output.write_all(&packet.midi_data);
+                            }
+                        }
                     }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => {
-                warn!("Focus receive error: {}", e);
+                warn!("Feedback receive error: {}", e);
             }
         }
 

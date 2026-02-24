@@ -2,7 +2,9 @@ mod broadcaster;
 mod discovery;
 mod failover;
 mod feedback;
+mod input_mux;
 mod metrics;
+mod midi_output;
 mod osc_listener;
 mod pipeline;
 mod usb_detector;
@@ -11,8 +13,9 @@ mod usb_reader;
 use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicU8};
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{error, info};
 
 use midi_protocol::identity::DeviceIdentity;
@@ -72,6 +75,12 @@ pub struct HeartbeatSection {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MidiSection {
     pub device: String,
+    /// Secondary MIDI device for input redundancy (empty = disabled)
+    #[serde(default)]
+    pub secondary_device: String,
+    /// Activity timeout in seconds for input failover (0 = disabled)
+    #[serde(default)]
+    pub input_failover_timeout_s: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -209,6 +218,36 @@ pub struct SharedState {
     pub pipeline_config: RwLock<pipeline::PipelineConfig>,
     /// Current MIDI state for journal snapshots
     pub midi_state: RwLock<MidiState>,
+    /// Currently active input controller (0 = primary, 1 = secondary)
+    pub input_active: AtomicU8,
+    /// Total input controller switches (for metrics)
+    pub input_switch_count: Arc<AtomicU64>,
+}
+
+/// Adapter that tags InputHealth events with an input index
+/// before forwarding to the shared health channel.
+struct TaggedHealthTx {
+    index: u8,
+    inner: mpsc::Sender<(u8, usb_reader::InputHealth)>,
+}
+
+impl TaggedHealthTx {
+    fn new(index: u8, inner: mpsc::Sender<(u8, usb_reader::InputHealth)>) -> Self {
+        Self { index, inner }
+    }
+
+    /// Convert into an mpsc::Sender<InputHealth> by spawning a forwarding task.
+    fn into_sender(self) -> mpsc::Sender<usb_reader::InputHealth> {
+        let (tx, mut rx) = mpsc::channel::<usb_reader::InputHealth>(8);
+        let index = self.index;
+        let inner = self.inner;
+        tokio::spawn(async move {
+            while let Some(health) = rx.recv().await {
+                let _ = inner.send((index, health)).await;
+            }
+        });
+        tx
+    }
 }
 
 #[tokio::main]
@@ -250,6 +289,8 @@ async fn main() -> anyhow::Result<()> {
 
     let (role_tx, _role_rx) = watch::channel(initial_role);
 
+    let input_switch_count = Arc::new(AtomicU64::new(0));
+
     let state = Arc::new(SharedState {
         config: config.clone(),
         identity: RwLock::new(DeviceIdentity::default()),
@@ -257,27 +298,71 @@ async fn main() -> anyhow::Result<()> {
         metrics: RwLock::new(metrics::HostMetrics::default()),
         pipeline_config: RwLock::new(pipeline::PipelineConfig::default()),
         midi_state: RwLock::new(MidiState::new()),
+        input_active: AtomicU8::new(0),
+        input_switch_count: Arc::clone(&input_switch_count),
     });
 
-    // Create the lock-free ring buffer for USB reader → broadcaster
-    // 1024 slots × 256 bytes = 256KB pre-allocated, zero alloc on hot path
-    let (midi_producer, midi_consumer) = ringbuf::midi_ring_buffer(1024);
+    // --- Dual-controller input setup ---
+    // Primary ring buffer (always created)
+    let (primary_producer, primary_consumer) = ringbuf::midi_ring_buffer(1024);
+    // Secondary ring buffer (always created — dummy if no secondary device)
+    let (secondary_producer, secondary_consumer) = ringbuf::midi_ring_buffer(1024);
 
-    // Spawn USB MIDI reader — writes raw MIDI into the ring buffer
-    let reader_handle = {
+    let dual_input = !config.midi.secondary_device.is_empty();
+
+    // Health channel: readers report (input_index, health) events
+    let (health_tx, health_rx) = mpsc::channel::<(u8, usb_reader::InputHealth)>(16);
+
+    // Spawn primary MIDI reader
+    let reader_primary_handle = {
         let device = config.midi.device.clone();
+        let tx = health_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = usb_reader::platform::run_midi_reader(&device, midi_producer).await {
-                error!("MIDI reader error: {}", e);
+            let tagged_tx = TaggedHealthTx::new(0, tx);
+            if let Err(e) = usb_reader::platform::run_midi_reader(
+                &device, primary_producer, tagged_tx.into_sender(),
+            ).await {
+                error!("Primary MIDI reader error: {}", e);
             }
         })
     };
 
-    // Spawn broadcaster — reads from ring buffer, applies pipeline, sends via multicast
+    // Spawn secondary MIDI reader (only if configured)
+    let reader_secondary_handle = if dual_input {
+        let device = config.midi.secondary_device.clone();
+        let tx = health_tx.clone();
+        info!(device = %device, "Input redundancy enabled — spawning secondary MIDI reader");
+        Some(tokio::spawn(async move {
+            let tagged_tx = TaggedHealthTx::new(1, tx);
+            if let Err(e) = usb_reader::platform::run_midi_reader(
+                &device, secondary_producer, tagged_tx.into_sender(),
+            ).await {
+                error!("Secondary MIDI reader error: {}", e);
+            }
+        }))
+    } else {
+        drop(secondary_producer); // Not needed
+        None
+    };
+
+    // Create InputMux (handles dual-controller failover)
+    let mux = Arc::new(input_mux::InputMux::new(primary_consumer, secondary_consumer));
+
+    // Spawn health monitor (handles input failover decisions)
+    let health_monitor_handle = {
+        let mux = Arc::clone(&mux);
+        let switch_count = Arc::clone(&input_switch_count);
+        tokio::spawn(async move {
+            input_mux::run_health_monitor(mux, health_rx, switch_count).await;
+        })
+    };
+
+    // Spawn broadcaster — reads from InputMux, applies pipeline, sends via multicast
     let broadcaster_handle = {
         let state = Arc::clone(&state);
+        let mux = Arc::clone(&mux);
         tokio::spawn(async move {
-            if let Err(e) = broadcaster::run(state, midi_consumer).await {
+            if let Err(e) = broadcaster::run(state, mux).await {
                 error!("Broadcaster error: {}", e);
             }
         })
@@ -328,12 +413,22 @@ async fn main() -> anyhow::Result<()> {
     // Create focus state for bidirectional MIDI feedback
     let focus_state = Arc::new(RwLock::new(FocusState::default()));
 
+    // Create MIDI output writer — sends feedback to ALL connected controllers
+    let midi_output = {
+        let mut devices: Vec<&str> = vec![&config.midi.device];
+        if dual_input {
+            devices.push(&config.midi.secondary_device);
+        }
+        Arc::new(midi_output::platform::MidiOutputWriter::open(&devices))
+    };
+
     // Spawn feedback receiver (focus management + bidirectional MIDI)
     let feedback_handle = {
         let state = Arc::clone(&state);
         let focus_state = Arc::clone(&focus_state);
+        let midi_output = Arc::clone(&midi_output);
         tokio::spawn(async move {
-            if let Err(e) = feedback::run(state, focus_state).await {
+            if let Err(e) = feedback::run(state, focus_state, midi_output).await {
                 error!("Feedback receiver error: {}", e);
             }
         })
@@ -346,7 +441,11 @@ async fn main() -> anyhow::Result<()> {
     info!("Shutting down...");
 
     // Abort all tasks
-    reader_handle.abort();
+    reader_primary_handle.abort();
+    if let Some(handle) = reader_secondary_handle {
+        handle.abort();
+    }
+    health_monitor_handle.abort();
     broadcaster_handle.abort();
     discovery_handle.abort();
     heartbeat_handle.abort();

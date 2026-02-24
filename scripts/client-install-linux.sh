@@ -27,7 +27,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-step() { echo -e "\n${CYAN}[$1/7]${NC} $2"; }
+step() { echo -e "\n${CYAN}[$1/8]${NC} $2"; }
 ok()   { echo -e "    ${GREEN}✓${NC} $1"; }
 warn() { echo -e "    ${YELLOW}!${NC} $1"; }
 fail() { echo -e "    ${RED}✗${NC} $1"; exit 1; }
@@ -97,9 +97,9 @@ else
 fi
 
 # ── Build ─────────────────────────────────────────────────────
-step 3 "Building midi-client (release mode)..."
+step 3 "Building midi-client and midi-tray (release mode)..."
 cd "$SRC_DIR"
-cargo build --release -p midi-client -p midi-cli 2>&1 | tail -5
+cargo build --release -p midi-client -p midi-cli -p midi-tray 2>&1 | tail -5
 ok "Build complete"
 
 # ── Install Binaries ──────────────────────────────────────────
@@ -107,11 +107,13 @@ step 4 "Installing binaries..."
 mkdir -p "$INSTALL_DIR/bin"
 cp "$SRC_DIR/target/release/midi-client" "$INSTALL_DIR/bin/midinet-client"
 cp "$SRC_DIR/target/release/midi-cli"    "$INSTALL_DIR/bin/midinet-cli"
+cp "$SRC_DIR/target/release/midi-tray"   "$INSTALL_DIR/bin/midinet-tray"
 
 # Symlink to ~/.local/bin (usually on PATH)
 mkdir -p "$HOME/.local/bin"
 ln -sf "$INSTALL_DIR/bin/midinet-client" "$HOME/.local/bin/midinet-client"
 ln -sf "$INSTALL_DIR/bin/midinet-cli"    "$HOME/.local/bin/midinet-cli"
+ln -sf "$INSTALL_DIR/bin/midinet-tray"   "$HOME/.local/bin/midinet-tray"
 ok "Installed to $INSTALL_DIR/bin/ (symlinked to ~/.local/bin/)"
 
 # ── Config ────────────────────────────────────────────────────
@@ -165,6 +167,23 @@ ok "Systemd user service installed and started"
 
 # Enable lingering so the service runs even when not logged in
 loginctl enable-linger "$USER" 2>/dev/null || true
+
+# ── Tray Autostart ───────────────────────────────────────────
+step 8 "Installing tray application (autostart on login)..."
+
+mkdir -p "$HOME/.config/autostart"
+cat > "$HOME/.config/autostart/midinet-tray.desktop" << DESKTOP
+[Desktop Entry]
+Type=Application
+Name=MIDInet Tray
+Comment=MIDInet system tray health monitor
+Exec=$INSTALL_DIR/bin/midinet-tray
+Icon=midi
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+DESKTOP
+ok "Tray autostart entry installed (requires system tray / AppIndicator support)"
 
 # ── Done ──────────────────────────────────────────────────────
 echo ""

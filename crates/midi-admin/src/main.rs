@@ -3,6 +3,7 @@ pub mod alerting;
 pub mod auth;
 pub mod collector;
 pub mod metrics_store;
+pub mod osc_listener;
 pub mod state;
 pub mod websocket;
 
@@ -30,6 +31,10 @@ struct Args {
     /// Path to MIDInet TOML configuration file
     #[arg(short, long, default_value = "midinet.toml")]
     config: String,
+
+    /// OSC monitor port (0 to disable)
+    #[arg(long, default_value = "8000")]
+    osc_port: u16,
 }
 
 #[tokio::main]
@@ -74,6 +79,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn background metrics collector
     tokio::spawn(collector::run(state.clone()));
+
+    // Initialize OSC port state from CLI arg
+    {
+        let mut osc_state = state.inner.osc_port_state.write().await;
+        osc_state.port = args.osc_port;
+        osc_state.status = if args.osc_port > 0 { "starting".to_string() } else { "stopped".to_string() };
+    }
+
+    // Spawn passive OSC monitor with runtime port rebind support
+    if args.osc_port > 0 {
+        let port_rx = state.inner.osc_restart_tx.subscribe();
+        tokio::spawn(osc_listener::run(state.clone(), args.osc_port, port_rx));
+    }
 
     // Build the router with shared state and optional auth
     let app = api::build_router(state, args.api_token.clone());
