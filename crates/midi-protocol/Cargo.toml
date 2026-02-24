@@ -1,0 +1,9 @@
+[package]
+name = "midi-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+bincode = { workspace = true }
+tokio = { workspace = true }

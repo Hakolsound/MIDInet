@@ -1,0 +1,24 @@
+# MIDInet Client Configuration
+# This file is OPTIONAL — the client uses mDNS discovery by default.
+# Settings here override mDNS-discovered values.
+
+[network]
+# Static multicast groups (override mDNS discovery)
+# primary_group = "239.69.83.1"
+# standby_group = "239.69.83.2"
+data_port = 5004
+heartbeat_port = 5005
+control_group = "239.69.83.100"
+control_port = 5006
+interface = "eth0"                  # Network interface to bind to
+
+[midi]
+# Override the virtual device name (default: cloned from controller)
+# device_name = "Akai APC40"
+
+[failover]
+jitter_buffer_us = 0               # 0 = no buffer (lowest latency, for wired LAN)
+# jitter_buffer_us = 2000          # 2ms buffer (for WiFi or unstable networks)
+
+[focus]
+auto_claim = true                   # Automatically claim focus on startup

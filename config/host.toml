@@ -1,0 +1,53 @@
+# MIDInet Host Configuration
+# This file configures the host daemon running on a Raspberry Pi
+# connected to a physical MIDI controller.
+
+[host]
+id = 1                              # Lower ID = higher priority for primary
+name = "host-a"                     # Human-readable name (used in mDNS)
+
+[network]
+multicast_group = "239.69.83.1"     # Unique per host (primary: .1, standby: .2)
+data_port = 5004                    # UDP port for MIDI data
+heartbeat_port = 5005               # UDP port for heartbeat packets
+control_group = "239.69.83.100"     # Shared control multicast group
+control_port = 5006                 # UDP port for identity + focus
+interface = "eth0"                  # Network interface to bind to
+
+[heartbeat]
+interval_ms = 3                     # Heartbeat interval (ms) — 3ms = ~333 heartbeats/sec
+miss_threshold = 3                  # Number of missed heartbeats before failover (~9ms)
+
+[midi]
+device = "auto"                     # ALSA device: "auto" to detect, "hw:1,0,0" for specific
+# device = "auto:APC40"            # Auto-detect by name substring
+
+[failover]
+auto_enabled = true                 # Auto-switch on primary failure
+switch_back_policy = "manual"       # "auto" = switch back when primary recovers
+                                    # "manual" = stay on secondary until explicitly switched
+lockout_seconds = 5                 # Block rapid switching (prevents oscillation)
+confirmation_mode = "immediate"     # "immediate" = switch now
+                                    # "confirm" = require double-trigger within 2s
+
+[failover.triggers.midi]
+enabled = false                     # Enable MIDI note as failover trigger
+channel = 16                        # MIDI channel (1-16)
+note = 127                          # Note number to trigger switch
+velocity_threshold = 100            # Minimum velocity to register
+guard_note = 0                      # Optional: hold this note as safety lock (0 = disabled)
+
+[failover.triggers.osc]
+enabled = false                     # Enable OSC as failover trigger
+listen_port = 8000                  # OSC listen port
+address = "/midinet/failover/switch"
+allowed_sources = ["192.168.1.0/24"]  # IP whitelist (CIDR notation)
+
+[admin]
+enabled = true                      # Enable web admin panel
+listen = "0.0.0.0:8080"            # Admin panel listen address
+username = "admin"                  # Basic auth username
+password = "midinet"                # Basic auth password — CHANGE IN PRODUCTION!
+
+[osc]
+listen_port = 8000                  # OSC listener port
