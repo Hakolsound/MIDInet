@@ -6,6 +6,7 @@ members = [
     "crates/midi-client",
     "crates/midi-admin",
     "crates/midi-cli",
+    "crates/midi-loadtest",
 ]
 
 [workspace.package]
