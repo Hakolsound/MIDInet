@@ -52,8 +52,8 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
         *count += 1;
     }
 
-    // Push status updates every second
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    // Push status updates at 20fps for responsive MIDI monitoring
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
 
     loop {
         interval.tick().await;

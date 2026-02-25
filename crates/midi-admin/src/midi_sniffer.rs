@@ -94,7 +94,12 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                             // Count active notes from raw MIDI data (offset 18..)
                             if len >= 18 + midi_len {
                                 let midi_data = &buf[18..18 + midi_len];
+                                let prev = active_notes;
                                 count_active_notes(midi_data, &mut active_notes);
+                                // Push active_notes to shared state immediately for snappy UI
+                                if active_notes != prev {
+                                    state.inner.midi_metrics.write().await.active_notes = active_notes;
+                                }
                             }
 
                             // Log to traffic sniffer for real-time display
@@ -122,8 +127,8 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_secs(1).saturating_sub(tick.elapsed())) => {
-                // Update metrics once per second
+            _ = tokio::time::sleep(Duration::from_millis(250).saturating_sub(tick.elapsed())) => {
+                // Update rate metrics every 250ms for responsive UI
                 let elapsed = tick.elapsed().as_secs_f32().max(0.001);
                 {
                     let mut metrics = state.inner.midi_metrics.write().await;
