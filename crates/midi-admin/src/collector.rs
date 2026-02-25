@@ -13,7 +13,7 @@ use tracing::debug;
 
 use crate::alerting::EvalMetrics;
 use crate::metrics_store::MetricsSample;
-use crate::state::AppState;
+use crate::state::{AppState, MidiDeviceInfo};
 
 /// Run the metrics collection loop. This function never returns under
 /// normal operation — it should be spawned as a background tokio task.
@@ -216,5 +216,114 @@ pub async fn run(state: AppState) {
             rates.api_per_sec = api;
             rates.ws_connections = ws_conns;
         }
+
+        // --- Scan MIDI devices ---
+        let scanned = scan_midi_devices();
+        if !scanned.is_empty() {
+            let mut devices = state.inner.devices.write().await;
+            *devices = scanned;
+        } else {
+            let mut devices = state.inner.devices.write().await;
+            if !devices.is_empty() {
+                devices.clear();
+            }
+        }
     }
+}
+
+/// Scan for MIDI devices via /proc/asound (Linux) or return empty (other OS).
+#[cfg(target_os = "linux")]
+fn scan_midi_devices() -> Vec<MidiDeviceInfo> {
+    let mut devices = Vec::new();
+
+    // Parse /proc/asound/cards:
+    // " 3 [mkII           ]: USB-Audio - APC40 mkII\n                      Akai APC40 mkII at usb-..."
+    let cards = match std::fs::read_to_string("/proc/asound/cards") {
+        Ok(s) => s,
+        Err(_) => return devices,
+    };
+
+    for line in cards.lines() {
+        // Match lines like " 3 [mkII           ]: USB-Audio - APC40 mkII"
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.as_bytes()[0].is_ascii_digit() {
+            continue;
+        }
+
+        // Parse card number
+        let card_num: u32 = match trimmed.split_whitespace().next().and_then(|s| s.parse().ok()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Check if this card has MIDI ports
+        let midi_path = format!("/proc/asound/card{}/midi0", card_num);
+        if !std::path::Path::new(&midi_path).exists() {
+            continue;
+        }
+
+        // Extract name from "USB-Audio - APC40 mkII"
+        let name = if let Some(pos) = trimmed.find(" - ") {
+            trimmed[pos + 3..].trim().to_string()
+        } else {
+            format!("Card {}", card_num)
+        };
+
+        // Read USB VID:PID
+        let (vendor_id, product_id) = std::fs::read_to_string(format!(
+            "/proc/asound/card{}/usbid",
+            card_num
+        ))
+        .ok()
+        .and_then(|s| {
+            let parts: Vec<&str> = s.trim().split(':').collect();
+            if parts.len() == 2 {
+                let vid = u16::from_str_radix(parts[0], 16).unwrap_or(0);
+                let pid = u16::from_str_radix(parts[1], 16).unwrap_or(0);
+                Some((vid, pid))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((0, 0));
+
+        // Read manufacturer from the second line of cards (indented continuation)
+        let manufacturer = cards
+            .lines()
+            .skip_while(|l| !l.trim().starts_with(&card_num.to_string()))
+            .nth(1)
+            .map(|l| {
+                let m = l.trim();
+                // "Akai APC40 mkII at usb-..." → take up to " at "
+                if let Some(pos) = m.find(" at ") {
+                    m[..pos].to_string()
+                } else {
+                    m.to_string()
+                }
+            })
+            .unwrap_or_default();
+
+        // Count MIDI subdevices (input/output)
+        let midi_info = std::fs::read_to_string(&midi_path).unwrap_or_default();
+        let port_count_in = midi_info.matches("Input").count() as u8;
+        let port_count_out = midi_info.matches("Output").count() as u8;
+
+        devices.push(MidiDeviceInfo {
+            id: format!("hw:{},0,0", card_num),
+            name,
+            manufacturer,
+            vendor_id,
+            product_id,
+            port_count_in,
+            port_count_out,
+            connected: true,
+        });
+    }
+
+    devices
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scan_midi_devices() -> Vec<MidiDeviceInfo> {
+    Vec::new()
 }

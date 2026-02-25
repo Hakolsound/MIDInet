@@ -27,6 +27,8 @@ const ICO = {
   wifi: () => html`<svg ...${svgAttrs}><path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`,
   search: () => html`<svg ...${svgAttrs}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
   music: () => html`<svg ...${svgAttrs}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
+  volumeX: () => html`<svg ...${svgAttrs}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`,
+  volume: () => html`<svg ...${svgAttrs}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>`,
 };
 
 // ── Utilities ─────────────────────────────────────────────────
@@ -73,6 +75,7 @@ const INIT = {
   snifferOpen: false, snifferEntries: [], snifferFilter: 'all',
   modal: null,
   deviceActivity: {}, identifyActive: {},
+  mutedAlerts: {},  // { [source]: true } — cleared on page reload
 };
 
 function reducer(state, action) {
@@ -116,6 +119,8 @@ function reducer(state, action) {
       return { ...state, warningPopups: [...filtered, action.popup].slice(-3) };
     }
     case 'WARNING_DISMISS': return { ...state, warningPopups: state.warningPopups.filter(w => w.alertSource !== action.source) };
+    case 'MUTE_ALERT': return { ...state, mutedAlerts: { ...state.mutedAlerts, [action.source]: true }, warningPopups: state.warningPopups.filter(w => w.alertSource !== action.source) };
+    case 'UNMUTE_ALERT': { const m = { ...state.mutedAlerts }; delete m[action.source]; return { ...state, mutedAlerts: m }; }
     case 'SNIFFER_OPEN': return { ...state, snifferOpen: true, snifferEntries: [] };
     case 'SNIFFER_CLOSE': return { ...state, snifferOpen: false };
     case 'SNIFFER_ENTRY': {
@@ -202,7 +207,7 @@ function alertAge(ts) {
 }
 
 function Header() {
-  const { state } = useContext(AppContext);
+  const { state, dispatch } = useContext(AppContext);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const s = state.status;
   const role = s.failover?.active_host || 'primary';
@@ -245,13 +250,17 @@ function Header() {
             ${alerts.length === 0 && html`<div class="alerts-dropdown-empty">No active alerts</div>`}
             ${alerts.map(a => {
               const age = alertAge(a.triggered_at);
+              const muted = !!state.mutedAlerts[a.source];
               return html`
-              <div class="alert-item" key=${a.id}>
+              <div class="alert-item ${muted ? 'alert-item-muted' : ''}" key=${a.id}>
                 <div class="alert-item-dot" data-sev=${a.severity} />
                 <div class="alert-item-body">
-                  <div class="alert-item-title">${a.title}</div>
+                  <div class="alert-item-title">${a.title}${muted && html`<span class="alert-muted-badge">muted</span>`}</div>
                   <div class="alert-item-msg">${a.message}</div>
                 </div>
+                <button class="alert-item-mute" title=${muted ? 'Unmute' : 'Mute'} onClick=${(e) => { e.stopPropagation(); dispatch({ type: muted ? 'UNMUTE_ALERT' : 'MUTE_ALERT', source: a.source }); }}>
+                  ${muted ? ICO.volume() : ICO.volumeX()}
+                </button>
                 <div class="alert-item-time" style="color:${age.color}">${age.label}</div>
               </div>`;
             })}
@@ -300,7 +309,7 @@ function ConfirmModal() {
 }
 
 // ── Warning Popups (buzzing seatbelt) ────────────────────────
-function useWarningPopups(alerts, dispatch) {
+function useWarningPopups(alerts, mutedAlerts, dispatch) {
   const trackRef = useRef({});  // { [source]: { firstSeen, lastShown, showCount } }
 
   useEffect(() => {
@@ -318,14 +327,14 @@ function useWarningPopups(alerts, dispatch) {
       }
     }
 
-    // New alerts — show immediately
+    // New alerts — show immediately (unless muted)
     for (const alert of list) {
       if (!ts[alert.source]) {
         ts[alert.source] = { firstSeen: now, lastShown: now, showCount: 1 };
-        _showWarning(alert, ts[alert.source], dispatch);
+        if (!mutedAlerts[alert.source]) _showWarning(alert, ts[alert.source], dispatch);
       }
     }
-  }, [alerts]);
+  }, [alerts, mutedAlerts]);
 
   // 1s tick for re-appearances
   useEffect(() => {
@@ -334,6 +343,7 @@ function useWarningPopups(alerts, dispatch) {
       const ts = trackRef.current;
       const now = Date.now();
       for (const alert of list) {
+        if (mutedAlerts[alert.source]) continue;
         const t = ts[alert.source];
         if (!t) continue;
         const interval = alert.severity === 'Critical' ? 15000 : 30000;
@@ -345,7 +355,7 @@ function useWarningPopups(alerts, dispatch) {
       }
     }, 1000);
     return () => clearInterval(id);
-  }, [alerts]);
+  }, [alerts, mutedAlerts]);
 }
 
 function _showWarning(alert, tracking, dispatch) {
@@ -373,6 +383,9 @@ function WarningPopupContainer() {
         <div class="warning-popup-header">
           <span class="warning-popup-dot" data-sev=${p.severity} />
           <span class="warning-popup-title">${p.title}</span>
+          <button class="warning-popup-mute" title="Mute this alert" onClick=${() => dispatch({ type: 'MUTE_ALERT', source: p.alertSource })}>
+            ${ICO.volumeX()}
+          </button>
           <button class="warning-popup-close" onClick=${() => dispatch({ type: 'WARNING_DISMISS', source: p.alertSource })}>
             ${ICO.x()}
           </button>
@@ -1170,7 +1183,7 @@ function App() {
   usePoll('/api/clients', 5000, (d) => dispatch({ type: 'SET_CLIENTS', data: d.clients }));
   usePoll('/api/alerts', 10000, (d) => dispatch({ type: 'SET_ALERTS', data: d.active_alerts }));
 
-  useWarningPopups(state.alerts, dispatch);
+  useWarningPopups(state.alerts, state.mutedAlerts, dispatch);
 
   const ctx = useMemo(() => ({ state, dispatch }), [state]);
 
