@@ -22,22 +22,17 @@ mod ffi {
     pub type DWORD = u32;
     pub type BOOL = i32;
     pub type HANDLE = *mut c_void;
-    pub type GUID = [u8; 16];
 
-    // Port creation flags (teVirtualMIDI SDK 1.3+)
     pub const TE_VM_FLAGS_PARSE_RX: DWORD = 1;
-    pub const TE_VM_FLAGS_INSTANTIATE_BOTH: DWORD = 8;
 
     #[link(name = "teVirtualMIDI")]
     extern "system" {
-        pub fn virtualMIDICreatePortEx3(
+        pub fn virtualMIDICreatePortEx2(
             port_name: LPCWSTR,
             callback: *const c_void,
             callback_instance: *mut c_void,
             max_sysex_length: DWORD,
             flags: DWORD,
-            manufacturer: *const GUID,
-            product: *const GUID,
         ) -> HANDLE;
 
         pub fn virtualMIDIClosePort(port: HANDLE);
@@ -98,29 +93,49 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                 .chain(std::iter::once(0))
                 .collect();
 
-            let handle = unsafe {
-                ffi::virtualMIDICreatePortEx3(
-                    wide_name.as_ptr(),
-                    std::ptr::null(),     // no callback — we poll with GetData
-                    std::ptr::null_mut(),
-                    65535,                // max sysex length
-                    ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
-                    std::ptr::null(),     // manufacturer GUID (default)
-                    std::ptr::null(),     // product GUID (default)
-                )
-            };
+            // Try flag combinations to find one that creates both MIDI In and Out.
+            // The INSTANTIATE flag values vary across teVirtualMIDI SDK versions.
+            // Try: PARSE_RX|0x8, PARSE_RX|0xC, PARSE_RX|0x6, PARSE_RX only
+            let flag_attempts: &[(ffi::DWORD, &str)] = &[
+                (ffi::TE_VM_FLAGS_PARSE_RX | 0x0C, "PARSE_RX|0x0C"),
+                (ffi::TE_VM_FLAGS_PARSE_RX | 0x08, "PARSE_RX|0x08"),
+                (ffi::TE_VM_FLAGS_PARSE_RX | 0x06, "PARSE_RX|0x06"),
+                (ffi::TE_VM_FLAGS_PARSE_RX | 0x04, "PARSE_RX|0x04"),
+                (ffi::TE_VM_FLAGS_PARSE_RX,        "PARSE_RX"),
+                (0,                                  "none"),
+            ];
+
+            let mut handle: ffi::HANDLE = std::ptr::null_mut();
+
+            for (flags, label) in flag_attempts {
+                let h = unsafe {
+                    ffi::virtualMIDICreatePortEx2(
+                        wide_name.as_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        65535,
+                        *flags,
+                    )
+                };
+
+                if !h.is_null() {
+                    info!(name = %self.name, flags = label, "Created virtual MIDI port with flags={:#x}", flags);
+                    handle = h;
+                    break;
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    warn!(name = %self.name, flags = label, "Port creation failed with flags={:#x}: {}", flags, err);
+                }
+            }
 
             if handle.is_null() {
-                let err = std::io::Error::last_os_error();
-                error!(name = %self.name, ?err, "Failed to create teVirtualMIDI port — is the driver installed?");
+                error!(name = %self.name, "All teVirtualMIDI flag combinations failed — is the driver installed?");
                 return Err(anyhow::anyhow!(
-                    "teVirtualMIDI port creation failed: {}. Install from https://www.tobias-erichsen.de/software/virtualmidi.html",
-                    err
+                    "teVirtualMIDI port creation failed. Install from https://www.tobias-erichsen.de/software/virtualmidi.html",
                 ));
             }
 
             *self.port.lock().unwrap() = Some(handle);
-            info!(name = %self.name, "Created Windows virtual MIDI device (teVirtualMIDI Ex3)");
         }
 
         #[cfg(not(target_os = "windows"))]
