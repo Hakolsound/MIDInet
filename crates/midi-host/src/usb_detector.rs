@@ -55,7 +55,8 @@ pub fn read_device_identity(device: &str) -> DeviceIdentity {
         //   "                      Akai APC40 mkII at usb-0000:01:00.0-1.1, full speed"
         // The second line has the full name (strip " at usb-..." suffix).
         if let Ok(cards_content) = std::fs::read_to_string("/proc/asound/cards") {
-            let card_prefix = format!("{:2} [", card);
+            // Match lines like " 3 [mkII    ]: ..." — card number after trimming whitespace
+            let card_str = card.to_string();
             let mut found_card = false;
             for line in cards_content.lines() {
                 if found_card {
@@ -72,7 +73,9 @@ pub fn read_device_identity(device: &str) -> DeviceIdentity {
                     }
                     break;
                 }
-                if line.trim_start().starts_with(&card_prefix) {
+                // Check if this line starts with the card number (after trimming)
+                let trimmed = line.trim_start();
+                if trimmed.starts_with(&card_str) && trimmed[card_str.len()..].starts_with(" [") {
                     found_card = true;
                 }
             }
