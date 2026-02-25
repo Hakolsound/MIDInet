@@ -70,6 +70,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let osc_state = state.inner.osc_port_state.read().await;
             let midi_device_status = state.inner.midi_device_status.read().await;
             let active_preset = state.inner.active_preset.read().await;
+            let input_red = state.inner.input_redundancy.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -102,6 +103,14 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                 "host_count": hosts.len(),
                 "client_count": clients.len(),
                 "active_alerts": alerts.len(),
+                "input_redundancy": {
+                    "enabled": input_red.enabled,
+                    "active_input": input_red.active_input,
+                    "active_label": if input_red.active_input == 0 { "primary" } else { "secondary" },
+                    "primary_health": input_red.primary_health,
+                    "secondary_health": input_red.secondary_health,
+                    "switch_count": input_red.switch_count,
+                },
                 "settings": {
                     "midi_device_status": midi_device_status.status,
                     "osc_port": osc_state.port,

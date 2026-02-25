@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{error, info};
 
@@ -218,10 +219,13 @@ pub struct SharedState {
     pub pipeline_config: RwLock<pipeline::PipelineConfig>,
     /// Current MIDI state for journal snapshots
     pub midi_state: RwLock<MidiState>,
-    /// Currently active input controller (0 = primary, 1 = secondary)
-    pub input_active: AtomicU8,
+    /// Currently active input controller (0 = primary, 1 = secondary).
+    /// Kept in sync by the health monitor.
+    pub input_active: Arc<AtomicU8>,
     /// Total input controller switches (for metrics)
     pub input_switch_count: Arc<AtomicU64>,
+    /// Whether dual-input redundancy is enabled
+    pub input_redundancy_enabled: bool,
 }
 
 /// Adapter that tags InputHealth events with an input index
@@ -290,6 +294,8 @@ async fn main() -> anyhow::Result<()> {
     let (role_tx, _role_rx) = watch::channel(initial_role);
 
     let input_switch_count = Arc::new(AtomicU64::new(0));
+    let input_active = Arc::new(AtomicU8::new(0));
+    let dual_input = !config.midi.secondary_device.is_empty();
 
     let state = Arc::new(SharedState {
         config: config.clone(),
@@ -298,8 +304,9 @@ async fn main() -> anyhow::Result<()> {
         metrics: RwLock::new(metrics::HostMetrics::default()),
         pipeline_config: RwLock::new(pipeline::PipelineConfig::default()),
         midi_state: RwLock::new(MidiState::new()),
-        input_active: AtomicU8::new(0),
+        input_active: Arc::clone(&input_active),
         input_switch_count: Arc::clone(&input_switch_count),
+        input_redundancy_enabled: dual_input,
     });
 
     // --- Dual-controller input setup ---
@@ -307,8 +314,6 @@ async fn main() -> anyhow::Result<()> {
     let (primary_producer, primary_consumer) = ringbuf::midi_ring_buffer(1024);
     // Secondary ring buffer (always created — dummy if no secondary device)
     let (secondary_producer, secondary_consumer) = ringbuf::midi_ring_buffer(1024);
-
-    let dual_input = !config.midi.secondary_device.is_empty();
 
     // Health channel: readers report (input_index, health) events
     let (health_tx, health_rx) = mpsc::channel::<(u8, usb_reader::InputHealth)>(16);
@@ -352,8 +357,21 @@ async fn main() -> anyhow::Result<()> {
     let health_monitor_handle = {
         let mux = Arc::clone(&mux);
         let switch_count = Arc::clone(&input_switch_count);
+        let shared_input_active = Arc::clone(&input_active);
+        let activity_timeout = if config.midi.input_failover_timeout_s > 0 {
+            Duration::from_secs(config.midi.input_failover_timeout_s)
+        } else {
+            Duration::ZERO
+        };
         tokio::spawn(async move {
-            input_mux::run_health_monitor(mux, health_rx, switch_count).await;
+            input_mux::run_health_monitor(
+                mux,
+                health_rx,
+                switch_count,
+                shared_input_active,
+                dual_input,
+                activity_timeout,
+            ).await;
         })
     };
 

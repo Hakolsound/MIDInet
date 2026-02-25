@@ -22,6 +22,18 @@ miss_threshold = 3                  # Number of missed heartbeats before failove
 device = "auto"                     # ALSA device: "auto" to detect, "hw:1,0,0" for specific
 # device = "auto:APC40"            # Auto-detect by name substring
 
+# --- Input Redundancy (dual-controller → single-host) ---
+# Connect a second identical controller for zero-downtime hot-swap.
+# The host reads from the active controller and automatically fails over
+# to the secondary on disconnect/error, with full MIDI state reconciliation.
+# Both controllers receive feedback MIDI (LED sync, motorized faders).
+# secondary_device = ""            # ALSA device for second controller (empty = disabled)
+# secondary_device = "hw:2,0,0"   # Example: specific ALSA device
+# secondary_device = "auto:APC40" # Example: auto-detect second APC40
+# input_failover_timeout_s = 0    # Switch if active controller silent for N seconds
+                                    # 0 = disabled (only switch on disconnect/error)
+                                    # Recommended: 5-10s for live performance
+
 [failover]
 auto_enabled = true                 # Auto-switch on primary failure
 switch_back_policy = "manual"       # "auto" = switch back when primary recovers

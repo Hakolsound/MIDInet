@@ -41,6 +41,12 @@ enum Commands {
     Alerts,
     /// Show MIDI pipeline config
     Pipeline,
+    /// Input redundancy (dual-controller) status or manual switch
+    Input {
+        /// Trigger manual input switch (swap active controller)
+        #[arg(long)]
+        switch: bool,
+    },
 }
 
 #[tokio::main]
@@ -204,6 +210,59 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Velocity curve:  {}", p["velocity_curve"]);
                 println!("  SysEx passthrough: {}", p["sysex_passthrough"]);
                 println!("  Channel filter:  {:?}", p["channel_filter"]);
+            }
+        }
+        Commands::Input { switch } => {
+            if switch {
+                println!("Triggering manual input switch...");
+                let resp: Value = client
+                    .post(format!("{}/api/input-redundancy/switch", base))
+                    .send().await?
+                    .json().await?;
+                if resp["success"].as_bool().unwrap_or(false) {
+                    println!("  Switch complete. Active: {} (input {})",
+                        resp["active_label"], resp["active_input"]);
+                    println!("  Total switches: {}", resp["switch_count"]);
+                } else {
+                    println!("  Switch failed: {}", resp.get("error").unwrap_or(&Value::Null));
+                }
+            } else {
+                let resp: Value = client
+                    .get(format!("{}/api/input-redundancy", base))
+                    .send().await?
+                    .json().await?;
+                println!("Input Redundancy");
+                println!("══════════════════════════════");
+                let enabled = resp["enabled"].as_bool().unwrap_or(false);
+                println!("  Enabled:     {}", if enabled { "yes" } else { "no" });
+
+                if enabled {
+                    println!("  Active:      {} (input {})",
+                        resp["active_label"], resp["active_input"]);
+                    println!("  Primary:     {} [{}]",
+                        resp["primary"]["device"], resp["primary"]["health"]);
+                    println!("  Secondary:   {} [{}]",
+                        resp["secondary"]["device"], resp["secondary"]["health"]);
+                    println!("  Switches:    {}", resp["switch_count"]);
+
+                    let timeout = resp["activity_timeout_s"].as_u64().unwrap_or(0);
+                    if timeout > 0 {
+                        println!("  Activity TO: {}s", timeout);
+                    } else {
+                        println!("  Activity TO: disabled");
+                    }
+
+                    if let Some(last) = resp.get("last_switch") {
+                        if !last.is_null() {
+                            println!("  Last switch: {} → {} ({})",
+                                if last["from_input"].as_u64() == Some(0) { "primary" } else { "secondary" },
+                                if last["to_input"].as_u64() == Some(0) { "primary" } else { "secondary" },
+                                last["trigger"]);
+                        }
+                    }
+                } else {
+                    println!("  (no secondary device configured)");
+                }
             }
         }
     }

@@ -7,7 +7,7 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
@@ -50,6 +50,7 @@ fn now_us() -> u64 {
 }
 
 /// Run the feedback receiver and focus manager.
+/// Uses proper async recv_from for minimal latency (no polling).
 /// `midi_output` writes feedback MIDI to all connected controllers.
 pub async fn run(
     state: Arc<SharedState>,
@@ -92,65 +93,70 @@ pub async fn run(
     );
 
     let mut buf = [0u8; 512];
-    let focus_timeout = std::time::Duration::from_secs(10);
+    let focus_timeout = Duration::from_secs(10);
+    let mut focus_check_interval = tokio::time::interval(Duration::from_secs(1));
+    focus_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        match recv_socket.try_recv_from(&mut buf) {
-            Ok((len, addr)) => {
-                if len >= 4 {
-                    if &buf[0..4] == &MAGIC_FOCUS {
-                        // Focus control packet
-                        if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
-                            handle_focus_packet(
-                                &packet,
-                                &focus_state,
-                                &send_socket,
-                                dest,
-                                &addr,
-                            )
-                            .await;
-                        }
-                    } else if &buf[0..4] == &MAGIC_MIDI {
-                        // Feedback MIDI data from a client
-                        if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
-                            // Only forward if the sender has focus
-                            let fs = focus_state.read().await;
-                            if fs.holder.is_some() {
-                                debug!(
-                                    from = %addr,
-                                    midi_bytes = packet.midi_data.len(),
-                                    "Forwarding feedback MIDI to controllers"
-                                );
-                                // Write to ALL connected controllers (primary + secondary)
-                                midi_output.write_all(&packet.midi_data);
+        tokio::select! {
+            // Async recv — wakes immediately when a packet arrives, zero polling latency
+            result = recv_socket.recv_from(&mut buf) => {
+                match result {
+                    Ok((len, addr)) => {
+                        if len >= 4 {
+                            if &buf[0..4] == &MAGIC_FOCUS {
+                                if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
+                                    handle_focus_packet(
+                                        &packet,
+                                        &focus_state,
+                                        &send_socket,
+                                        dest,
+                                        &addr,
+                                    )
+                                    .await;
+                                }
+                            } else if &buf[0..4] == &MAGIC_MIDI {
+                                if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
+                                    let fs = focus_state.read().await;
+                                    if fs.holder.is_some() {
+                                        debug!(
+                                            from = %addr,
+                                            midi_bytes = packet.midi_data.len(),
+                                            "Forwarding feedback MIDI to controllers"
+                                        );
+                                        // Write to ALL connected controllers (primary + secondary)
+                                        midi_output.write_all(&packet.midi_data);
+                                        // Update last feedback timestamp
+                                        drop(fs);
+                                        let mut fs_w = focus_state.write().await;
+                                        fs_w.last_feedback = Some(Instant::now());
+                                    }
+                                }
                             }
                         }
                     }
+                    Err(e) => {
+                        warn!("Feedback receive error: {}", e);
+                    }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(e) => {
-                warn!("Feedback receive error: {}", e);
-            }
-        }
 
-        // Check for focus timeout (auto-release after 10s of no feedback)
-        {
-            let mut fs = focus_state.write().await;
-            if let (Some(_holder), Some(last_fb)) = (fs.holder, fs.last_feedback) {
-                if last_fb.elapsed() > focus_timeout {
-                    info!(
-                        client_id = fs.holder.unwrap(),
-                        "Focus auto-released (no feedback for {:?})", focus_timeout
-                    );
-                    fs.holder = None;
-                    fs.claimed_at = None;
-                    fs.last_feedback = None;
+            // Periodic focus timeout check (1s interval instead of every packet)
+            _ = focus_check_interval.tick() => {
+                let mut fs = focus_state.write().await;
+                if let (Some(holder_id), Some(last_fb)) = (fs.holder, fs.last_feedback) {
+                    if last_fb.elapsed() > focus_timeout {
+                        info!(
+                            client_id = holder_id,
+                            "Focus auto-released (no feedback for {:?})", focus_timeout
+                        );
+                        fs.holder = None;
+                        fs.claimed_at = None;
+                        fs.last_feedback = None;
+                    }
                 }
             }
         }
-
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 }
 
@@ -165,14 +171,16 @@ async fn handle_focus_packet(
         FocusAction::Claim => {
             let mut fs = focus_state.write().await;
 
-            // Last-writer-wins: accept the claim if the sequence is newer
+            // Last-writer-wins: accept the claim if the sequence is newer.
+            // Uses wrapping comparison: new_seq is "newer" if the forward distance
+            // (modulo u16) is less than half the u16 range. This handles
+            // wraparound correctly without the seq==0 hole.
             let should_grant = match fs.holder {
                 None => true,
                 Some(current) if current == packet.client_id => true,
                 Some(_) => {
-                    // Another client — last-writer-wins based on sequence
-                    packet.sequence > fs.last_claim_seq
-                        || packet.sequence == 0 // Wraparound
+                    let diff = packet.sequence.wrapping_sub(fs.last_claim_seq);
+                    diff > 0 && diff < 0x8000
                 }
             };
 

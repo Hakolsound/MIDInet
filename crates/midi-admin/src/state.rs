@@ -12,6 +12,61 @@ use tokio::sync::{broadcast, RwLock};
 use crate::alerting::AlertManager;
 use crate::metrics_store::MetricsStore;
 
+// ── Input redundancy types ──
+
+/// Input redundancy state (dual-controller → single-host).
+/// Tracks the health and active state of primary/secondary MIDI controllers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputRedundancyState {
+    /// Whether dual-input redundancy is enabled (secondary_device configured)
+    pub enabled: bool,
+    /// Currently active input index (0 = primary, 1 = secondary)
+    pub active_input: u8,
+    /// Health of primary controller
+    pub primary_health: String,   // "active" | "disconnected" | "error" | "reconnecting" | "unknown"
+    /// Health of secondary controller
+    pub secondary_health: String,
+    /// Device name/path of primary controller
+    pub primary_device: String,
+    /// Device name/path of secondary controller
+    pub secondary_device: String,
+    /// Total input switch count since startup
+    pub switch_count: u64,
+    /// Activity timeout in seconds (0 = disabled)
+    pub activity_timeout_s: u64,
+    /// Last input switch event
+    pub last_switch: Option<InputSwitchEvent>,
+    /// Input switch history (most recent first)
+    pub history: Vec<InputSwitchEvent>,
+}
+
+impl Default for InputRedundancyState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active_input: 0,
+            primary_health: "unknown".to_string(),
+            secondary_health: "unknown".to_string(),
+            primary_device: String::new(),
+            secondary_device: String::new(),
+            switch_count: 0,
+            activity_timeout_s: 0,
+            last_switch: None,
+            history: Vec::new(),
+        }
+    }
+}
+
+/// Record of a single input controller switch event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputSwitchEvent {
+    pub timestamp: u64,
+    pub from_input: u8,  // 0 = primary, 1 = secondary
+    pub to_input: u8,
+    pub trigger: String, // "health" | "activity_timeout" | "api" | "osc" | "midi"
+    pub reason: String,  // Human-readable reason
+}
+
 // ── Settings types (failover, OSC, MIDI device) ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +265,8 @@ pub struct AppStateInner {
     pub midi_device_status: RwLock<MidiDeviceStatus>,
     /// Currently active preset (None = custom / manual settings)
     pub active_preset: RwLock<Option<String>>,
+    /// Input redundancy state (dual-controller → single-host)
+    pub input_redundancy: RwLock<InputRedundancyState>,
 }
 
 impl AppState {
@@ -239,6 +296,7 @@ impl AppState {
                 osc_restart_tx,
                 midi_device_status: RwLock::new(MidiDeviceStatus::default()),
                 active_preset: RwLock::new(None),
+                input_redundancy: RwLock::new(InputRedundancyState::default()),
             }),
         }
     }

@@ -3,6 +3,7 @@ pub mod config;
 pub mod devices;
 pub mod failover;
 pub mod focus;
+pub mod input;
 pub mod metrics;
 pub mod pipeline;
 pub mod settings;
@@ -122,6 +123,9 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/failover", get(failover::get_failover_state))
         .route("/api/failover/switch", post(failover::trigger_failover_switch))
         .route("/api/failover/auto", put(failover::set_auto_failover))
+        // Input redundancy
+        .route("/api/input-redundancy", get(input::get_input_redundancy))
+        .route("/api/input-redundancy/switch", post(input::trigger_input_switch))
         // Alerts
         .route("/api/alerts", get(alerts::get_alerts))
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))
