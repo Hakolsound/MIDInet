@@ -7,6 +7,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
@@ -26,24 +27,41 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
     let iface: Ipv4Addr = if interface == "0.0.0.0" || interface.is_empty() {
         Ipv4Addr::UNSPECIFIED
     } else {
-        // Try to resolve interface name to IP (e.g., "eth0" → its address)
         resolve_interface_ip(&interface).unwrap_or(Ipv4Addr::UNSPECIFIED)
     };
 
     let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, data_port);
 
-    let socket = match UdpSocket::bind(bind_addr).await {
+    // Use socket2 to set SO_REUSEADDR + SO_REUSEPORT *before* bind,
+    // allowing port sharing with midi-host on the same machine.
+    let raw = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
         Ok(s) => s,
         Err(e) => {
-            warn!(addr = %bind_addr, error = %e, "MIDI sniffer failed to bind");
+            warn!(error = %e, "MIDI sniffer failed to create socket");
             return;
         }
     };
-
-    // Allow port sharing with midi-host on the same machine
-    if let Err(e) = socket.set_broadcast(true) {
-        warn!(error = %e, "Failed to set SO_BROADCAST on sniffer socket");
+    if let Err(e) = raw.set_reuse_address(true) {
+        warn!(error = %e, "Failed to set SO_REUSEADDR");
     }
+    #[cfg(not(windows))]
+    if let Err(e) = raw.set_reuse_port(true) {
+        warn!(error = %e, "Failed to set SO_REUSEPORT");
+    }
+    raw.set_nonblocking(true).ok();
+    if let Err(e) = raw.bind(&bind_addr.into()) {
+        warn!(addr = %bind_addr, error = %e, "MIDI sniffer failed to bind");
+        return;
+    }
+
+    let std_socket: std::net::UdpSocket = raw.into();
+    let socket = match UdpSocket::from_std(std_socket) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "MIDI sniffer failed to convert socket to tokio");
+            return;
+        }
+    };
 
     if let Err(e) = socket.join_multicast_v4(group, iface) {
         warn!(group = %group, iface = %iface, error = %e, "MIDI sniffer failed to join multicast");
