@@ -1,3 +1,4 @@
+mod broadcast_discovery;
 mod broadcaster;
 mod discovery;
 mod failover;
@@ -491,6 +492,16 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // Spawn broadcast discovery responder (always — complements mDNS)
+    let broadcast_discovery_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = broadcast_discovery::run(state).await {
+                error!("Broadcast discovery error: {}", e);
+            }
+        })
+    };
+
     info!(role = ?initial_role, "Host daemon running");
 
     // Wait for shutdown signal
@@ -513,6 +524,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(handle) = unicast_handle {
         handle.abort();
     }
+    broadcast_discovery_handle.abort();
 
     Ok(())
 }

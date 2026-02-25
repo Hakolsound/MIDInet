@@ -6,6 +6,8 @@ pub const MAGIC_MIDI: [u8; 4] = *b"MDMI";
 pub const MAGIC_HEARTBEAT: [u8; 4] = *b"MDHB";
 pub const MAGIC_IDENTITY: [u8; 4] = *b"MDID";
 pub const MAGIC_FOCUS: [u8; 4] = *b"MDFC";
+pub const MAGIC_DISCOVER_REQ: [u8; 4] = *b"MDDS";
+pub const MAGIC_DISCOVER_RESP: [u8; 4] = *b"MDDR";
 
 // -- Host roles --
 
@@ -305,6 +307,109 @@ impl FocusPacket {
             timestamp_us: u64::from_be_bytes([
                 data[11], data[12], data[13], data[14], data[15], data[16], data[17], data[18],
             ]),
+        })
+    }
+}
+
+// -- Discovery Packets (UDP broadcast) --
+
+/// Sent by clients as a broadcast to find hosts on the LAN.
+#[derive(Debug, Clone)]
+pub struct DiscoverRequest {
+    pub client_id: u32,
+    pub protocol_version: u8,
+}
+
+impl DiscoverRequest {
+    pub const SIZE: usize = 9; // magic(4) + client_id(4) + version(1)
+
+    pub fn serialize(&self, buf: &mut [u8; Self::SIZE]) {
+        buf[0..4].copy_from_slice(&MAGIC_DISCOVER_REQ);
+        buf[4..8].copy_from_slice(&self.client_id.to_be_bytes());
+        buf[8] = self.protocol_version;
+    }
+
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::SIZE {
+            return None;
+        }
+        if &data[0..4] != &MAGIC_DISCOVER_REQ {
+            return None;
+        }
+
+        Some(Self {
+            client_id: u32::from_be_bytes([data[4], data[5], data[6], data[7]]),
+            protocol_version: data[8],
+        })
+    }
+}
+
+/// Sent by hosts as a unicast reply to a discovery broadcast.
+#[derive(Debug, Clone)]
+pub struct DiscoverResponse {
+    pub host_id: u8,
+    pub role: HostRole,
+    pub protocol_version: u8,
+    pub data_port: u16,
+    pub heartbeat_port: u16,
+    pub admin_port: u16,
+    pub multicast_group: [u8; 4], // IPv4 octets
+    pub device_name: String,
+}
+
+impl DiscoverResponse {
+    /// Minimum size: magic(4) + host_id(1) + role(1) + ver(1) + data_port(2) +
+    /// hb_port(2) + admin_port(2) + mcast(4) + name_len(1) = 18
+    pub const HEADER_SIZE: usize = 18;
+
+    pub fn serialize(&self, buf: &mut Vec<u8>) {
+        buf.clear();
+        buf.extend_from_slice(&MAGIC_DISCOVER_RESP);
+        buf.push(self.host_id);
+        buf.push(self.role as u8);
+        buf.push(self.protocol_version);
+        buf.extend_from_slice(&self.data_port.to_be_bytes());
+        buf.extend_from_slice(&self.heartbeat_port.to_be_bytes());
+        buf.extend_from_slice(&self.admin_port.to_be_bytes());
+        buf.extend_from_slice(&self.multicast_group);
+        let name_bytes = self.device_name.as_bytes();
+        buf.push(name_bytes.len() as u8);
+        buf.extend_from_slice(name_bytes);
+    }
+
+    pub fn deserialize(data: &[u8]) -> Option<Self> {
+        if data.len() < Self::HEADER_SIZE {
+            return None;
+        }
+        if &data[0..4] != &MAGIC_DISCOVER_RESP {
+            return None;
+        }
+
+        let host_id = data[4];
+        let role = HostRole::from_u8(data[5])?;
+        let protocol_version = data[6];
+        let data_port = u16::from_be_bytes([data[7], data[8]]);
+        let heartbeat_port = u16::from_be_bytes([data[9], data[10]]);
+        let admin_port = u16::from_be_bytes([data[11], data[12]]);
+        let multicast_group = [data[13], data[14], data[15], data[16]];
+        let name_len = data[17] as usize;
+
+        if data.len() < Self::HEADER_SIZE + name_len {
+            return None;
+        }
+        let device_name =
+            String::from_utf8_lossy(&data[Self::HEADER_SIZE..Self::HEADER_SIZE + name_len])
+                .to_string();
+
+        Some(Self {
+            host_id,
+            role,
+            protocol_version,
+            data_port,
+            heartbeat_port,
+            admin_port,
+            multicast_group,
+            device_name,
         })
     }
 }

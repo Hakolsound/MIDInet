@@ -355,7 +355,15 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    info!("Client daemon running, waiting for hosts via mDNS...");
+    // Spawn broadcast discovery (always — zero-config, works on all LANs)
+    let broadcast_discovery_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            discovery::run_broadcast_discovery(state).await;
+        })
+    };
+
+    info!("Client daemon running, discovering hosts...");
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
@@ -384,6 +392,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(h) = http_discovery_handle {
         h.abort();
     }
+    broadcast_discovery_handle.abort();
 
     Ok(())
 }

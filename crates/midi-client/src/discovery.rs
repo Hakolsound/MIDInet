@@ -5,20 +5,23 @@
 /// client state. When the first primary host is discovered, its device
 /// identity is populated so the virtual-device init loop can proceed.
 ///
-/// Also provides an HTTP-based discovery fallback (`run_http_discovery`)
-/// that polls the admin panel API for host information when mDNS is
-/// unavailable (e.g. multicast doesn't traverse the network).
+/// Also provides:
+/// - `run_http_discovery()` — polls admin API when mDNS unavailable
+/// - `run_broadcast_discovery()` — UDP broadcast, zero-config, works on all LANs
 
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::Deserialize;
+use socket2::{Domain, Protocol, Socket, Type};
+use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use midi_protocol::MDNS_SERVICE_TYPE;
+use midi_protocol::packets::{DiscoverRequest, DiscoverResponse};
+use midi_protocol::{DEFAULT_DISCOVERY_PORT, MDNS_SERVICE_TYPE, PROTOCOL_VERSION};
 
 use crate::health::TaskPulse;
 use crate::{ClientState, DiscoveredHost};
@@ -375,6 +378,176 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                     identity.name = host.device_name.clone();
                 }
             }
+        }
+    }
+}
+
+// ── UDP broadcast discovery (zero-config, works on all LANs) ────────────
+
+/// Broadcast discovery: sends `DiscoverRequest` to `255.255.255.255:5008`
+/// every 3 seconds. When a host responds with `DiscoverResponse`, populates
+/// `state.discovered_hosts` and sets device identity. No config required.
+pub async fn run_broadcast_discovery(state: Arc<ClientState>) {
+    let socket = match create_broadcast_socket() {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to create broadcast discovery socket: {}", e);
+            return;
+        }
+    };
+
+    let broadcast_dest = SocketAddrV4::new(Ipv4Addr::BROADCAST, DEFAULT_DISCOVERY_PORT);
+    let mut req_buf = [0u8; DiscoverRequest::SIZE];
+    let mut recv_buf = [0u8; 256];
+
+    info!("Broadcast discovery started (sending to 255.255.255.255:{})", DEFAULT_DISCOVERY_PORT);
+
+    loop {
+        // Send discovery broadcast
+        let req = DiscoverRequest {
+            client_id: state.client_id,
+            protocol_version: PROTOCOL_VERSION,
+        };
+        req.serialize(&mut req_buf);
+
+        if let Err(e) = socket.send_to(&req_buf, broadcast_dest).await {
+            debug!(error = %e, "Failed to send discovery broadcast");
+        }
+
+        // Listen for responses for 2 seconds before next broadcast
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(timeout, socket.recv_from(&mut recv_buf)).await {
+                Ok(Ok((len, src))) => {
+                    if let Some(resp) = DiscoverResponse::deserialize(&recv_buf[..len]) {
+                        handle_discover_response(&state, &resp, src.ip()).await;
+                    }
+                }
+                Ok(Err(e)) => {
+                    if e.kind() != std::io::ErrorKind::WouldBlock {
+                        debug!(error = %e, "Broadcast discovery recv error");
+                    }
+                }
+                Err(_) => break, // Timeout
+            }
+        }
+
+        // Wait 1 more second (total ~3s cycle)
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn create_broadcast_socket() -> std::io::Result<UdpSocket> {
+    let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    s.set_reuse_address(true)?;
+    s.set_broadcast(true)?;
+    let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
+    s.bind(&addr.into())?;
+    s.set_nonblocking(true)?;
+    UdpSocket::from_std(s.into())
+}
+
+async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverResponse, source_ip: IpAddr) {
+    let ip_addr = source_ip;
+    let admin_url = format!("http://{}:{}", ip_addr, resp.admin_port);
+
+    let mut addresses = HashSet::new();
+    addresses.insert(ip_addr);
+
+    let multicast_group = Ipv4Addr::from(resp.multicast_group).to_string();
+
+    let discovered = DiscoveredHost {
+        id: resp.host_id,
+        name: format!("MIDInet host-{}", resp.host_id),
+        role: if resp.role == midi_protocol::packets::HostRole::Primary {
+            "primary".to_string()
+        } else {
+            "standby".to_string()
+        },
+        addresses,
+        multicast_group,
+        data_port: resp.data_port,
+        control_group: None,
+        device_name: resp.device_name.clone(),
+        protocol_version: Some(resp.protocol_version),
+        admin_url: Some(admin_url),
+    };
+
+    // Upsert into discovered hosts
+    {
+        let mut hosts = state.discovered_hosts.write().await;
+        if let Some(existing) = hosts.iter_mut().find(|h| h.id == resp.host_id) {
+            // Only log on first discovery, not updates
+            if existing.addresses != discovered.addresses {
+                info!(
+                    host_id = resp.host_id,
+                    ip = %ip_addr,
+                    device = %resp.device_name,
+                    "Discovered MIDInet host via broadcast"
+                );
+            }
+            *existing = discovered;
+        } else {
+            info!(
+                host_id = resp.host_id,
+                ip = %ip_addr,
+                device = %resp.device_name,
+                admin_port = resp.admin_port,
+                "Discovered MIDInet host via broadcast"
+            );
+            hosts.push(discovered);
+        }
+    }
+
+    // Set active host if none selected yet
+    {
+        let role_str = if resp.role == midi_protocol::packets::HostRole::Primary {
+            "primary"
+        } else {
+            "standby"
+        };
+
+        let mut active = state.active_host_id.write().await;
+        match *active {
+            None => {
+                *active = Some(resp.host_id);
+                info!(
+                    host_id = resp.host_id,
+                    role = role_str,
+                    "Selected as active host (broadcast discovery)"
+                );
+            }
+            Some(current)
+                if current != resp.host_id
+                    && resp.role == midi_protocol::packets::HostRole::Primary =>
+            {
+                info!(
+                    previous = current,
+                    new = resp.host_id,
+                    "Primary host discovered via broadcast, switching active host"
+                );
+                *active = Some(resp.host_id);
+            }
+            _ => {}
+        }
+    }
+
+    // Populate device identity
+    let active_id = state.active_host_id.read().await.unwrap_or(1);
+    if resp.host_id == active_id {
+        let mut identity = state.identity.write().await;
+        if !identity.is_valid() || identity.name != resp.device_name {
+            info!(
+                device = %resp.device_name,
+                host_id = resp.host_id,
+                "Updating device identity from broadcast-discovered host"
+            );
+            identity.name = resp.device_name.clone();
         }
     }
 }
