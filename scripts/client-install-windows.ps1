@@ -215,8 +215,8 @@ try {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
     $action = New-ScheduledTaskAction `
-        -Execute "$BinDir\midinet-client.exe" `
-        -Argument "--config `"$ConfigDir\client.toml`"" `
+        -Execute "powershell.exe" `
+        -Argument "-WindowStyle Hidden -Command `"& '$BinDir\midinet-client.exe' --config '$ConfigDir\client.toml'`"" `
         -WorkingDirectory $InstallDir
 
     $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME

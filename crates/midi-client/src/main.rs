@@ -1,3 +1,7 @@
+// Hide the console window on Windows when running as a background service.
+// Logging goes to file via tracing, so stdout/stderr are not needed.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod discovery;
 mod failover;
 mod focus;
