@@ -36,8 +36,8 @@ fn create_multicast_socket(
     // Set multicast TTL to 1 (LAN only)
     socket.set_multicast_ttl_v4(1)?;
 
-    // Disable loopback (don't receive our own packets)
-    socket.set_multicast_loop_v4(false)?;
+    // Enable loopback so the admin sniffer on the same host can see packets
+    socket.set_multicast_loop_v4(true)?;
 
     // Bind to the port
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);

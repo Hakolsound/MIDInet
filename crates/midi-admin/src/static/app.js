@@ -69,6 +69,7 @@ const INIT = {
     settings: { midi_device_status: 'disconnected', osc_port: 8000, osc_status: 'stopped', active_preset: null },
   },
   hosts: [], clients: [], devices: [], alerts: [],
+  designatedPrimary: null, designatedFocus: null,
   pipeline: null, settings: null, presets: [], failoverDetail: null,
   sparkData: [], toasts: [], warningPopups: [],
   trafficLastSeen: { midi_in: 0, midi_out: 0, osc: 0, api: 0 },
@@ -96,10 +97,18 @@ function reducer(state, action) {
       const da = d.device_activity || state.deviceActivity;
       const ia = {};
       (d.identify_active || []).forEach(id => { ia[id] = true; });
-      return { ...state, status: { ...state.status, ...d }, sparkData: spark, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia };
+      return {
+        ...state, status: { ...state.status, ...d }, sparkData: spark, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia,
+        hosts: d.hosts || state.hosts,
+        clients: d.clients || state.clients,
+        designatedPrimary: d.designated_primary !== undefined ? d.designated_primary : state.designatedPrimary,
+        designatedFocus: d.designated_focus !== undefined ? d.designated_focus : state.designatedFocus,
+      };
     }
     case 'SET_HOSTS': return { ...state, hosts: action.data || [] };
     case 'SET_CLIENTS': return { ...state, clients: action.data || [] };
+    case 'SET_DESIGNATED_PRIMARY': return { ...state, designatedPrimary: action.id };
+    case 'SET_DESIGNATED_FOCUS': return { ...state, designatedFocus: action.id };
     case 'SET_DEVICES': return { ...state, devices: action.data || [] };
     case 'SET_ALERTS': {
       const next = action.data || [];
@@ -566,12 +575,19 @@ function NetworkCard() {
     <div class="card-body">
       ${state.hosts.length > 0 && html`
         <div class="ctrl-section-label">Hosts</div>
-        ${state.hosts.map(h => html`<div class="host-row" key=${h.id}>
-          <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
-          <span class="host-name">${h.name || h.ip}</span>
-          <span class="host-role-badge" data-role=${h.role}>${h.role}</span>
-          <span class="host-detail">${fmtUp(h.uptime_seconds)}</span>
-        </div>`)}
+        ${state.hosts.map(h => {
+          const isMaster = state.designatedPrimary === h.id;
+          return html`<div class="host-row" key=${h.id}>
+            <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
+            <span class="host-name">${h.device_name || h.name || h.ip}</span>
+            <span class="host-role-badge" data-role=${isMaster ? 'primary' : h.role}>${isMaster ? 'master' : h.role}</span>
+            <span class="host-detail">${h.ip}</span>
+            <button class="btn btn-xs ${isMaster ? 'btn-active' : ''}" onClick=${() =>
+              apiFetch('/api/hosts/' + h.id + '/role', { method: 'PUT', body: JSON.stringify({ role: 'primary' }) })
+                .then(() => dispatch({ type: 'SET_DESIGNATED_PRIMARY', id: h.id }))
+            }>${isMaster ? '\u2605 Master' : 'Set Master'}</button>
+          </div>`;
+        })}
       `}
       ${state.hosts.length === 0 && html`<div style="font-size:12px;color:var(--text-3);margin-bottom:12px">No hosts discovered</div>`}
       <div class="ctrl-section-label" style="margin-top:12px">Traffic</div>
@@ -588,7 +604,7 @@ function NetworkCard() {
 }
 
 function ClientsCard() {
-  const { state } = useContext(AppContext);
+  const { state, dispatch } = useContext(AppContext);
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.users()}</span>
@@ -600,13 +616,22 @@ function ClientsCard() {
     <div class="card-body-flush" style="overflow-y:auto">
       ${state.clients.length === 0 && html`<div class="empty-state">No clients connected</div>`}
       <div style="padding:4px 20px">
-        ${state.clients.map(c => html`<div class="client-row" key=${c.id}>
-          <span class="status-dot" data-status="ok" />
-          <span class="client-name">${c.hostname}</span>
-          <span class="client-ip">${c.ip}</span>
-          <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
-          <span class="client-stat" style="color:var(--${c.packet_loss_percent > 1 ? 'red' : c.packet_loss_percent > 0.1 ? 'orange' : 'text-3'})">${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
-        </div>`)}
+        ${state.clients.map(c => {
+          const hasFocus = state.designatedFocus === c.id;
+          const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'discovering' ? 'warn' : 'error';
+          return html`<div class="client-row" key=${c.id}>
+            <span class="status-dot" data-status=${connStatus} />
+            <span class="client-name">${c.hostname || 'Client ' + c.id}</span>
+            <span class="client-ip">${c.ip}</span>
+            <span class="client-stat">${c.device_ready ? (c.device_name || 'Ready') : 'No device'}</span>
+            <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
+            <span class="client-stat" style="color:var(--${c.packet_loss_percent > 1 ? 'red' : c.packet_loss_percent > 0.1 ? 'orange' : 'text-3'})">${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
+            <button class="btn btn-xs ${hasFocus ? 'btn-active' : ''}" onClick=${() =>
+              apiFetch('/api/clients/' + c.id + '/focus', { method: 'PUT', body: JSON.stringify({ focus: !hasFocus }) })
+                .then(() => dispatch({ type: 'SET_DESIGNATED_FOCUS', id: hasFocus ? null : c.id }))
+            }>${hasFocus ? '\u25C9 Focus' : 'Focus'}</button>
+          </div>`;
+        })}
       </div>
     </div>
   </div>`;

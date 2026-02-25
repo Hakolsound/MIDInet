@@ -228,6 +228,20 @@ pub async fn run(state: AppState) {
                 devices.clear();
             }
         }
+
+        // --- Clean up stale clients (no heartbeat for 30s) ---
+        {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let mut clients = state.inner.clients.write().await;
+            let before = clients.len();
+            clients.retain(|c| now_ms.saturating_sub(c.last_heartbeat_ms) < 30_000);
+            if clients.len() < before {
+                debug!("Removed {} stale client(s)", before - clients.len());
+            }
+        }
     }
 }
 

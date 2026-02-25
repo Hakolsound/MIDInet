@@ -73,6 +73,8 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let input_red = state.inner.input_redundancy.read().await;
             let device_activity = state.inner.device_activity.read().await;
             let identify_reqs = state.inner.identify_requests.read().await;
+            let designated_primary = state.inner.designated_primary.read().await;
+            let designated_focus = state.inner.designated_focus.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -102,8 +104,12 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                     "ws_connections": traffic.ws_connections,
                 },
                 "focus_holder": focus.holder.as_ref().map(|h| h.client_id),
+                "hosts": *hosts,
+                "clients": *clients,
                 "host_count": hosts.len(),
                 "client_count": clients.len(),
+                "designated_primary": *designated_primary,
+                "designated_focus": *designated_focus,
                 "active_alerts": alerts.len(),
                 "input_redundancy": {
                     "enabled": input_red.enabled,

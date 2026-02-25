@@ -925,7 +925,9 @@ a { color: var(--accent); text-decoration: none; }
     border-radius: 20px;
 }
 .host-role-badge[data-role="primary"] { background: var(--green-dim); color: var(--green); }
+.host-role-badge[data-role="master"] { background: var(--green-dim); color: var(--green); }
 .host-role-badge[data-role="standby"] { background: rgba(255,255,255,0.05); color: var(--text-3); }
+.host-row .btn-xs, .client-row .btn-xs { margin-left: auto; flex-shrink: 0; }
 .host-detail {
     font-family: var(--mono);
     font-size: 11px;
@@ -1050,6 +1052,9 @@ a { color: var(--accent); text-decoration: none; }
 .btn-danger { background: var(--red-dim); color: var(--red); }
 .btn-danger:hover { background: rgba(255,69,58,.22); }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-xs { padding: 2px 8px; font-size: 10px; border-radius: var(--radius-xs); }
+.btn-active { background: var(--accent); color: #fff; }
+.btn-active:hover { background: var(--accent); opacity: .9; }
 .btn-icon { width: 32px; height: 32px; padding: 0; border-radius: var(--radius-xs); }
 
 /* ── Toggle ── */

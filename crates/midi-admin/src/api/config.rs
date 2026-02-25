@@ -75,8 +75,11 @@ impl Default for OscConfig {
 }
 
 /// Persisted MIDI device configuration.
+/// Note: `active_device` serializes as `device` to match midi-host's expected field name,
+/// since both services share the same TOML config file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MidiConfig {
+    #[serde(alias = "active_device", rename = "device")]
     pub active_device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup_device: Option<String>,

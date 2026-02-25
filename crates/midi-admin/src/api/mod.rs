@@ -67,7 +67,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 /// Dashboard polling endpoints — housekeeping, excluded from traffic counter.
-const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts"];
+const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register"];
 
 /// Lightweight middleware to count API requests and log details for the traffic sniffer.
 async fn count_api_requests(
@@ -137,6 +137,11 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         // Input redundancy
         .route("/api/input-redundancy", get(input::get_input_redundancy))
         .route("/api/input-redundancy/switch", post(input::trigger_input_switch))
+        // Fleet management
+        .route("/api/clients/register", post(status::register_client))
+        .route("/api/clients/:id/heartbeat", post(status::client_heartbeat))
+        .route("/api/hosts/:id/role", put(status::set_host_role))
+        .route("/api/clients/:id/focus", put(status::set_client_focus))
         // Alerts
         .route("/api/alerts", get(alerts::get_alerts))
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))

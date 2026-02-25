@@ -2,6 +2,7 @@ mod api;
 pub mod alerting;
 pub mod auth;
 pub mod collector;
+pub mod discovery;
 pub mod metrics_store;
 pub mod midi_sniffer;
 pub mod osc_listener;
@@ -82,6 +83,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn background metrics collector
     tokio::spawn(collector::run(state.clone()));
+
+    // Spawn mDNS host discovery
+    tokio::spawn(discovery::run(state.clone()));
 
     // Spawn multicast MIDI sniffer (reads host's multicast stream for metrics)
     if let Some(net) = network_config {

@@ -284,6 +284,10 @@ pub struct AppStateInner {
     pub device_activity_tx: broadcast::Sender<String>,
     /// Pending identify requests: device_id → requested_at epoch ms
     pub identify_requests: RwLock<HashMap<String, u64>>,
+    /// Designated primary host ID (user-selected master)
+    pub designated_primary: RwLock<Option<u8>>,
+    /// Designated focus client ID (user-selected focus holder)
+    pub designated_focus: RwLock<Option<u32>>,
 }
 
 impl AppState {
@@ -318,6 +322,8 @@ impl AppState {
                 device_activity: RwLock::new(HashMap::new()),
                 device_activity_tx: broadcast::channel(128).0,
                 identify_requests: RwLock::new(HashMap::new()),
+                designated_primary: RwLock::new(None),
+                designated_focus: RwLock::new(None),
             }),
         }
     }
@@ -411,6 +417,16 @@ pub struct ClientInfo {
     pub last_heartbeat_ms: u64,
     pub latency_ms: f32,
     pub packet_loss_percent: f32,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub device_ready: bool,
+    #[serde(default)]
+    pub midi_rate_in: f32,
+    #[serde(default)]
+    pub midi_rate_out: f32,
+    #[serde(default)]
+    pub connection_state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

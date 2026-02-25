@@ -2,6 +2,7 @@
 // Logging goes to file via tracing, so stdout/stderr are not needed.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod admin_reporter;
 mod discovery;
 mod failover;
 mod focus;
@@ -330,6 +331,14 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Spawn admin panel reporter (registration + heartbeat)
+    let admin_reporter_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            admin_reporter::run(state).await;
+        })
+    };
+
     info!("Client daemon running, waiting for hosts via mDNS...");
 
     // Wait for shutdown signal
@@ -355,6 +364,7 @@ async fn main() -> anyhow::Result<()> {
     init_handle.abort();
     health_server_handle.abort();
     watchdog_handle.abort();
+    admin_reporter_handle.abort();
 
     Ok(())
 }

@@ -22,3 +22,4 @@ sysinfo = "0.32"
 reqwest = { workspace = true }
 rosc = { workspace = true }
 socket2 = "0.5"
+mdns-sd = { workspace = true }
