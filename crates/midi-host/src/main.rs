@@ -324,9 +324,13 @@ async fn main() -> anyhow::Result<()> {
 
     let (unicast_tx, unicast_rx) = watch::channel(Vec::<SocketAddrV4>::new());
 
+    // Read device identity from ALSA before creating shared state
+    let device_identity = usb_detector::read_device_identity(&config.midi.device);
+    info!(device_name = %device_identity.name, "Device identity loaded");
+
     let state = Arc::new(SharedState {
         config: config.clone(),
-        identity: RwLock::new(DeviceIdentity::default()),
+        identity: RwLock::new(device_identity),
         role: role_tx,
         metrics: RwLock::new(metrics::HostMetrics::default()),
         pipeline_config: RwLock::new(pipeline::PipelineConfig::default()),
