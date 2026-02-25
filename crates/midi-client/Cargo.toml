@@ -32,6 +32,8 @@ windows = { version = "0.58", features = [
     "Foundation_Collections",
     "Devices_Enumeration",
     "Devices_Midi",
+    "Data_Json",
+    "Storage_Streams",
     "Win32_System_Com",
 ] }
 windows-core = "0.58"
