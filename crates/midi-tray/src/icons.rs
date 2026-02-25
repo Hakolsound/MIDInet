@@ -14,7 +14,7 @@ const ICON_SIZE: u32 = 32;
 pub enum IconColor {
     /// Connected, healthy
     Green,
-    /// Warnings (packet loss, single host, task restart)
+    /// Warnings (packet loss, task restart)
     Yellow,
     /// Disconnected or both hosts unreachable
     Red,
@@ -22,8 +22,18 @@ pub enum IconColor {
     Gray,
 }
 
-/// Generate a tray icon with the given status color.
+/// Generate a tray icon with the given status color (full brightness).
 pub fn generate_icon(color: IconColor) -> Icon {
+    generate_icon_with_alpha(color, 255)
+}
+
+/// Generate a dimmed tray icon for the "off" phase of blinking.
+pub fn generate_icon_dim(color: IconColor) -> Icon {
+    generate_icon_with_alpha(color, 80)
+}
+
+/// Generate a tray icon with the given status color and base alpha.
+fn generate_icon_with_alpha(color: IconColor, base_alpha: u8) -> Icon {
     let (r, g, b) = match color {
         IconColor::Green => (0x2E, 0xCC, 0x71),  // emerald green
         IconColor::Yellow => (0xF3, 0x9C, 0x12), // warm amber
@@ -43,11 +53,11 @@ pub fn generate_icon(color: IconColor) -> Icon {
 
             if dist <= radius - 1.0 {
                 // Fully inside the circle
-                img.put_pixel(x, y, Rgba([r, g, b, 255]));
+                img.put_pixel(x, y, Rgba([r, g, b, base_alpha]));
             } else if dist <= radius + 1.0 {
                 // Anti-aliased edge
-                let alpha = ((radius + 1.0 - dist) / 2.0 * 255.0) as u8;
-                img.put_pixel(x, y, Rgba([r, g, b, alpha]));
+                let edge_alpha = ((radius + 1.0 - dist) / 2.0 * base_alpha as f32) as u8;
+                img.put_pixel(x, y, Rgba([r, g, b, edge_alpha]));
             }
             // else: transparent (default)
         }
@@ -63,10 +73,7 @@ pub fn color_for_snapshot(snapshot: &midi_protocol::health::ClientHealthSnapshot
 
     match snapshot.connection_state {
         ConnectionState::Connected => {
-            if snapshot.packet_loss_percent > 5.0
-                || !snapshot.watchdog.all_tasks_healthy
-                || snapshot.hosts_discovered < 2
-            {
+            if snapshot.packet_loss_percent > 5.0 || !snapshot.watchdog.all_tasks_healthy {
                 IconColor::Yellow
             } else {
                 IconColor::Green

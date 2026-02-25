@@ -24,7 +24,7 @@ use tracing::info;
 
 use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
 
-use crate::icons::{color_for_snapshot, generate_icon, IconColor};
+use crate::icons::{color_for_snapshot, generate_icon, generate_icon_dim, IconColor};
 use crate::menu::{
     build_disconnected_menu, build_initial_menu, build_status_menu, ID_CLAIM_FOCUS,
     ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS,
@@ -85,6 +85,11 @@ fn main() {
     let mut last_snapshot: Option<ClientHealthSnapshot> = None;
     let mut daemon_connected = false;
 
+    // Blink state: green icon pulses between bright and dim (~1s cycle)
+    let mut blink_tick: u32 = 0;
+    let mut blink_on = true;
+    const BLINK_HALF_PERIOD: u32 = 30; // 30 ticks * 16ms ≈ 480ms per phase
+
     let menu_rx = MenuEvent::receiver();
 
     info!("Tray running — right-click the icon for status");
@@ -99,6 +104,8 @@ fn main() {
                         let icon = generate_icon(new_color);
                         let _ = tray.set_icon(Some(icon));
                         current_color = new_color;
+                        blink_on = true;
+                        blink_tick = 0;
                     }
 
                     // Update tooltip
@@ -130,12 +137,29 @@ fn main() {
                         let icon = generate_icon(IconColor::Gray);
                         let _ = tray.set_icon(Some(icon));
                         current_color = IconColor::Gray;
+                        blink_on = true;
+                        blink_tick = 0;
 
                         let _ = tray.set_tooltip(Some("MIDInet: Daemon not running"));
                         let menu = build_disconnected_menu();
                         let _ = tray.set_menu(Some(Box::new(menu)));
                     }
                 }
+            }
+        }
+
+        // ── Blink the icon when connected (green) ──
+        if current_color == IconColor::Green {
+            blink_tick += 1;
+            if blink_tick >= BLINK_HALF_PERIOD {
+                blink_tick = 0;
+                blink_on = !blink_on;
+                let icon = if blink_on {
+                    generate_icon(IconColor::Green)
+                } else {
+                    generate_icon_dim(IconColor::Green)
+                };
+                let _ = tray.set_icon(Some(icon));
             }
         }
 
@@ -182,11 +206,15 @@ fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
             let role = snapshot
                 .active_host
                 .as_ref()
-                .map(|h| h.role.as_str())
-                .unwrap_or("?");
-            format!("Connected to {}", capitalize(role))
+                .map(|h| capitalize(&h.role))
+                .unwrap_or_else(|| "?".to_string());
+            if snapshot.device_ready && !snapshot.device_name.is_empty() {
+                format!("{} | {}", role, snapshot.device_name)
+            } else {
+                format!("{} | No MIDI device", role)
+            }
         }
-        ConnectionState::Discovering => "Discovering...".to_string(),
+        ConnectionState::Discovering => "Discovering hosts...".to_string(),
         ConnectionState::Reconnecting => "Reconnecting...".to_string(),
         ConnectionState::Disconnected => "Disconnected".to_string(),
     };
