@@ -1,6 +1,6 @@
-// Hide the console window on Windows when running as a background service.
-// Logging goes to file via tracing, so stdout/stderr are not needed.
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// NOTE: console window is shown on Windows so logs are visible during development.
+// To hide it for production/service use, add:
+//   #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod admin_reporter;
 mod discovery;
