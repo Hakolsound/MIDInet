@@ -200,7 +200,7 @@ pub struct MidiServicesDevice {
     #[cfg(target_os = "windows")]
     connection: Option<midi2::MidiEndpointConnection>,
     #[cfg(target_os = "windows")]
-    _virtual_device: Option<midi2::VirtualPatchBay::MidiVirtualDevice>,
+    _virtual_device: Option<midi2::Endpoints::Virtual::MidiVirtualDevice>,
     #[cfg(target_os = "windows")]
     feedback_buffer: Arc<Mutex<Vec<Vec<u8>>>>,
     #[cfg(target_os = "windows")]
@@ -290,7 +290,7 @@ impl VirtualMidiDevice for MidiServicesDevice {
             };
 
             // Create virtual device config
-            let config = midi2::VirtualPatchBay::MidiVirtualDeviceCreationConfig::CreateInstance(
+            let config = midi2::Endpoints::Virtual::MidiVirtualDeviceCreationConfig::CreateInstance(
                 &HSTRING::from(&self.name),
                 &HSTRING::from(format!("MIDInet virtual device: {}", &self.name)),
                 &HSTRING::from(&identity.manufacturer),
@@ -318,7 +318,7 @@ impl VirtualMidiDevice for MidiServicesDevice {
                 .map_err(|e| anyhow::anyhow!("Failed to add function block: {}", e))?;
 
             // Create the virtual device via the VirtualPatchBay manager
-            let virtual_device = midi2::VirtualPatchBay::MidiVirtualDeviceManager::CreateVirtualDevice(&config)
+            let virtual_device = midi2::Endpoints::Virtual::MidiVirtualDeviceManager::CreateVirtualDevice(&config)
                 .map_err(|e| anyhow::anyhow!(
                     "Failed to create virtual MIDI device: {}. \
                      Windows MIDI Services may not support virtual devices on this version.",
@@ -330,7 +330,7 @@ impl VirtualMidiDevice for MidiServicesDevice {
                 .map_err(|e| anyhow::anyhow!("Failed to get association ID: {}", e))?;
 
             let client_endpoint_id =
-                midi2::VirtualPatchBay::MidiVirtualDeviceManager::GetAssociatedClientEndpointDeviceId(association_id)
+                midi2::Endpoints::Virtual::MidiVirtualDeviceManager::GetAssociatedClientEndpointDeviceId(association_id)
                     .map_err(|e| anyhow::anyhow!("Failed to get client endpoint ID: {}", e))?;
 
             info!(
