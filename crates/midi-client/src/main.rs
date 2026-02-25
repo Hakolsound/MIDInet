@@ -346,11 +346,14 @@ async fn main() -> anyhow::Result<()> {
     // Signal all tasks to stop
     cancel.cancel();
 
-    // Close virtual device gracefully
+    // Graceful shutdown: silence the device (All Notes Off / All Sound Off)
+    // and detach the port handle so it stays alive until process exit.
+    // This prevents crashes in apps like Resolume that hold open MIDI handles —
+    // explicit close() triggers a bug in Windows MIDI Services (midisrv.exe).
     {
         let mut vdev = state.virtual_device.write().await;
-        if let Err(e) = vdev.close() {
-            warn!("Error closing virtual device: {}", e);
+        if let Err(e) = vdev.silence_and_detach() {
+            warn!("Error during graceful device shutdown: {}", e);
         }
     }
 

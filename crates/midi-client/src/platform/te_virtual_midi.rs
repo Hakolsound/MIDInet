@@ -291,6 +291,9 @@ pub struct TeVirtualMidiDevice {
     lib: Option<TeVirtualMidiLib>,
     #[cfg(target_os = "windows")]
     port: Mutex<Option<ffi::HANDLE>>,
+    /// When true, Drop skips port close — the kernel driver cleans up on process exit.
+    #[cfg(target_os = "windows")]
+    detached: bool,
     #[cfg(not(target_os = "windows"))]
     _phantom: (),
 }
@@ -308,6 +311,8 @@ impl TeVirtualMidiDevice {
             lib: TeVirtualMidiLib::load(),
             #[cfg(target_os = "windows")]
             port: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            detached: false,
             #[cfg(not(target_os = "windows"))]
             _phantom: (),
         }
@@ -531,6 +536,11 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
     fn close(&mut self) -> anyhow::Result<()> {
         #[cfg(target_os = "windows")]
         {
+            if self.detached {
+                info!(name = %self.name, "teVirtualMIDI device detached — skipping explicit close");
+                return Ok(());
+            }
+
             if let Some(ref lib) = self.lib {
                 let mut guard = self.port.lock().unwrap();
                 if let Some(handle) = guard.take() {
@@ -542,6 +552,26 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
         Ok(())
     }
 
+    fn silence_and_detach(&mut self) -> anyhow::Result<()> {
+        self.send_all_off()?;
+
+        #[cfg(target_os = "windows")]
+        {
+            self.detached = true;
+            info!(
+                name = %self.name,
+                "teVirtualMIDI device silenced and detached — port stays alive until process exit"
+            );
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.close()?;
+        }
+
+        Ok(())
+    }
+
     fn device_name(&self) -> &str {
         &self.name
     }
@@ -550,6 +580,11 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
 #[cfg(target_os = "windows")]
 impl Drop for TeVirtualMidiDevice {
     fn drop(&mut self) {
+        if self.detached {
+            // Detached mode: let the kernel driver clean up on process exit.
+            // This prevents crashes in apps holding open handles to the port.
+            return;
+        }
         // Close port before lib is dropped (lib drop calls FreeLibrary)
         if let Some(ref lib) = self.lib {
             if let Ok(mut guard) = self.port.lock() {

@@ -209,6 +209,12 @@ pub struct MidiServicesDevice {
     /// Must be kept alive for the entire lifetime of the MIDI session.
     #[cfg(target_os = "windows")]
     _initializer: Option<windows::core::IUnknown>,
+    /// When true, Drop skips teardown — the OS cleans up handles on process exit.
+    /// This avoids a bug in Midi2.VirtualMidiTransport.dll that causes midisrv.exe
+    /// to crash (access violation) when a virtual device session is explicitly closed
+    /// while other apps (e.g. Resolume) hold open handles to the endpoint.
+    #[cfg(target_os = "windows")]
+    detached: bool,
     #[cfg(not(target_os = "windows"))]
     _phantom: (),
 }
@@ -234,6 +240,8 @@ impl MidiServicesDevice {
             _message_token: None,
             #[cfg(target_os = "windows")]
             _initializer: None,
+            #[cfg(target_os = "windows")]
+            detached: false,
             #[cfg(not(target_os = "windows"))]
             _phantom: (),
         }
@@ -495,6 +503,11 @@ impl VirtualMidiDevice for MidiServicesDevice {
     fn close(&mut self) -> anyhow::Result<()> {
         #[cfg(target_os = "windows")]
         {
+            if self.detached {
+                info!(name = %self.name, "MIDI Services device detached — skipping explicit close");
+                return Ok(());
+            }
+
             if let (Some(conn), Some(token)) = (self.connection.as_ref(), self._message_token.take()) {
                 let _ = conn.RemoveMessageReceived(token);
             }
@@ -512,6 +525,26 @@ impl VirtualMidiDevice for MidiServicesDevice {
         Ok(())
     }
 
+    fn silence_and_detach(&mut self) -> anyhow::Result<()> {
+        self.send_all_off()?;
+
+        #[cfg(target_os = "windows")]
+        {
+            self.detached = true;
+            info!(
+                name = %self.name,
+                "MIDI Services device silenced and detached — port stays alive until process exit"
+            );
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.close()?;
+        }
+
+        Ok(())
+    }
+
     fn device_name(&self) -> &str {
         &self.name
     }
@@ -520,6 +553,12 @@ impl VirtualMidiDevice for MidiServicesDevice {
 #[cfg(target_os = "windows")]
 impl Drop for MidiServicesDevice {
     fn drop(&mut self) {
+        if self.detached {
+            // Detached mode: let the OS clean up COM handles on process exit.
+            // Explicit teardown triggers a bug in Midi2.VirtualMidiTransport.dll
+            // (access violation in midisrv.exe) when apps hold open handles.
+            return;
+        }
         if let (Some(conn), Some(token)) = (self.connection.as_ref(), self._message_token.take()) {
             let _ = conn.RemoveMessageReceived(token);
         }

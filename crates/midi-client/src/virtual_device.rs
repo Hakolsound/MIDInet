@@ -21,6 +21,31 @@ pub trait VirtualMidiDevice: Send + Sync {
 
     /// Get the device name as seen by the host application.
     fn device_name(&self) -> &str;
+
+    /// Graceful shutdown: send All Sound Off + All Notes Off on all channels,
+    /// then detach the device handle so it persists until the process exits.
+    ///
+    /// This prevents crashes in applications (like Resolume Arena) that hold
+    /// open handles to the virtual MIDI port. The OS will clean up the handles
+    /// when the process terminates, which MIDI drivers handle gracefully —
+    /// unlike explicit close() which can trigger bugs in Windows MIDI Services.
+    fn silence_and_detach(&mut self) -> anyhow::Result<()> {
+        // Default: send silence then close normally (safe on macOS/Linux)
+        self.send_all_off()?;
+        self.close()
+    }
+
+    /// Send All Sound Off (CC 120) + All Notes Off (CC 123) on all 16 channels.
+    fn send_all_off(&self) -> anyhow::Result<()> {
+        for ch in 0u8..16 {
+            let status = 0xB0 | ch;
+            // CC 120 = All Sound Off
+            self.send(&[status, 120, 0])?;
+            // CC 123 = All Notes Off
+            self.send(&[status, 123, 0])?;
+        }
+        Ok(())
+    }
 }
 
 /// Create a platform-appropriate virtual MIDI device.

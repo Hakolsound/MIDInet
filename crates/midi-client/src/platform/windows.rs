@@ -166,6 +166,14 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
         }
     }
 
+    fn silence_and_detach(&mut self) -> anyhow::Result<()> {
+        match &mut self.backend {
+            Backend::TeVirtualMidi(dev) => dev.silence_and_detach(),
+            Backend::MidiServices(dev) => dev.silence_and_detach(),
+            Backend::Uninit => Ok(()),
+        }
+    }
+
     fn device_name(&self) -> &str {
         match &self.backend {
             Backend::TeVirtualMidi(dev) => dev.device_name(),
