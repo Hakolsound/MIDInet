@@ -354,37 +354,50 @@ impl VirtualMidiDevice for MidiServicesDevice {
             block.SetRepresentsMidi10Connection(
                 midi2::MidiFunctionBlockRepresentsMidi10Connection::YesBandwidthUnrestricted,
             ).map_err(|e| anyhow::anyhow!("Failed to set MIDI 1.0 mode: {}", e))?;
+            // FirstGroup and GroupCount are required — without them CreateVirtualDevice returns null
+            let group0 = midi2::MidiGroup::CreateInstance(0)
+                .map_err(|e| anyhow::anyhow!("Failed to create MidiGroup(0): {}", e))?;
+            block.SetFirstGroup(&group0)
+                .map_err(|e| anyhow::anyhow!("Failed to set first group: {}", e))?;
+            block.SetGroupCount(1)
+                .map_err(|e| anyhow::anyhow!("Failed to set group count: {}", e))?;
 
             config.FunctionBlocks()
                 .map_err(|e| anyhow::anyhow!("Failed to get function blocks: {}", e))?
                 .Append(&block)
                 .map_err(|e| anyhow::anyhow!("Failed to add function block: {}", e))?;
 
-            // Create the virtual device via the VirtualPatchBay manager
+            info!(name = %self.name, "Virtual device config ready, creating device...");
+
+            // Create the virtual device via the manager
             let virtual_device = midi2::Endpoints::Virtual::MidiVirtualDeviceManager::CreateVirtualDevice(&config)
                 .map_err(|e| anyhow::anyhow!(
-                    "Failed to create virtual MIDI device: {}. \
+                    "Failed to create virtual MIDI device: {} (0x{:08X}). \
                      Windows MIDI Services may not support virtual devices on this version.",
-                    e
+                    e, e.code().0 as u32
                 ))?;
 
-            // Get the client-side endpoint ID to connect to
-            let association_id = virtual_device.AssociationId()
-                .map_err(|e| anyhow::anyhow!("Failed to get association ID: {}", e))?;
-
-            let client_endpoint_id =
-                midi2::Endpoints::Virtual::MidiVirtualDeviceManager::GetAssociatedClientEndpointDeviceId(association_id)
-                    .map_err(|e| anyhow::anyhow!("Failed to get client endpoint ID: {}", e))?;
+            // Connect to the DEVICE-side endpoint (not the client-side).
+            // The device-side is what we send/receive through; the client-side
+            // is what other apps (DAWs, Resolume) see and connect to.
+            let device_endpoint_id = virtual_device.DeviceEndpointDeviceId()
+                .map_err(|e| anyhow::anyhow!("Failed to get device endpoint ID: {}", e))?;
 
             info!(
                 name = %self.name,
-                endpoint_id = %client_endpoint_id,
-                "Virtual device created, connecting..."
+                device_endpoint = %device_endpoint_id,
+                "Virtual device created, connecting to device-side endpoint..."
             );
 
             // Create endpoint connection via session
-            let connection = session.CreateEndpointConnection(&client_endpoint_id)
+            let connection = session.CreateEndpointConnection(&device_endpoint_id)
                 .map_err(|e| anyhow::anyhow!("Failed to create endpoint connection: {}", e))?;
+
+            // Register the virtual device as a message processing plugin.
+            // This is MANDATORY — without it the virtual device won't handle
+            // protocol negotiation or endpoint discovery messages.
+            connection.AddMessageProcessingPlugin(&virtual_device)
+                .map_err(|e| anyhow::anyhow!("Failed to add virtual device as message plugin: {}", e))?;
 
             // Register callback for incoming MIDI messages (feedback from apps)
             let feedback_buf = Arc::clone(&self.feedback_buffer);
