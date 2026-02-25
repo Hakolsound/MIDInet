@@ -24,10 +24,9 @@ mod ffi {
     pub type HANDLE = *mut c_void;
 
     // Port creation flags
+    // Only PARSE_RX is universally supported across teVirtualMIDI versions.
+    // Omitting INSTANTIATE flags defaults to creating both MIDI In and Out.
     pub const TE_VM_FLAGS_PARSE_RX: DWORD = 1;
-    pub const TE_VM_FLAGS_INSTANTIATE_RX_ONLY: DWORD = 2;
-    pub const TE_VM_FLAGS_INSTANTIATE_TX_ONLY: DWORD = 4;
-    pub const TE_VM_FLAGS_INSTANTIATE_BOTH: DWORD = 6;
 
     #[link(name = "teVirtualMIDI")]
     extern "system" {
@@ -103,7 +102,7 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                     std::ptr::null(),     // no callback — we poll with GetData
                     std::ptr::null_mut(),
                     65535,                // max sysex length
-                    ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    ffi::TE_VM_FLAGS_PARSE_RX,
                 )
             };
 
