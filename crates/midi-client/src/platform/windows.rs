@@ -75,6 +75,20 @@ mod ffi {
     }
 }
 
+/// teVirtualMIDI callback - invoked when other apps send MIDI to the virtual port.
+/// Must be extern "system" (stdcall on Windows).
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn midi_data_callback(
+    _port: ffi::HANDLE,
+    _data: *const u8,
+    _length: ffi::DWORD,
+    _instance: *mut std::ffi::c_void,
+) {
+    // Data from other apps (e.g., Resolume sending MIDI back).
+    // Currently unused but providing this callback may be required
+    // for the driver to register the MIDI Input device.
+}
+
 // ── Runtime-loaded teVirtualMIDI library ──
 
 #[cfg(target_os = "windows")]
@@ -184,6 +198,69 @@ impl TeVirtualMidiLib {
             }
         }
     }
+
+    /// Try to create a port. Returns handle and whether MIDI Input was created.
+    fn try_create_port(
+        &self,
+        wide_name: &[u16],
+        flags: ffi::DWORD,
+        use_callback: bool,
+        label: &str,
+        midi_in_before: u32,
+        midi_out_before: u32,
+    ) -> Option<(ffi::HANDLE, bool)> {
+        let callback_ptr = if use_callback {
+            midi_data_callback as *const std::ffi::c_void
+        } else {
+            std::ptr::null()
+        };
+
+        let h = unsafe {
+            (self.create_port_ex2)(
+                wide_name.as_ptr(),
+                callback_ptr,
+                std::ptr::null_mut(),
+                65535,
+                flags,
+            )
+        };
+
+        if h.is_null() {
+            let err = std::io::Error::last_os_error();
+            warn!(
+                flags = label,
+                callback = use_callback,
+                "Port creation failed: {}",
+                err
+            );
+            return None;
+        }
+
+        // Wait for Windows to register the MIDI device
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let midi_in_now = unsafe { ffi::midiInGetNumDevs() };
+        let midi_out_now = unsafe { ffi::midiOutGetNumDevs() };
+
+        info!(
+            flags = label,
+            callback = use_callback,
+            midi_in = format!("{} -> {}", midi_in_before, midi_in_now),
+            midi_out = format!("{} -> {}", midi_out_before, midi_out_now),
+            "Port created, checking device registration"
+        );
+
+        let input_ok = midi_in_now > midi_in_before;
+        if input_ok {
+            info!(flags = label, callback = use_callback, "MIDI Input device created!");
+        } else if midi_out_now > midi_out_before {
+            warn!(flags = label, callback = use_callback, "MIDI Output created but NOT Input");
+        } else {
+            warn!(flags = label, callback = use_callback, "Port handle valid but NO new MIDI devices registered");
+        }
+
+        Some((h, input_ok))
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -272,87 +349,83 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                 .chain(std::iter::once(0))
                 .collect();
 
-            // Try flag combinations, verify MIDI Input actually appears after each attempt
-            let flag_attempts: &[(ffi::DWORD, &str)] = &[
-                (
-                    ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
-                    "PARSE_RX|INSTANTIATE_BOTH",
-                ),
-                (
-                    ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_PARSE_TX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
-                    "PARSE_RX|PARSE_TX|INSTANTIATE_BOTH",
-                ),
-                (
-                    ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
-                    "INSTANTIATE_BOTH",
-                ),
-                (
-                    ffi::TE_VM_FLAGS_PARSE_RX,
-                    "PARSE_RX (default=both)",
-                ),
-                (0, "none"),
+            // Strategy: try WITH callback first (some SDK versions only register
+            // MIDI Input when a callback is provided), then without callback.
+            // For each, try the recommended flag combinations.
+            struct Attempt {
+                flags: ffi::DWORD,
+                label: &'static str,
+                callback: bool,
+            }
+
+            let attempts = [
+                // WITH callback - most likely to register MIDI Input
+                Attempt {
+                    flags: ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    label: "PARSE_RX|INSTANTIATE_BOTH",
+                    callback: true,
+                },
+                Attempt {
+                    flags: ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_PARSE_TX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    label: "PARSE_RX|PARSE_TX|INSTANTIATE_BOTH",
+                    callback: true,
+                },
+                Attempt {
+                    flags: ffi::TE_VM_FLAGS_PARSE_RX,
+                    label: "PARSE_RX (default=both)",
+                    callback: true,
+                },
+                Attempt {
+                    flags: 0,
+                    label: "none",
+                    callback: true,
+                },
+                // WITHOUT callback - fallback
+                Attempt {
+                    flags: ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    label: "PARSE_RX|INSTANTIATE_BOTH",
+                    callback: false,
+                },
+                Attempt {
+                    flags: ffi::TE_VM_FLAGS_PARSE_RX,
+                    label: "PARSE_RX (default=both)",
+                    callback: false,
+                },
             ];
 
             let mut final_handle: ffi::HANDLE = std::ptr::null_mut();
             let mut final_label = "";
             let mut midi_input_ok = false;
 
-            for (flags, label) in flag_attempts {
-                let h = unsafe {
-                    (lib.create_port_ex2)(
-                        wide_name.as_ptr(),
-                        std::ptr::null(),
-                        std::ptr::null_mut(),
-                        65535,
-                        *flags,
-                    )
-                };
+            for attempt in &attempts {
+                if let Some((h, input_created)) = lib.try_create_port(
+                    &wide_name,
+                    attempt.flags,
+                    attempt.callback,
+                    attempt.label,
+                    midi_in_before,
+                    midi_out_before,
+                ) {
+                    if input_created {
+                        final_handle = h;
+                        final_label = attempt.label;
+                        midi_input_ok = true;
+                        break;
+                    }
 
-                if h.is_null() {
-                    let err = std::io::Error::last_os_error();
-                    warn!(flags = label, "Port creation failed: {}", err);
-                    continue;
+                    // Port created but no MIDI Input - close and try next
+                    unsafe { (lib.close_port)(h) };
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                 }
-
-                // Wait for Windows to register the MIDI device
-                std::thread::sleep(std::time::Duration::from_millis(200));
-
-                let midi_in_now = unsafe { ffi::midiInGetNumDevs() };
-                let midi_out_now = unsafe { ffi::midiOutGetNumDevs() };
-
-                info!(
-                    flags = label,
-                    flags_hex = format!("{:#x}", flags),
-                    midi_in = format!("{} -> {}", midi_in_before, midi_in_now),
-                    midi_out = format!("{} -> {}", midi_out_before, midi_out_now),
-                    "Port created, checking device registration"
-                );
-
-                if midi_in_now > midi_in_before {
-                    info!(flags = label, "MIDI Input device created successfully");
-                    final_handle = h;
-                    final_label = label;
-                    midi_input_ok = true;
-                    break;
-                }
-
-                // Also check if midi_out increased (at least the port IS registering something)
-                if midi_out_now > midi_out_before {
-                    info!(flags = label, "MIDI Output created but not Input - trying next flags");
-                }
-
-                warn!(flags = label, "Port handle valid but no new MIDI devices registered");
-                unsafe { (lib.close_port)(h) };
-                std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            // Fallback: use any port that at least returns a handle
+            // If nothing created MIDI Input, use first working port as fallback
             if final_handle.is_null() {
-                warn!("No flags created MIDI Input - falling back to first working port");
+                warn!("No attempt created MIDI Input - falling back to any working port");
                 let h = unsafe {
                     (lib.create_port_ex2)(
                         wide_name.as_ptr(),
-                        std::ptr::null(),
+                        midi_data_callback as *const std::ffi::c_void,
                         std::ptr::null_mut(),
                         65535,
                         ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
@@ -360,7 +433,7 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                 };
                 if !h.is_null() {
                     final_handle = h;
-                    final_label = "fallback (PARSE_RX|INSTANTIATE_BOTH)";
+                    final_label = "fallback+callback";
                 }
             }
 
@@ -372,7 +445,7 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
             }
 
             // Final diagnostics
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(300));
             let midi_in_final = unsafe { ffi::midiInGetNumDevs() };
             let midi_out_final = unsafe { ffi::midiOutGetNumDevs() };
 
@@ -383,11 +456,10 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                     flags = final_label,
                     midi_in = midi_in_final,
                     midi_out = midi_out_final,
-                    "CRITICAL: Virtual MIDI port handle created but NO MIDI devices registered in Windows. \
-                     The teVirtualMIDI kernel driver may not be properly installed. \
-                     Try: (1) Install loopMIDI from https://www.tobias-erichsen.de/software/loopmidi.html \
-                     (2) Or reinstall teVirtualMIDI SDK from https://www.tobias-erichsen.de/software/virtualmidi.html \
-                     (3) Reboot after installation"
+                    "CRITICAL: No MIDI Input device registered despite port creation succeeding. \
+                     The teVirtualMIDI kernel driver is loaded but not registering devices. \
+                     FIX: Install loopMIDI from https://www.tobias-erichsen.de/software/loopmidi.html \
+                     then reboot. loopMIDI reinstalls the kernel driver properly."
                 );
             }
 
