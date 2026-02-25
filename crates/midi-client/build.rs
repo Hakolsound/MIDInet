@@ -1,10 +1,15 @@
 fn main() {
     // Tell the linker where to find teVirtualMIDI.lib on Windows.
-    // Searches: SDK install path, then project root as fallback.
+    // Searches: bundled lib in repo first, then SDK install paths as fallback.
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+
         let search_paths = [
-            r"C:\Program Files (x86)\Tobias Erichsen\teVirtualMIDISDK\C-Binding\x64",
-            r"C:\Program Files\Tobias Erichsen\teVirtualMIDISDK\C-Binding\x64",
+            // Bundled in repo (preferred — no SDK install needed)
+            format!(r"{}\lib\x64", manifest_dir),
+            // SDK install paths (fallback)
+            r"C:\Program Files (x86)\Tobias Erichsen\teVirtualMIDISDK\C-Binding\x64".to_string(),
+            r"C:\Program Files\Tobias Erichsen\teVirtualMIDISDK\C-Binding\x64".to_string(),
         ];
 
         for path in &search_paths {
@@ -14,17 +19,10 @@ fn main() {
             }
         }
 
-        // Fallback: check if .lib was copied next to Cargo.toml or in the workspace root
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            println!("cargo:rustc-link-search=native={}", manifest_dir);
-        }
-        if let Ok(workspace_dir) = std::env::var("CARGO_WORKSPACE_DIR") {
-            println!("cargo:rustc-link-search=native={}", workspace_dir);
-        }
-
         eprintln!(
-            "warning: teVirtualMIDI.lib not found in SDK paths. \
-             Install the teVirtualMIDI SDK from https://www.tobias-erichsen.de/software/virtualmidi.html"
+            "warning: teVirtualMIDI.lib not found. \
+             Either place it in crates/midi-client/lib/x64/ or install the SDK from \
+             https://www.tobias-erichsen.de/software/virtualmidi.html"
         );
     }
 }
