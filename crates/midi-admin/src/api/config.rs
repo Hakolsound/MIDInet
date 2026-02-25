@@ -59,12 +59,15 @@ impl Default for OscConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MidiConfig {
     pub active_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_device: Option<String>,
 }
 
 impl Default for MidiConfig {
     fn default() -> Self {
         Self {
             active_device: None,
+            backup_device: None,
         }
     }
 }
@@ -97,6 +100,7 @@ pub async fn build_config_from_state(state: &AppState) -> MidinetConfig {
     let alert_config = state.inner.alert_manager.get_config();
     let osc_state = state.inner.osc_port_state.read().await;
     let active_device = state.inner.active_device.read().await;
+    let backup_device = state.inner.backup_device.read().await;
 
     MidinetConfig {
         pipeline,
@@ -107,6 +111,7 @@ pub async fn build_config_from_state(state: &AppState) -> MidinetConfig {
         }),
         midi: Some(MidiConfig {
             active_device: active_device.clone(),
+            backup_device: backup_device.clone(),
         }),
     }
 }

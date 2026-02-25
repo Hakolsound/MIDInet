@@ -1,0 +1,103 @@
+[pipeline]
+channel_filter = [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+]
+channel_remap = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+]
+transpose = [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+]
+velocity_curve = "linear"
+sysex_passthrough = true
+
+[pipeline.message_filter]
+note_on = true
+note_off = true
+control_change = true
+program_change = true
+pitch_bend = true
+aftertouch = true
+sysex = true
+clock = true
+
+[failover]
+auto_enabled = true
+switch_back_policy = "manual"
+lockout_seconds = 5
+confirmation_mode = "immediate"
+
+[failover.heartbeat]
+interval_ms = 3
+miss_threshold = 3
+
+[failover.triggers.midi]
+enabled = false
+channel = 16
+note = 127
+velocity_threshold = 100
+guard_note = 0
+
+[failover.triggers.osc]
+enabled = false
+listen_port = 8000
+address = "/midinet/failover/switch"
+allowed_sources = []
+
+[alerts]
+cpu_temp_max_c = 80.0
+packet_loss_max_percent = 1.0
+latency_p95_max_ms = 10.0
+client_disconnect_max_secs = 30
+disk_free_min_mb = 100
+webhook_enabled = false
+
+[osc]
+listen_port = 8000
+
+[midi]

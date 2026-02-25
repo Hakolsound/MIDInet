@@ -2,6 +2,7 @@
 /// Collects metrics, status, and configuration from the system.
 /// All fields are thread-safe for use with axum's State extractor.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -212,6 +213,15 @@ impl Default for MidiDeviceStatus {
     }
 }
 
+/// Per-device MIDI activity tracking for the identify panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceActivity {
+    pub device_id: String,
+    pub last_activity_ms: u64,
+    pub last_message: String,
+    pub message_count: u64,
+}
+
 // Default value helpers
 fn default_true() -> bool { true }
 fn default_switch_back_policy() -> String { "manual".to_string() }
@@ -238,6 +248,7 @@ pub struct AppStateInner {
     pub clients: RwLock<Vec<ClientInfo>>,
     pub devices: RwLock<Vec<MidiDeviceInfo>>,
     pub active_device: RwLock<Option<String>>,
+    pub backup_device: RwLock<Option<String>>,
     pub midi_metrics: RwLock<MidiMetrics>,
     pub failover_state: RwLock<FailoverState>,
     pub focus_state: RwLock<FocusInfo>,
@@ -267,6 +278,12 @@ pub struct AppStateInner {
     pub active_preset: RwLock<Option<String>>,
     /// Input redundancy state (dual-controller → single-host)
     pub input_redundancy: RwLock<InputRedundancyState>,
+    /// Per-device MIDI activity (for the activity monitor in Settings)
+    pub device_activity: RwLock<HashMap<String, DeviceActivity>>,
+    /// Broadcast channel for per-device MIDI activity updates
+    pub device_activity_tx: broadcast::Sender<String>,
+    /// Pending identify requests: device_id → requested_at epoch ms
+    pub identify_requests: RwLock<HashMap<String, u64>>,
 }
 
 impl AppState {
@@ -280,6 +297,7 @@ impl AppState {
                 clients: RwLock::new(Vec::new()),
                 devices: RwLock::new(Vec::new()),
                 active_device: RwLock::new(None),
+                backup_device: RwLock::new(None),
                 midi_metrics: RwLock::new(MidiMetrics::default()),
                 failover_state: RwLock::new(FailoverState::default()),
                 focus_state: RwLock::new(FocusInfo::default()),
@@ -297,6 +315,9 @@ impl AppState {
                 midi_device_status: RwLock::new(MidiDeviceStatus::default()),
                 active_preset: RwLock::new(None),
                 input_redundancy: RwLock::new(InputRedundancyState::default()),
+                device_activity: RwLock::new(HashMap::new()),
+                device_activity_tx: broadcast::channel(128).0,
+                identify_requests: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -322,10 +343,13 @@ impl AppState {
             osc_state.port = osc.listen_port;
         }
 
-        // Apply MIDI device setting
+        // Apply MIDI device settings
         if let Some(ref midi) = config.midi {
             if let Some(ref device) = midi.active_device {
                 *self.inner.active_device.write().await = Some(device.clone());
+            }
+            if let Some(ref device) = midi.backup_device {
+                *self.inner.backup_device.write().await = Some(device.clone());
             }
         }
 

@@ -71,6 +71,8 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let midi_device_status = state.inner.midi_device_status.read().await;
             let active_preset = state.inner.active_preset.read().await;
             let input_red = state.inner.input_redundancy.read().await;
+            let device_activity = state.inner.device_activity.read().await;
+            let identify_reqs = state.inner.identify_requests.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -117,6 +119,8 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                     "osc_status": osc_state.status,
                     "active_preset": *active_preset,
                 },
+                "device_activity": *device_activity,
+                "identify_active": identify_reqs.keys().collect::<Vec<_>>(),
             })
         };
 
@@ -263,4 +267,65 @@ async fn handle_traffic_ws(mut socket: WebSocket, state: AppState) {
     }
 
     debug!("WebSocket traffic sniffer disconnected");
+}
+
+/// Handler for /ws/device-activity — per-device MIDI activity stream
+pub async fn ws_device_activity_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_device_activity_ws(socket, state))
+}
+
+async fn handle_device_activity_ws(mut socket: WebSocket, state: AppState) {
+    info!("WebSocket device-activity client connected");
+    log_ws_event(&state, "device-activity client connected");
+
+    // Send initial snapshot
+    {
+        let activity = state.inner.device_activity.read().await;
+        let snapshot = json!({ "type": "snapshot", "activity": *activity });
+        if socket
+            .send(Message::Text(snapshot.to_string().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+
+    let mut rx = state.inner.device_activity_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        let wrapped = format!(r#"{{"type":"update","data":{msg}}}"#);
+                        if socket.send(Message::Text(wrapped.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("device-activity ws lagged by {n} messages");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    log_ws_event(&state, "device-activity client disconnected");
+    debug!("WebSocket device-activity client disconnected");
 }

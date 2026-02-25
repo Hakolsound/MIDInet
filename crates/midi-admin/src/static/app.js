@@ -1,1745 +1,1193 @@
-/* ═══════════════════════════════════════════════════════════
-   MIDInet Dashboard — Real-time monitoring
-   Vanilla JS · WebSocket · Canvas sparkline
-   ═══════════════════════════════════════════════════════════ */
-(function () {
-    'use strict';
+// ══════════════════════════════════════════════════════════════
+// MIDInet Admin Panel — Preact + HTM (no build step)
+// ══════════════════════════════════════════════════════════════
 
-    // ── DOM shortcuts ──
-    const $ = (id) => document.getElementById(id);
+import { h, render, createContext } from 'https://esm.sh/preact@10.25.4';
+import {
+  useState, useEffect, useRef, useReducer,
+  useContext, useMemo
+} from 'https://esm.sh/preact@10.25.4/hooks';
+import htm from 'https://esm.sh/htm@3.1.1';
 
-    // ── Channel display names ──
-    const CH_NAMES = {
-        midi_in: 'MIDI In',
-        midi_out: 'MIDI Out',
-        osc: 'OSC',
-        api: 'API',
-        ws: 'WebSocket',
+const html = htm.bind(h);
+
+// ── SVG Icons ─────────────────────────────────────────────────
+const svgAttrs = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+
+const ICO = {
+  grid: () => html`<svg ...${svgAttrs}><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>`,
+  sliders: () => html`<svg ...${svgAttrs}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`,
+  gear: () => html`<svg ...${svgAttrs}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>`,
+  help: () => html`<svg ...${svgAttrs}><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  bell: () => html`<svg ...${svgAttrs}><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>`,
+  x: () => html`<svg ...${svgAttrs}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  server: () => html`<svg ...${svgAttrs}><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
+  users: () => html`<svg ...${svgAttrs}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>`,
+  usb: () => html`<svg ...${svgAttrs}><rect x="4" y="14" width="16" height="8" rx="2"/><line x1="8" y1="14" x2="8" y2="10"/><line x1="16" y1="14" x2="16" y2="10"/><line x1="12" y1="14" x2="12" y2="6"/><circle cx="12" cy="4" r="2"/></svg>`,
+  wifi: () => html`<svg ...${svgAttrs}><path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`,
+  search: () => html`<svg ...${svgAttrs}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  music: () => html`<svg ...${svgAttrs}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
+};
+
+// ── Utilities ─────────────────────────────────────────────────
+const fmtUp = (s) => {
+  if (!s) return '0m';
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+const fmtRate = (v) => v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(Math.round(v));
+const fmtDur = (ms) => { const s = Math.floor(ms / 1000); if (s < 60) return `${s}s`; const m = Math.floor(s / 60); if (m < 60) return `${m}m ${s % 60}s`; return `${Math.floor(m / 60)}h ${m % 60}m`; };
+const healthLv = (s) => s >= 80 ? 'ok' : s >= 50 ? 'warn' : 'crit';
+const cpuLv = (p) => p < 60 ? 'ok' : p < 85 ? 'warn' : 'crit';
+const tempLv = (c) => c < 55 ? 'ok' : c < 70 ? 'warn' : 'crit';
+let _tid = 0;
+const mkToast = (type, message) => ({ id: ++_tid, type, message, ts: Date.now() });
+const copyText = async (text, dispatch) => {
+  try { await navigator.clipboard.writeText(text); dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Copied') }); }
+  catch { dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Copy failed') }); }
+};
+const apiFetch = async (url, opts = {}) => {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json', ...opts.headers }, ...opts });
+  return res.json();
+};
+
+// ── State Management ──────────────────────────────────────────
+const AppContext = createContext();
+
+const INIT = {
+  page: 'overview',
+  wsOk: false,
+  status: {
+    health_score: 0, cpu_percent: 0, cpu_temp_c: 0, memory_used_mb: 0, uptime: 0,
+    midi: { messages_per_sec: 0, active_notes: 0, bytes_per_sec: 0 },
+    failover: { active_host: 'primary', standby_healthy: false, auto_enabled: true },
+    traffic: { midi_in_per_sec: 0, midi_out_per_sec: 0, osc_per_sec: 0, api_per_sec: 0, ws_connections: 0 },
+    input_redundancy: { enabled: false, active_input: 0, active_label: 'primary', primary_health: 'unknown', secondary_health: 'unknown', switch_count: 0 },
+    host_count: 0, client_count: 0, active_alerts: 0,
+    settings: { midi_device_status: 'disconnected', osc_port: 8000, osc_status: 'stopped', active_preset: null },
+  },
+  hosts: [], clients: [], devices: [], alerts: [],
+  pipeline: null, settings: null, presets: [], failoverDetail: null,
+  sparkData: [], toasts: [], warningPopups: [],
+  trafficLastSeen: { midi_in: 0, midi_out: 0, osc: 0, api: 0 },
+  snifferOpen: false, snifferEntries: [], snifferFilter: 'all',
+  modal: null,
+  deviceActivity: {}, identifyActive: {},
+};
+
+function reducer(state, action) {
+  switch (action.type) {
+    case 'SET_PAGE': return { ...state, page: action.page };
+    case 'WS_OK': return { ...state, wsOk: action.v };
+    case 'WS_STATUS': {
+      const d = action.data;
+      const spark = [...state.sparkData, d.midi?.messages_per_sec || 0];
+      if (spark.length > 120) spark.shift();
+      const now = Date.now();
+      const tr = d.traffic || {};
+      const ls = { ...state.trafficLastSeen };
+      if (tr.midi_in_per_sec > 0) ls.midi_in = now;
+      if (tr.midi_out_per_sec > 0) ls.midi_out = now;
+      if (tr.osc_per_sec > 0) ls.osc = now;
+      if (tr.api_per_sec > 0) ls.api = now;
+      const da = d.device_activity || state.deviceActivity;
+      const ia = {};
+      (d.identify_active || []).forEach(id => { ia[id] = true; });
+      return { ...state, status: { ...state.status, ...d }, sparkData: spark, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia };
+    }
+    case 'SET_HOSTS': return { ...state, hosts: action.data || [] };
+    case 'SET_CLIENTS': return { ...state, clients: action.data || [] };
+    case 'SET_DEVICES': return { ...state, devices: action.data || [] };
+    case 'SET_ALERTS': {
+      const next = action.data || [];
+      const prevKeys = state.alerts.map(a => a.source + ':' + a.state).sort().join(',');
+      const nextKeys = next.map(a => a.source + ':' + a.state).sort().join(',');
+      if (prevKeys === nextKeys) return state;
+      return { ...state, alerts: next };
+    }
+    case 'SET_PIPELINE': return { ...state, pipeline: action.data };
+    case 'SET_SETTINGS': return { ...state, settings: action.data };
+    case 'SET_PRESETS': return { ...state, presets: action.data || [] };
+    case 'SET_FAILOVER': return { ...state, failoverDetail: action.data };
+    case 'ADD_TOAST': return { ...state, toasts: [...state.toasts, action.toast].slice(-5) };
+    case 'RM_TOAST': return { ...state, toasts: state.toasts.filter(t => t.id !== action.id) };
+    case 'WARNING_SHOW': {
+      const filtered = state.warningPopups.filter(w => w.alertSource !== action.popup.alertSource);
+      return { ...state, warningPopups: [...filtered, action.popup].slice(-3) };
+    }
+    case 'WARNING_DISMISS': return { ...state, warningPopups: state.warningPopups.filter(w => w.alertSource !== action.source) };
+    case 'SNIFFER_OPEN': return { ...state, snifferOpen: true, snifferEntries: [] };
+    case 'SNIFFER_CLOSE': return { ...state, snifferOpen: false };
+    case 'SNIFFER_ENTRY': {
+      const e = [...state.snifferEntries, action.entry]; if (e.length > 500) e.shift();
+      return { ...state, snifferEntries: e };
+    }
+    case 'SNIFFER_FILTER': return { ...state, snifferFilter: action.f };
+    case 'MODAL': return { ...state, modal: action.modal };
+    case 'MODAL_CLOSE': return { ...state, modal: null };
+    case 'DEVICE_ACTIVITY_SNAPSHOT': return { ...state, deviceActivity: action.data || {} };
+    case 'DEVICE_ACTIVITY_UPDATE': {
+      const u = action.data;
+      return { ...state, deviceActivity: { ...state.deviceActivity, [u.device_id]: u } };
+    }
+    case 'IDENTIFY_START': return { ...state, identifyActive: { ...state.identifyActive, [action.deviceId]: true } };
+    case 'IDENTIFY_END': {
+      const next = { ...state.identifyActive }; delete next[action.deviceId];
+      return { ...state, identifyActive: next };
+    }
+    default: return state;
+  }
+}
+
+// ── Custom Hooks ──────────────────────────────────────────────
+function useWS(url, onMsg, onStatus) {
+  useEffect(() => {
+    let ws, timer, delay = 1000, active = true;
+    const connect = () => {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}${url}`);
+      ws.onopen = () => { delay = 1000; onStatus?.(true); };
+      ws.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch {} };
+      ws.onclose = () => { onStatus?.(false); if (active) { timer = setTimeout(connect, delay); delay = Math.min(delay * 1.5, 10000); } };
+      ws.onerror = () => ws.close();
     };
+    connect();
+    return () => { active = false; clearTimeout(timer); ws?.close(); };
+  }, [url]);
+}
 
-    // ── State ──
-    const S = {
-        ws: null,
-        reconnectMs: 1000,
-        maxReconnectMs: 30000,
-        connected: false,
-        memTotal: 1024,
-        // Sparkline ring buffer — 120 samples (2 min at 1/s)
-        spark: new Float32Array(120),
-        sparkLen: 0,
-        sparkIdx: 0,
-        // Sniffer panel
-        snifferWs: null,
-        snifferChannel: null,
-        snifferAutoScroll: true,
-        snifferMaxEntries: 200,
-        // Traffic activity recency tracking
-        trafficLastActive: {
-            midi_in: 0, midi_out: 0, osc: 0, api: 0, ws: 0,
-        },
-        // Settings
-        settingsLoaded: false,
-        settingsData: null,
-        presets: [],
-        // Signal flow data (from REST)
-        devices: [],
-        activeDevice: null,
-        hosts: [],
-        clients: [],
-        lastStatus: null,
-        // Auto-failover confirmation guard
-        autoFoPending: false,
-        pendingAutoFo: false,
-        // Capture mode
-        captureWs: null,
-        captureType: null,
-        captureTimeout: null,
-        // Signal flow SVG
-        sfSvg: null,
-        sfPaths: null,
-        sfLabels: null,
-        sfParticles: null,
-        sfRafId: null,
-        sfConnectors: [],
-        sfParticlePool: [],
-        sfResizeObserver: null,
-        sfPrefersReducedMotion: false,
-        _sfLastTime: 0,
-        _sfLastClientIds: '',
+function usePoll(url, ms, cb) {
+  useEffect(() => {
+    let on = true;
+    const go = () => fetch(url).then(r => r.json()).then(d => { if (on) cb(d); }).catch(() => {});
+    go(); const id = setInterval(go, ms);
+    return () => { on = false; clearInterval(id); };
+  }, [url, ms]);
+}
+
+function useSparkline(ref, data, color = '#0a84ff') {
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || data.length < 2) return;
+    const ctx = c.getContext('2d'), dpr = devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr; ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    const max = Math.max(...data, 1), step = w / (data.length - 1);
+    const y = (v) => h - (v / max) * h * 0.85 - 2;
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, color + '28'); grad.addColorStop(1, color + '03');
+    ctx.beginPath(); ctx.moveTo(0, h);
+    data.forEach((v, i) => ctx.lineTo(i * step, y(v)));
+    ctx.lineTo(w, h); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath();
+    data.forEach((v, i) => { i === 0 ? ctx.moveTo(i * step, y(v)) : ctx.lineTo(i * step, y(v)); });
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+    const lx = (data.length - 1) * step, ly = y(data[data.length - 1]);
+    ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+  }, [data, color]);
+}
+
+// ── Header ────────────────────────────────────────────────────
+function alertAge(ts) {
+  if (!ts) return { label: '', color: 'var(--text-3)' };
+  const secs = Math.floor(Date.now() / 1000) - ts;
+  const color = secs < 60 ? 'var(--green)' : secs < 600 ? 'var(--orange)' : 'var(--text-3)';
+  let label;
+  if (secs < 60) label = 'just now';
+  else if (secs < 3600) label = Math.floor(secs / 60) + 'm ago';
+  else if (secs < 86400) label = Math.floor(secs / 3600) + 'h ago';
+  else label = Math.floor(secs / 86400) + 'd ago';
+  return { label, color };
+}
+
+function Header() {
+  const { state } = useContext(AppContext);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const s = state.status;
+  const role = s.failover?.active_host || 'primary';
+  const lv = healthLv(s.health_score);
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'control', label: 'Control' },
+    { id: 'settings', label: 'Settings' },
+    { id: 'help', label: 'Help' },
+  ];
+  const alerts = state.alerts || [];
+  return html`<header class="header">
+    <div class="header-brand">
+      <img src="/logo.png" width="24" height="24" alt="hakol" style="border-radius:6px" />
+      MIDInet
+    </div>
+    <span class="header-conn" data-ok=${String(state.wsOk)} />
+    <nav class="nav-tabs">
+      ${tabs.map(t => html`
+        <button class="nav-tab ${state.page === t.id ? 'active' : ''}" key=${t.id}
+          onClick=${() => { window.location.hash = '#' + t.id; }}>${t.label}</button>
+      `)}
+    </nav>
+    <div class="header-spacer" />
+    <div class="header-role" data-role=${role}>${role.toUpperCase()}</div>
+    <div class="header-health">
+      <span class="header-health-value" style="color:var(--${lv === 'ok' ? 'green' : lv === 'warn' ? 'orange' : 'red'})">${s.health_score}</span>
+      <span class="header-health-pts" style="color:var(--${lv === 'ok' ? 'green' : lv === 'warn' ? 'orange' : 'red'})">pts</span>
+    </div>
+    <button class="header-alerts" onClick=${() => setAlertsOpen(!alertsOpen)}>
+      ${ICO.bell()}
+      ${s.active_alerts > 0 && html`<span class="header-alerts-badge">${s.active_alerts}</span>`}
+      ${alertsOpen && html`
+        <div class="alerts-dropdown" onClick=${(e) => e.stopPropagation()}>
+          <div class="alerts-dropdown-header">
+            Alerts
+            <span>${alerts.length} active</span>
+          </div>
+          <div class="alerts-dropdown-list">
+            ${alerts.length === 0 && html`<div class="alerts-dropdown-empty">No active alerts</div>`}
+            ${alerts.map(a => {
+              const age = alertAge(a.triggered_at);
+              return html`
+              <div class="alert-item" key=${a.id}>
+                <div class="alert-item-dot" data-sev=${a.severity} />
+                <div class="alert-item-body">
+                  <div class="alert-item-title">${a.title}</div>
+                  <div class="alert-item-msg">${a.message}</div>
+                </div>
+                <div class="alert-item-time" style="color:${age.color}">${age.label}</div>
+              </div>`;
+            })}
+          </div>
+        </div>
+      `}
+    </button>
+    ${alertsOpen && html`<div class="alerts-overlay" onClick=${() => setAlertsOpen(false)} />`}
+  </header>`;
+}
+
+// ── Footer ────────────────────────────────────────────────────
+function Footer() {
+  const { state } = useContext(AppContext);
+  const s = state.status;
+  return html`<footer class="footer">
+    <div class="footer-item"><span class="footer-label">CPU</span><span class="footer-val" data-lv=${cpuLv(s.cpu_percent)}>${Math.round(s.cpu_percent)}%</span></div>
+    <span class="footer-sep" />
+    <div class="footer-item"><span class="footer-label">Temp</span><span class="footer-val" data-lv=${tempLv(s.cpu_temp_c)}>${Math.round(s.cpu_temp_c)}°C</span></div>
+    <span class="footer-sep" />
+    <div class="footer-item"><span class="footer-label">RAM</span><span class="footer-val">${s.memory_used_mb}MB</span></div>
+    <span class="footer-sep" />
+    <div class="footer-item"><span class="footer-label">MIDI</span><span class="footer-val" data-lv="data">${fmtRate(s.midi?.messages_per_sec || 0)}/s</span></div>
+    <div class="footer-spacer" />
+    <div class="footer-item"><span class="footer-label">Up</span><span class="footer-val">${fmtUp(s.uptime)}</span></div>
+  </footer>`;
+}
+
+// ── Overlays ──────────────────────────────────────────────────
+function ConfirmModal() {
+  const { state, dispatch } = useContext(AppContext);
+  const m = state.modal;
+  if (!m) return null;
+  const close = () => dispatch({ type: 'MODAL_CLOSE' });
+  const confirm = () => { m.onConfirm?.(); close(); };
+  return html`<div class="modal-backdrop open" onClick=${close}>
+    <div class="modal" onClick=${(e) => e.stopPropagation()}>
+      <div class="modal-header">${m.title}</div>
+      <div class="modal-body">${m.message}</div>
+      <div class="modal-footer">
+        <button class="btn" onClick=${close}>Cancel</button>
+        <button class="btn ${m.cls || 'btn-accent'}" onClick=${confirm}>${m.ok || 'Confirm'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Warning Popups (buzzing seatbelt) ────────────────────────
+function useWarningPopups(alerts, dispatch) {
+  const trackRef = useRef({});  // { [source]: { firstSeen, lastShown, showCount } }
+
+  useEffect(() => {
+    const list = alerts || [];
+    const ts = trackRef.current;
+    const now = Date.now();
+    const activeSources = new Set(list.map(a => a.source));
+
+    // Resolved alerts — fire success toast
+    for (const src of Object.keys(ts)) {
+      if (!activeSources.has(src)) {
+        const dur = fmtDur(now - ts[src].firstSeen);
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Resolved: ${src.replace(/_/g, ' ')} (was active ${dur})`) });
+        delete ts[src];
+      }
+    }
+
+    // New alerts — show immediately
+    for (const alert of list) {
+      if (!ts[alert.source]) {
+        ts[alert.source] = { firstSeen: now, lastShown: now, showCount: 1 };
+        _showWarning(alert, ts[alert.source], dispatch);
+      }
+    }
+  }, [alerts]);
+
+  // 1s tick for re-appearances
+  useEffect(() => {
+    const id = setInterval(() => {
+      const list = alerts || [];
+      const ts = trackRef.current;
+      const now = Date.now();
+      for (const alert of list) {
+        const t = ts[alert.source];
+        if (!t) continue;
+        const interval = alert.severity === 'Critical' ? 15000 : 30000;
+        if (now - t.lastShown >= interval) {
+          t.lastShown = now;
+          t.showCount += 1;
+          _showWarning(alert, t, dispatch);
+        }
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [alerts]);
+}
+
+function _showWarning(alert, tracking, dispatch) {
+  const dur = fmtDur(Date.now() - tracking.firstSeen);
+  const n = tracking.showCount;
+  let message = alert.message;
+  if (n >= 4) message = `${alert.message} \u2014 active for ${dur} (warned ${n}x)`;
+  else if (n > 1) message = `${alert.message} \u2014 active for ${dur}`;
+
+  dispatch({ type: 'WARNING_SHOW', popup: {
+    alertSource: alert.source, severity: alert.severity,
+    title: alert.title, message, showCount: n, duration: dur, createdAt: Date.now(),
+  }});
+
+  setTimeout(() => dispatch({ type: 'WARNING_DISMISS', source: alert.source }), 5000);
+}
+
+function WarningPopupContainer() {
+  const { state, dispatch } = useContext(AppContext);
+  const popups = state.warningPopups || [];
+  if (!popups.length) return null;
+  return html`<div class="warning-popup-container">
+    ${popups.map(p => html`
+      <div class="warning-popup" data-sev=${p.severity} key=${p.alertSource}>
+        <div class="warning-popup-header">
+          <span class="warning-popup-dot" data-sev=${p.severity} />
+          <span class="warning-popup-title">${p.title}</span>
+          <button class="warning-popup-close" onClick=${() => dispatch({ type: 'WARNING_DISMISS', source: p.alertSource })}>
+            ${ICO.x()}
+          </button>
+        </div>
+        <div class="warning-popup-body">${p.message}</div>
+        ${p.showCount > 1 && html`<div class="warning-popup-meta">Active for ${p.duration}</div>`}
+        <div class="warning-popup-progress" data-sev=${p.severity} />
+      </div>
+    `)}
+  </div>`;
+}
+
+function ToastContainer() {
+  const { state, dispatch } = useContext(AppContext);
+  useEffect(() => {
+    if (!state.toasts.length) return;
+    const t = state.toasts[0];
+    const rem = Math.max(4000 - (Date.now() - t.ts), 100);
+    const id = setTimeout(() => dispatch({ type: 'RM_TOAST', id: t.id }), rem);
+    return () => clearTimeout(id);
+  }, [state.toasts]);
+  return html`<div class="toast-container">
+    ${state.toasts.map(t => html`<div class="toast" data-type=${t.type} key=${t.id}><span class="toast-dot" />${t.message}</div>`)}
+  </div>`;
+}
+
+function SnifferDrawer() {
+  const { state, dispatch } = useContext(AppContext);
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    if (!state.snifferOpen) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/traffic`);
+    ws.onmessage = (e) => { try { dispatch({ type: 'SNIFFER_ENTRY', entry: JSON.parse(e.data) }); } catch {} };
+    return () => ws.close();
+  }, [state.snifferOpen]);
+  useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [state.snifferEntries.length]);
+  const list = state.snifferFilter === 'all' ? state.snifferEntries : state.snifferEntries.filter(e => e.ch === state.snifferFilter);
+  const chColor = { midi: 'accent', osc: 'green', api: 'orange', ws: 'text-3' };
+  return html`<div class="sniffer-backdrop ${state.snifferOpen ? 'open' : ''}" onClick=${() => dispatch({ type: 'SNIFFER_CLOSE' })}>
+    <div class="sniffer-panel" onClick=${(e) => e.stopPropagation()}>
+      <div class="sniffer-header">
+        <span class="sniffer-title">Traffic Sniffer</span>
+        <div class="flex items-center gap-sm">
+          <select value=${state.snifferFilter} onChange=${(e) => dispatch({ type: 'SNIFFER_FILTER', f: e.target.value })}>
+            <option value="all">All</option><option value="midi">MIDI</option><option value="osc">OSC</option><option value="api">API</option><option value="ws">WS</option>
+          </select>
+          <button class="btn btn-sm btn-icon" onClick=${() => dispatch({ type: 'SNIFFER_CLOSE' })}>${ICO.x()}</button>
+        </div>
+      </div>
+      <div class="sniffer-body" ref=${bodyRef}>
+        ${list.length === 0 && html`<div class="empty-state">Waiting for traffic...</div>`}
+        ${list.map((e, i) => html`<div class="sniffer-line" key=${i}>
+          <span class="sniffer-ts">${new Date(e.ts * 1000).toLocaleTimeString()}</span>
+          <span style="color:var(--${chColor[e.ch] || 'text-3'});width:36px;font-size:10px;text-transform:uppercase;font-weight:600">${e.ch}</span>
+          <span class="sniffer-msg">${e.msg}</span>
+        </div>`)}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Overview Page ─────────────────────────────────────────────
+function OverviewPage() {
+  return html`<div class="overview-grid">
+    <${ControllersCard} />
+    <${MidiDataCard} />
+    <${NetworkCard} />
+    <${ClientsCard} />
+  </div>`;
+}
+
+function ControllersCard() {
+  const { state } = useContext(AppContext);
+  const s = state.status;
+  const dev = s.settings?.midi_device_status || 'disconnected';
+  const midi = s.midi || {};
+  const ir = s.input_redundancy || {};
+  const hMap = { active: 'ok', disconnected: 'error', error: 'error', unknown: 'idle' };
+  const primaryName = ir.primary_device || 'Primary';
+  const secondaryName = ir.secondary_device || 'Secondary';
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">${ICO.usb()}</span>
+      Controllers
+    </div>
+    <div class="card-body">
+      <div class="ctrl-device">
+        <span class="status-dot" data-status=${dev === 'connected' ? 'ok' : dev === 'switching' ? 'warn' : 'disconnected'} />
+        <span class="ctrl-device-name">${primaryName}</span>
+        <span class="ctrl-device-rate">${dev === 'connected' ? fmtRate(midi.messages_per_sec || 0) + '/s' : 'Disconnected'}</span>
+      </div>
+      <div class="ctrl-section-label">Input Redundancy${ir.enabled === false ? ' (Disabled)' : ''}</div>
+      <div class="input-red">
+        <div class="input-red-item ${ir.active_input === 0 ? 'active' : ''}">
+          <div class="input-red-icon">${ICO.usb()}</div>
+          <div class="input-red-info">
+            <div class="input-red-label">${primaryName}</div>
+            <div class="input-red-status">
+              <span class="status-dot" data-status=${hMap[ir.primary_health] || 'idle'} />${ir.primary_health || 'unknown'}
+              ${ir.active_input === 0 && html`<span style="color:var(--accent);font-weight:600;margin-left:4px">ACTIVE</span>`}
+            </div>
+          </div>
+        </div>
+        <div class="input-red-item ${ir.active_input === 1 ? 'active' : ''}">
+          <div class="input-red-icon">${ICO.usb()}</div>
+          <div class="input-red-info">
+            <div class="input-red-label">${secondaryName}</div>
+            <div class="input-red-status">
+              <span class="status-dot" data-status=${hMap[ir.secondary_health] || 'idle'} />${ir.secondary_health || 'unknown'}
+              ${ir.active_input === 1 && html`<span style="color:var(--accent);font-weight:600;margin-left:4px">ACTIVE</span>`}
+            </div>
+          </div>
+        </div>
+      </div>
+      ${ir.switch_count > 0 && html`<div class="mono mt-sm" style="font-size:10px;color:var(--text-3)">${ir.switch_count} switch${ir.switch_count !== 1 ? 'es' : ''}</div>`}
+    </div>
+  </div>`;
+}
+
+function MidiDataCard() {
+  const { state } = useContext(AppContext);
+  const ref = useRef(null);
+  useSparkline(ref, state.sparkData);
+  const midi = state.status.midi || {};
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">${ICO.music()}</span>
+      MIDI Data
+    </div>
+    <div class="card-body-flush" style="flex:1;min-height:0;padding:8px 12px">
+      <div class="spark-wrap"><canvas ref=${ref} /></div>
+    </div>
+    <div class="midi-stats">
+      <div class="midi-stat">
+        <span class="midi-stat-value">${fmtRate(midi.messages_per_sec || 0)}</span>
+        <span class="midi-stat-label">msg/s</span>
+      </div>
+      <div class="midi-stat">
+        <span class="midi-stat-value">${midi.active_notes || 0}</span>
+        <span class="midi-stat-label">notes</span>
+      </div>
+      <div class="midi-stat">
+        <span class="midi-stat-value">${midi.bytes_per_sec ? (midi.bytes_per_sec / 1024).toFixed(1) : '0'}</span>
+        <span class="midi-stat-label">KB/s</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function trafficColor(lastSeen) {
+  if (!lastSeen) return 'var(--text-3)';
+  const age = Date.now() - lastSeen;
+  if (age < 3000) return 'var(--green)';
+  if (age < 15000) return 'var(--orange)';
+  return 'var(--text-3)';
+}
+
+function NetworkCard() {
+  const { state, dispatch } = useContext(AppContext);
+  const t = state.status.traffic || {};
+  const ls = state.trafficLastSeen;
+  const mx = Math.max(t.midi_in_per_sec || 0, t.midi_out_per_sec || 0, t.osc_per_sec || 0, t.api_per_sec || 0, 1);
+  const chs = [
+    { k: 'midi_in', l: 'MIDI In', v: t.midi_in_per_sec || 0 },
+    { k: 'midi_out', l: 'MIDI Out', v: t.midi_out_per_sec || 0 },
+    { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0 },
+    { k: 'api', l: 'API', v: t.api_per_sec || 0 },
+  ];
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">${ICO.wifi()}</span>
+      Network
+      <div class="card-header-right">
+        <button class="btn btn-sm" onClick=${() => dispatch({ type: 'SNIFFER_OPEN' })}>${ICO.search()} Sniffer</button>
+      </div>
+    </div>
+    <div class="card-body">
+      ${state.hosts.length > 0 && html`
+        <div class="ctrl-section-label">Hosts</div>
+        ${state.hosts.map(h => html`<div class="host-row" key=${h.id}>
+          <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
+          <span class="host-name">${h.name || h.ip}</span>
+          <span class="host-role-badge" data-role=${h.role}>${h.role}</span>
+          <span class="host-detail">${fmtUp(h.uptime_seconds)}</span>
+        </div>`)}
+      `}
+      ${state.hosts.length === 0 && html`<div style="font-size:12px;color:var(--text-3);margin-bottom:12px">No hosts discovered</div>`}
+      <div class="ctrl-section-label" style="margin-top:12px">Traffic</div>
+      ${chs.map(c => {
+        const clr = trafficColor(ls[c.k]);
+        return html`<div class="traffic-row" key=${c.k}>
+          <span class="traffic-ch" style="color:${clr}">${c.l}</span>
+          <div class="traffic-bar-wrap"><div class="traffic-bar" style="background:${clr};width:${Math.min((c.v / mx) * 100, 100)}%" /></div>
+          <span class="traffic-val" style="color:${clr}">${fmtRate(c.v)}/s</span>
+        </div>`;
+      })}
+    </div>
+  </div>`;
+}
+
+function ClientsCard() {
+  const { state } = useContext(AppContext);
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">${ICO.users()}</span>
+      Clients
+      <div class="card-header-right">
+        <span style="font-weight:400;color:var(--text-3);font-size:12px">${state.clients.length}</span>
+      </div>
+    </div>
+    <div class="card-body-flush" style="overflow-y:auto">
+      ${state.clients.length === 0 && html`<div class="empty-state">No clients connected</div>`}
+      <div style="padding:4px 20px">
+        ${state.clients.map(c => html`<div class="client-row" key=${c.id}>
+          <span class="status-dot" data-status="ok" />
+          <span class="client-name">${c.hostname}</span>
+          <span class="client-ip">${c.ip}</span>
+          <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
+          <span class="client-stat" style="color:var(--${c.packet_loss_percent > 1 ? 'red' : c.packet_loss_percent > 0.1 ? 'orange' : 'text-3'})">${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
+        </div>`)}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Control Page ──────────────────────────────────────────────
+function ControlPage() {
+  const { dispatch } = useContext(AppContext);
+  useEffect(() => {
+    apiFetch('/api/failover').then(d => dispatch({ type: 'SET_FAILOVER', data: d }));
+  }, []);
+  return html`<div class="control-layout">
+    <${SignalFlowDiagram} />
+    <${FailoverPanel} />
+  </div>`;
+}
+
+function SignalFlowDiagram() {
+  const { state, dispatch } = useContext(AppContext);
+  const s = state.status;
+  const midi = s.midi || {};
+  const ir = s.input_redundancy || {};
+  const t = s.traffic || {};
+  const fo = s.failover || {};
+  const dev = s.settings?.midi_device_status || 'disconnected';
+  const devOk = dev === 'connected';
+  const hostOk = s.health_score >= 50;
+  const hasClients = s.client_count > 0;
+
+  // Segment health
+  const seg1Health = devOk && hostOk ? 'active' : devOk || hostOk ? 'warn' : 'err';
+  const seg2Health = hostOk && hasClients ? 'active' : hostOk ? 'warn' : s.health_score > 0 ? 'warn' : '';
+  const seg3Health = hasClients ? 'active' : '';
+
+  const hMap = { active: 'ok', disconnected: 'err', error: 'err', reconnecting: 'warn', unknown: 'off' };
+  const hasFocus = s.focus_holder != null;
+  const focusClient = hasFocus ? state.clients.find(c => c.id === s.focus_holder) : null;
+
+  return html`<div class="sf-diagram">
+    <div class="sf-header">
+      <span class="card-header-icon">${ICO.sliders()}</span>
+      Signal Flow
+      <div class="card-header-right">
+        <button class="btn btn-sm" onClick=${() => dispatch({ type: 'SNIFFER_OPEN' })}>${ICO.search()} Sniffer</button>
+      </div>
+    </div>
+    <div class="sf-body">
+      <div class="sf-stages">
+
+        <!-- Controllers Stage -->
+        <div class="sf-stage">
+          <div class="sf-stage-label">Controllers</div>
+          <div class="sf-stage-nodes">
+            <div class="sf-node" data-health=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')}>
+              <span class="sf-node-dot" data-s=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')} />
+              <div class="sf-node-info">
+                <span class="sf-node-name">${ir.primary_device || 'Primary'}</span>
+                <span class="sf-node-meta">${devOk ? fmtRate(midi.messages_per_sec || 0) + '/s' : ir.primary_health || 'disconnected'}</span>
+              </div>
+              ${ir.active_input === 0 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
+            </div>
+            <div class="sf-node" data-health=${hMap[ir.secondary_health] || 'off'}>
+              <span class="sf-node-dot" data-s=${hMap[ir.secondary_health] || 'off'} />
+              <div class="sf-node-info">
+                <span class="sf-node-name">${ir.secondary_device || 'Secondary'}</span>
+                <span class="sf-node-meta">${ir.secondary_health || 'standby'}</span>
+              </div>
+              ${ir.active_input === 1 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
+            </div>
+          </div>
+        </div>
+
+        <!-- Segment 1: Controllers → Hosts -->
+        <div class="sf-segment">
+          <span class="sf-seg-label ${seg1Health === 'active' ? 'active' : ''}">${fmtRate(midi.messages_per_sec || 0)}/s</span>
+          <div class="sf-seg-line ${seg1Health}"><span class="sf-seg-arrow" /></div>
+          <span class="sf-seg-protocol">MIDI</span>
+        </div>
+
+        <!-- Hosts Stage -->
+        <div class="sf-stage">
+          <div class="sf-stage-label">Hosts</div>
+          <div class="sf-stage-nodes">
+            ${state.hosts.length > 0 ? state.hosts.map(h => html`
+              <div class="sf-node" data-health=${h.heartbeat_ok ? 'ok' : 'err'} key=${h.id}>
+                <span class="sf-node-dot" data-s=${h.heartbeat_ok ? 'ok' : 'err'} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${h.name || h.ip}</span>
+                  <span class="sf-node-meta">${fmtUp(h.uptime_seconds)}</span>
+                </div>
+                <span class="sf-node-badge" data-role=${h.role}>${h.role}</span>
+              </div>
+            `) : html`
+              <div class="sf-node" data-health=${hostOk ? 'ok' : 'warn'}>
+                <span class="sf-node-dot" data-s=${hostOk ? 'ok' : 'warn'} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${fo.active_host || 'primary'}</span>
+                  <span class="sf-node-meta">Health ${s.health_score}/100</span>
+                </div>
+                <span class="sf-node-badge" data-role="primary">Active</span>
+              </div>
+              <div class="sf-node" data-health=${fo.standby_healthy ? 'ok' : 'off'}>
+                <span class="sf-node-dot" data-s=${fo.standby_healthy ? 'ok' : 'off'} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">Standby</span>
+                  <span class="sf-node-meta">${fo.standby_healthy ? 'Ready' : 'Unavailable'}</span>
+                </div>
+                <span class="sf-node-badge" data-role="standby">Standby</span>
+              </div>
+            `}
+          </div>
+        </div>
+
+        <!-- Segment 2: Hosts → Network -->
+        <div class="sf-segment">
+          <span class="sf-seg-label ${seg2Health === 'active' ? 'active' : ''}">${fmtRate(t.midi_out_per_sec || 0)}/s</span>
+          <div class="sf-seg-line ${seg2Health}"><span class="sf-seg-arrow" /></div>
+          <span class="sf-seg-protocol">UDP</span>
+        </div>
+
+        <!-- Network Stage -->
+        <div class="sf-stage">
+          <div class="sf-stage-label">Network</div>
+          <div class="sf-stage-nodes">
+            <div class="sf-node" data-health=${hasClients ? 'ok' : hostOk ? 'warn' : 'off'}>
+              <span class="sf-node-dot" data-s=${hasClients ? 'ok' : hostOk ? 'warn' : 'off'} />
+              <div class="sf-node-info">
+                <span class="sf-node-name">Multicast</span>
+                <span class="sf-node-meta">${fmtRate((t.midi_in_per_sec||0) + (t.midi_out_per_sec||0) + (t.osc_per_sec||0))}/s total</span>
+              </div>
+            </div>
+            <div class="sf-node" data-health=${(t.ws_connections || 0) > 0 ? 'ok' : 'off'}>
+              <span class="sf-node-dot" data-s=${(t.ws_connections || 0) > 0 ? 'ok' : 'off'} />
+              <div class="sf-node-info">
+                <span class="sf-node-name">WebSocket</span>
+                <span class="sf-node-meta">${t.ws_connections || 0} conn</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Segment 3: Network → Clients -->
+        <div class="sf-segment">
+          <span class="sf-seg-label ${seg3Health === 'active' ? 'active' : ''}">${s.client_count} rx</span>
+          <div class="sf-seg-line ${seg3Health}"><span class="sf-seg-arrow" /></div>
+          <span class="sf-seg-protocol">Multicast</span>
+        </div>
+
+        <!-- Clients Stage -->
+        <div class="sf-stage">
+          <div class="sf-stage-label">Clients (${state.clients.length})</div>
+          <div class="sf-stage-nodes" style="max-height:140px;overflow-y:auto">
+            ${state.clients.length === 0 && html`
+              <div class="sf-node" data-health="off">
+                <span class="sf-node-dot" data-s="off" />
+                <div class="sf-node-info">
+                  <span class="sf-node-name" style="color:var(--text-3)">No clients</span>
+                  <span class="sf-node-meta">Waiting...</span>
+                </div>
+              </div>
+            `}
+            ${state.clients.slice(0, 5).map(c => {
+              const ch = c.packet_loss_percent > 1 ? 'err' : c.packet_loss_percent > 0.1 ? 'warn' : 'ok';
+              const isFocus = s.focus_holder === c.id;
+              return html`<div class="sf-node" data-health=${ch} key=${c.id}>
+                <span class="sf-node-dot" data-s=${ch} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${c.hostname}</span>
+                  <span class="sf-node-meta">${c.latency_ms?.toFixed(1) || '—'}ms · ${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
+                </div>
+                ${isFocus && html`<span class="sf-node-badge" data-role="focus">Focus</span>`}
+              </div>`;
+            })}
+            ${state.clients.length > 5 && html`<div style="font-size:10px;color:var(--text-3);text-align:center;padding:4px">+${state.clients.length - 5} more</div>`}
+          </div>
+        </div>
+      </div>
+
+      <!-- Feedback Path -->
+      <div class="sf-feedback">
+        <span class="sf-feedback-arrow ${hasFocus ? 'active' : ''}" />
+        <div class="sf-feedback-line ${hasFocus ? 'active' : ''}" />
+        <span class="sf-feedback-label ${hasFocus ? 'active' : ''}">${hasFocus ? `Feedback: ${focusClient?.hostname || 'Client #' + s.focus_holder}` : 'No feedback focus'}</span>
+        <div class="sf-feedback-line ${hasFocus ? 'active' : ''}" />
+      </div>
+    </div>
+  </div>`;
+}
+
+function FailoverPanel() {
+  const { state, dispatch } = useContext(AppContext);
+  const fo = state.failoverDetail;
+  const s = state.status;
+  if (!fo) return html`<div class="card"><div class="card-header">Failover</div><div class="card-body"><div class="empty-state">Loading...</div></div></div>`;
+  const doSwitch = () => {
+    const go = async () => {
+      const r = await apiFetch('/api/failover/switch', { method: 'POST' });
+      if (r.success) { dispatch({ type: 'SET_FAILOVER', data: { ...fo, active_host: r.active_host, failover_count: r.failover_count } }); dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Switched to ${r.active_host}`) }); }
     };
-
-    // ── Bootstrap ──
-    document.addEventListener('DOMContentLoaded', () => {
-        connectWs();
-        bindEvents();
-        resizeCanvas();
-        initSignalFlowSvg();
-        fetchHosts();
-        fetchClients();
-        fetchAlerts();
-        fetchSystemMetrics();
-        fetchDevices();
-        initInstructions();
-        window.addEventListener('resize', resizeCanvas);
-    });
-
-    // ────────────────────────────────────────────────────────
-    //  WebSocket
-    // ────────────────────────────────────────────────────────
-    function connectWs() {
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        S.ws = new WebSocket(proto + '//' + location.host + '/ws/status');
-
-        S.ws.onopen = () => {
-            S.connected = true;
-            S.reconnectMs = 1000;
-            setConn(true);
-        };
-
-        S.ws.onmessage = (ev) => {
-            try { onStatus(JSON.parse(ev.data)); }
-            catch (e) { console.error('ws parse', e); }
-        };
-
-        S.ws.onclose = () => {
-            S.connected = false;
-            setConn(false);
-            setTimeout(connectWs, S.reconnectMs);
-            S.reconnectMs = Math.min(S.reconnectMs * 2, S.maxReconnectMs);
-        };
-
-        S.ws.onerror = () => S.ws.close();
-    }
-
-    function setConn(ok) {
-        $('connDot').className = 'conn-dot ' + (ok ? 'ok' : 'err');
-        $('connText').textContent = ok ? 'Connected' : 'Reconnecting';
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Status update (from WebSocket every 1 s)
-    // ────────────────────────────────────────────────────────
-    function onStatus(d) {
-        S.lastStatus = d;
-
-        // KPI cards
-        setKpi('healthScore', d.health_score);
-        setKpi('midiRate', Math.round(d.midi?.messages_per_sec ?? 0));
-        setKpi('clientCount', d.client_count ?? 0);
-        setKpi('alertCount', d.active_alerts ?? 0);
-
-        // Health level
-        const hs = d.health_score ?? 100;
-        $('kpiHealth').dataset.level = hs >= 80 ? 'ok' : hs >= 50 ? 'warn' : 'crit';
-        $('kpiAlerts').dataset.level = (d.active_alerts ?? 0) > 0 ? 'crit' : 'ok';
-
-        // MIDI stats
-        $('midiIn').textContent = Math.round(d.midi?.messages_per_sec ?? 0);
-        $('midiOut').textContent = Math.round(d.midi?.messages_per_sec ?? 0);
-        $('activeNotes').textContent = d.midi?.active_notes ?? 0;
-
-        // Sparkline
-        pushSpark(d.midi?.messages_per_sec ?? 0);
-        drawSpark();
-
-        // Failover
-        const ah = d.failover?.active_host ?? 'primary';
-        $('foHost').textContent = ah;
-        $('activeHostPill').textContent = capitalize(ah);
-        $('standbyDot').className = 'status-dot ' + (d.failover?.standby_healthy ? 'ok' : 'warn');
-
-        // Role badge (navbar)
-        $('roleBadge').className = 'role-badge ' + ah;
-        $('roleLabel').textContent = ah.toUpperCase();
-
-        // Auto-failover indicator (skip if modal is open to avoid fighting)
-        if (!S.autoFoPending) {
-            const autoEnabled = d.failover?.auto_enabled ?? true;
-            const pill = $('autoFailoverPill');
-            pill.textContent = autoEnabled ? 'ON' : 'OFF';
-            pill.className = 'pill ' + (autoEnabled ? 'on' : 'off');
-            $('autoFailoverToggle').checked = autoEnabled;
-        }
-
-        // Traffic monitor
-        if (d.traffic) {
-            $('trafficMidiIn').innerHTML = (d.traffic.midi_in_per_sec ?? 0) + ' <small>pkt/s</small>';
-            $('trafficMidiOut').innerHTML = (d.traffic.midi_out_per_sec ?? 0) + ' <small>pkt/s</small>';
-            $('trafficOsc').innerHTML = (d.traffic.osc_per_sec ?? 0) + ' <small>msg/s</small>';
-            $('trafficApi').innerHTML = (d.traffic.api_per_sec ?? 0) + ' <small>req/s</small>';
-            $('trafficWs').innerHTML = (d.traffic.ws_connections ?? 0) + ' <small>conn</small>';
-            updateTrafficIndicators(d.traffic);
-        }
-
-        // System resources
-        updateMeters(d);
-
-        // Uptime
-        $('uptimeVal').textContent = fmtUptime(d.uptime ?? 0);
-
-        // Settings sync (for multi-tab awareness)
-        if (d.settings && S.settingsLoaded) {
-            updateSettingsStatus(d.settings);
-        }
-
-        // Signal flow
-        updateSignalFlow();
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  KPI animated counter
-    // ────────────────────────────────────────────────────────
-    function setKpi(id, val) {
-        const el = $(id);
-        if (el._val === val) return;
-        el._val = val;
-        el.textContent = typeof val === 'number' ? val.toLocaleString() : val;
-        el.classList.remove('pulse');
-        void el.offsetWidth; // reflow to retrigger animation
-        el.classList.add('pulse');
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Meters
-    // ────────────────────────────────────────────────────────
-    function updateMeters(d) {
-        const cpu = d.cpu_percent ?? 0;
-        setMeter('cpuFill', cpu, 100, false);
-        $('cpuVal').textContent = cpu.toFixed(0) + '%';
-
-        const memUsed = d.memory_used_mb ?? 0;
-        const memPct = S.memTotal > 0 ? (memUsed / S.memTotal) * 100 : 0;
-        setMeter('memFill', memPct, 100, false);
-        $('memVal').textContent = memUsed + ' MB';
-
-        const temp = d.cpu_temp_c ?? 0;
-        setMeter('tempFill', temp, 100, true);
-        $('tempVal').textContent = temp.toFixed(0) + ' \u00B0C';
-    }
-
-    function setMeter(id, val, max, isTemp) {
-        const el = $(id);
-        const pct = Math.min((val / max) * 100, 100);
-        el.style.width = pct + '%';
-        el.classList.remove('hot', 'crit');
-        if (isTemp) {
-            if (val >= 80) el.classList.add('crit');
-            else if (val >= 65) el.classList.add('hot');
-        } else {
-            if (pct >= 90) el.classList.add('crit');
-            else if (pct >= 75) el.classList.add('hot');
-        }
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Sparkline (canvas)
-    // ────────────────────────────────────────────────────────
-    function resizeCanvas() {
-        const c = $('sparkCanvas');
-        if (!c) return;
-        const rect = c.parentElement.getBoundingClientRect();
-        c.width = rect.width * devicePixelRatio;
-        c.height = 100 * devicePixelRatio;
-        c.style.height = '100px';
-        drawSpark();
-    }
-
-    function pushSpark(v) {
-        S.spark[S.sparkIdx] = v;
-        S.sparkIdx = (S.sparkIdx + 1) % S.spark.length;
-        if (S.sparkLen < S.spark.length) S.sparkLen++;
-    }
-
-    function drawSpark() {
-        const c = $('sparkCanvas');
-        if (!c) return;
-        const ctx = c.getContext('2d');
-        const W = c.width, H = c.height;
-        const n = S.sparkLen;
-        if (n < 2) { ctx.clearRect(0, 0, W, H); return; }
-
-        // Gather values oldest to newest
-        const vals = [];
-        const start = (S.sparkIdx - n + S.spark.length) % S.spark.length;
-        for (let i = 0; i < n; i++) vals.push(S.spark[(start + i) % S.spark.length]);
-
-        const peak = Math.max(...vals, 1);
-        const pad = 4 * devicePixelRatio;
-        const drawH = H - pad * 2;
-        const stepX = (W - pad * 2) / (S.spark.length - 1);
-
-        ctx.clearRect(0, 0, W, H);
-
-        // Gradient fill
-        const grad = ctx.createLinearGradient(0, pad, 0, H);
-        grad.addColorStop(0, 'rgba(191,90,242,.35)');
-        grad.addColorStop(1, 'rgba(191,90,242,.02)');
-
-        // Build path
-        ctx.beginPath();
-        const offsetX = (S.spark.length - n) * stepX;
-        for (let i = 0; i < n; i++) {
-            const x = pad + offsetX + i * stepX;
-            const y = pad + drawH - (vals[i] / peak) * drawH;
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-
-        // Stroke line
-        ctx.strokeStyle = 'rgba(191,90,242,.9)';
-        ctx.lineWidth = 1.5 * devicePixelRatio;
-        ctx.lineJoin = 'round';
-        ctx.stroke();
-
-        // Fill area under curve
-        const lastX = pad + offsetX + (n - 1) * stepX;
-        const firstX = pad + offsetX;
-        ctx.lineTo(lastX, H);
-        ctx.lineTo(firstX, H);
-        ctx.closePath();
-        ctx.fillStyle = grad;
-        ctx.fill();
-
-        // Current value dot
-        if (n > 0) {
-            const cx = lastX;
-            const cy = pad + drawH - (vals[n - 1] / peak) * drawH;
-            ctx.beginPath();
-            ctx.arc(cx, cy, 3 * devicePixelRatio, 0, Math.PI * 2);
-            ctx.fillStyle = '#bf5af2';
-            ctx.fill();
-        }
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  REST fetches (initial + periodic)
-    // ────────────────────────────────────────────────────────
-    function fetchHosts() {
-        fetch('/api/hosts')
-            .then(r => r.json())
-            .then(d => {
-                S.hosts = d.hosts || [];
-                renderHosts(S.hosts);
-                updateSignalFlow();
-            })
-            .catch(() => {});
-        setTimeout(fetchHosts, 5000);
-    }
-
-    function fetchClients() {
-        fetch('/api/clients')
-            .then(r => r.json())
-            .then(d => {
-                S.clients = d.clients || [];
-                renderClients(S.clients);
-                updateSignalFlow();
-            })
-            .catch(() => {});
-        setTimeout(fetchClients, 5000);
-    }
-
-    function fetchDevices() {
-        fetch('/api/devices')
-            .then(r => r.json())
-            .then(d => {
-                S.devices = d.devices || [];
-                S.activeDevice = d.active || null;
-                updateSignalFlow();
-            })
-            .catch(() => {});
-        setTimeout(fetchDevices, 5000);
-    }
-
-    function fetchAlerts() {
-        fetch('/api/alerts')
-            .then(r => r.json())
-            .then(d => renderAlerts(d.active_alerts || []))
-            .catch(() => {});
-        setTimeout(fetchAlerts, 10000);
-    }
-
-    function fetchSystemMetrics() {
-        fetch('/api/metrics/system')
-            .then(r => r.json())
-            .then(d => { S.memTotal = d.memory_total_mb || 1024; })
-            .catch(() => {});
-        setTimeout(fetchSystemMetrics, 30000);
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Safe DOM renderers (no innerHTML)
-    // ────────────────────────────────────────────────────────
-    function renderHosts(hosts) {
-        const container = $('hostList');
-        container.replaceChildren();
-        if (!hosts.length) {
-            container.appendChild(makePlaceholder('Waiting for hosts\u2026'));
-            return;
-        }
-        hosts.forEach(h => {
-            const row = el('div', 'host-row');
-            row.appendChild(el('span', 'host-dot ' + (h.role === 'primary' ? 'active' : 'standby')));
-            row.appendChild(elText('span', h.name, 'host-name'));
-            row.appendChild(elText('span', h.role, 'host-role'));
-            row.appendChild(elText('span', h.ip, 'host-ip'));
-            row.appendChild(elText('span', h.last_heartbeat_ms + 'ms', 'host-hb'));
-            container.appendChild(row);
-        });
-    }
-
-    function renderClients(clients) {
-        const container = $('clientList');
-        container.replaceChildren();
-        if (!clients.length) {
-            container.appendChild(makePlaceholder('No clients connected'));
-            return;
-        }
-        clients.forEach(c => {
-            const row = el('div', 'client-row');
-            row.appendChild(el('span', 'client-dot'));
-            row.appendChild(elText('span', c.hostname || c.ip, 'client-name'));
-            row.appendChild(elText('span', c.ip, 'client-ip'));
-            row.appendChild(elText('span', c.latency_ms.toFixed(1) + 'ms', 'client-lat'));
-            container.appendChild(row);
-        });
-    }
-
-    function renderAlerts(alerts) {
-        const container = $('alertList');
-        container.replaceChildren();
-        if (!alerts.length) {
-            container.appendChild(makePlaceholder('All systems healthy', 'ok'));
-            return;
-        }
-        alerts.forEach(a => {
-            const sevLower = (a.severity || '').toLowerCase();
-            const sev = sevLower === 'critical' ? 'crit' : sevLower === 'warning' ? 'warn' : 'info';
-            const row = el('div', 'alert-row');
-            row.appendChild(elText('span', sev === 'info' ? 'i' : '!', 'alert-icon ' + sev));
-            row.appendChild(elText('span', a.message, 'alert-msg'));
-            row.appendChild(elText('span', fmtTime(a.triggered_at), 'alert-time'));
-            container.appendChild(row);
-        });
-    }
-
-    // ── DOM helpers ──
-    function el(tag, cls) {
-        const e = document.createElement(tag);
-        if (cls) e.className = cls;
-        return e;
-    }
-
-    function elText(tag, text, cls) {
-        const e = el(tag, cls);
-        e.textContent = text ?? '';
-        return e;
-    }
-
-    function makePlaceholder(text, extra) {
-        const e = el('div', 'placeholder' + (extra ? ' ' + extra : ''));
-        e.textContent = text;
-        return e;
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Events
-    // ────────────────────────────────────────────────────────
-    function bindEvents() {
-        $('failoverBtn').addEventListener('click', () => {
-            showModal('Confirm Failover', 'Switch the active host? MIDI output will be briefly interrupted.', 'Switch', doFailoverSwitch);
-        });
-        $('modalCancel').addEventListener('click', closeModal);
-        $('modalBg').addEventListener('click', (e) => {
-            if (e.target === $('modalBg')) closeModal();
-        });
-
-        $('autoFailoverToggle').addEventListener('change', (e) => {
-            // Revert toggle — don't apply until confirmed
-            e.target.checked = !e.target.checked;
-            const enabling = !e.target.checked;
-
-            $('autoFoModalTitle').textContent = enabling
-                ? 'Enable Auto-Failover?'
-                : 'Disable Auto-Failover?';
-            $('autoFoModalMsg').textContent = enabling
-                ? 'The system will automatically switch to the standby host if the primary fails.'
-                : 'Manual intervention will be required if the primary host fails.';
-            $('autoFoConfirm').textContent = enabling ? 'Enable' : 'Disable';
-            $('autoFoConfirm').className = enabling ? 'btn btn-primary' : 'btn btn-warn';
-
-            S.pendingAutoFo = enabling;
-            S.autoFoPending = true;
-            $('autoFoModalBg').classList.add('open');
-        });
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                $('modalBg').classList.remove('open');
-                closeAutoFoModal();
-                closeSniffer();
-            }
-        });
-
-        // Auto-failover confirmation modal
-        $('autoFoCancel').addEventListener('click', closeAutoFoModal);
-        $('autoFoModalBg').addEventListener('click', (e) => {
-            if (e.target === $('autoFoModalBg')) closeAutoFoModal();
-        });
-        $('autoFoConfirm').addEventListener('click', () => {
-            $('autoFoModalBg').classList.remove('open');
-            S.autoFoPending = false;
-            const enabled = S.pendingAutoFo;
-
-            $('autoFailoverToggle').checked = enabled;
-            const pill = $('autoFailoverPill');
-            pill.textContent = enabled ? 'ON' : 'OFF';
-            pill.className = 'pill ' + (enabled ? 'on' : 'off');
-
-            fetch('/api/failover/auto', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled }),
-            }).catch(() => {});
-        });
-
-        // Traffic sniffer — clickable traffic rows
-        document.querySelectorAll('.traffic-row').forEach(row => {
-            row.addEventListener('click', () => {
-                openSniffer(row.dataset.channel);
-            });
-        });
-
-        // Sniffer panel close
-        $('snifferClose').addEventListener('click', closeSniffer);
-        $('snifferBg').addEventListener('click', (e) => {
-            if (e.target === $('snifferBg')) closeSniffer();
-        });
-
-        // Detect manual scroll in sniffer to pause auto-scroll
-        $('snifferLog').addEventListener('scroll', () => {
-            const log = $('snifferLog');
-            const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
-            S.snifferAutoScroll = atBottom;
-        });
-
-        // Tab navigation
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-                btn.classList.add('active');
-                const pane = document.getElementById('tab-' + btn.dataset.tab);
-                if (pane) pane.classList.add('active');
-                // Re-measure canvas when switching back to dashboard
-                if (btn.dataset.tab === 'dashboard') {
-                    setTimeout(resizeCanvas, 50);
-                    sfStartAnimation();
-                    requestAnimationFrame(sfLayoutPaths);
-                } else {
-                    sfStopAnimation();
-                }
-                // Lazy-load settings on first visit
-                if (btn.dataset.tab === 'settings' && !S.settingsLoaded) {
-                    loadSettings();
-                }
-            });
-        });
-    }
-
-    function closeAutoFoModal() {
-        $('autoFoModalBg').classList.remove('open');
-        S.autoFoPending = false;
-    }
-
-    function doFailoverSwitch() {
-        $('failoverBtn').disabled = true;
-        $('failoverBtn').textContent = 'Switching\u2026';
-        fetch('/api/failover/switch', { method: 'POST' })
-            .then(r => r.json())
-            .then(d => {
-                if (d.success) {
-                    $('foHost').textContent = d.active_host;
-                    $('foCount').textContent = d.failover_count;
-                    $('activeHostPill').textContent = capitalize(d.active_host);
-                }
-            })
-            .catch(() => {})
-            .finally(() => {
-                $('failoverBtn').disabled = false;
-                $('failoverBtn').textContent = 'Switch Host';
-            });
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Instructions tab: IP injection + copy buttons
-    // ────────────────────────────────────────────────────────
-    function initInstructions() {
-        const serverIp = location.hostname;
-        const addrEl = $('serverAddr');
-        if (addrEl) addrEl.textContent = serverIp + ':8080';
-
-        // Inject server IP into all command placeholders
-        document.querySelectorAll('.cmd-ip').forEach(span => {
-            span.textContent = serverIp;
-        });
-
-        // Copy buttons
-        document.querySelectorAll('.btn-copy').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const code = btn.parentElement.querySelector('code');
-                if (!code) return;
-                const text = code.textContent;
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(text).then(() => markCopied(btn)).catch(() => fallbackCopy(code, btn));
-                } else {
-                    fallbackCopy(code, btn);
-                }
-            });
-        });
-    }
-
-    function fallbackCopy(codeEl, btn) {
-        const range = document.createRange();
-        range.selectNodeContents(codeEl);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        try { document.execCommand('copy'); markCopied(btn); } catch (_) {}
-        sel.removeAllRanges();
-    }
-
-    function markCopied(btn) {
-        btn.textContent = 'Copied!';
-        btn.classList.add('copied');
-        setTimeout(() => {
-            btn.textContent = 'Copy';
-            btn.classList.remove('copied');
-        }, 2000);
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Traffic Sniffer Panel
-    // ────────────────────────────────────────────────────────
-    function openSniffer(channel) {
-        S.snifferChannel = channel;
-        S.snifferAutoScroll = true;
-        $('snifferTitle').textContent = CH_NAMES[channel] || channel;
-        const log = $('snifferLog');
-        log.replaceChildren();
-        log.appendChild(makePlaceholder('Waiting for traffic\u2026'));
-        $('snifferBg').classList.add('open');
-        connectSnifferWs();
-    }
-
-    function closeSniffer() {
-        $('snifferBg').classList.remove('open');
-        if (S.snifferWs) {
-            S.snifferWs.close();
-            S.snifferWs = null;
-        }
-        S.snifferChannel = null;
-    }
-
-    function connectSnifferWs() {
-        if (S.snifferWs) {
-            S.snifferWs.close();
-            S.snifferWs = null;
-        }
-
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(proto + '//' + location.host + '/ws/traffic');
-
-        ws.onmessage = (ev) => {
-            try {
-                const msg = JSON.parse(ev.data);
-                if (msg.ch === S.snifferChannel) {
-                    appendSnifferRow(msg);
-                }
-            } catch (e) {
-                console.error('sniffer parse', e);
-            }
-        };
-
-        ws.onclose = () => {
-            // Only reconnect if panel is still open
-            if ($('snifferBg').classList.contains('open')) {
-                setTimeout(connectSnifferWs, 2000);
-            }
-        };
-
-        ws.onerror = () => ws.close();
-
-        S.snifferWs = ws;
-    }
-
-    function appendSnifferRow(msg) {
-        const log = $('snifferLog');
-
-        // Remove placeholder on first message
-        const ph = log.querySelector('.placeholder');
-        if (ph) ph.remove();
-
-        const row = el('div', 'sniffer-row');
-        row.appendChild(elText('span', fmtTimeFull(msg.ts), 'sniffer-ts'));
-        row.appendChild(elText('span', msg.msg, 'sniffer-msg'));
-        log.appendChild(row);
-
-        // Cap entries
-        while (log.children.length > S.snifferMaxEntries) {
-            log.removeChild(log.firstChild);
-        }
-
-        // Auto-scroll
-        if (S.snifferAutoScroll) {
-            log.scrollTop = log.scrollHeight;
-        }
-    }
-
-    function fmtTimeFull(ts) {
-        if (!ts) return '';
-        return new Date(ts * 1000).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-        });
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Traffic Activity Indicators
-    // ────────────────────────────────────────────────────────
-    function updateTrafficIndicators(traffic) {
-        const now = Date.now();
-        const channels = {
-            midi_in:  traffic.midi_in_per_sec ?? 0,
-            midi_out: traffic.midi_out_per_sec ?? 0,
-            osc:      traffic.osc_per_sec ?? 0,
-            api:      traffic.api_per_sec ?? 0,
-            ws:       traffic.ws_connections ?? 0,
-        };
-        for (const [ch, rate] of Object.entries(channels)) {
-            if (rate > 0) S.trafficLastActive[ch] = now;
-            const age = now - S.trafficLastActive[ch];
-            const row = document.querySelector('.traffic-row[data-channel="' + ch + '"]');
-            if (!row) continue;
-            const dot = row.querySelector('.traffic-dot');
-            if (!dot) continue;
-            dot.classList.remove('active', 'recent');
-            row.classList.remove('idle');
-            if (rate > 0) {
-                dot.classList.add('active');
-            } else if (age < 5000) {
-                dot.classList.add('recent');
-            } else {
-                row.classList.add('idle');
-            }
-        }
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Signal Flow — Premium SVG Visualization
-    // ────────────────────────────────────────────────────────
-    var SF_MAX_PARTICLES = 30;
-
-    function initSignalFlowSvg() {
-        S.sfSvg = $('sfSvg');
-        S.sfPaths = $('sfPaths');
-        S.sfLabels = $('sfLabels');
-        S.sfParticles = $('sfParticles');
-
-        var mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-        S.sfPrefersReducedMotion = mq.matches;
-        mq.addEventListener('change', function(e) {
-            S.sfPrefersReducedMotion = e.matches;
-            if (e.matches) sfStopAnimation(); else sfStartAnimation();
-        });
-
-        S.sfResizeObserver = new ResizeObserver(function() {
-            sfLayoutPaths();
-        });
-        S.sfResizeObserver.observe($('signalFlow'));
-
-        requestAnimationFrame(function() {
-            sfLayoutPaths();
-            sfStartAnimation();
-        });
-    }
-
-    function sfLayoutPaths() {
-        var container = $('signalFlow');
-        if (!container || !S.sfPaths) return;
-        var rect = container.getBoundingClientRect();
-
-        S.sfPaths.innerHTML = '';
-        S.sfLabels.innerHTML = '';
-        S.sfConnectors = [];
-
-        var deviceNode = $('sfNodeDevice');
-        var hostNode = $('sfNodeHost');
-        var monitorNode = $('sfNodeMonitor');
-        if (!deviceNode || !hostNode) return;
-
-        function rightEdge(el) {
-            var r = el.getBoundingClientRect();
-            return { x: r.right - rect.left, y: r.top + r.height / 2 - rect.top };
-        }
-        function leftEdge(el) {
-            var r = el.getBoundingClientRect();
-            return { x: r.left - rect.left, y: r.top + r.height / 2 - rect.top };
-        }
-        function bottomCenter(el) {
-            var r = el.getBoundingClientRect();
-            return { x: r.left + r.width / 2 - rect.left, y: r.bottom - rect.top };
-        }
-        function topCenter(el) {
-            var r = el.getBoundingClientRect();
-            return { x: r.left + r.width / 2 - rect.left, y: r.top - rect.top };
-        }
-
-        function makeLine(from, to, id, cls) {
-            var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-            line.setAttribute('x1', from.x);
-            line.setAttribute('y1', from.y);
-            line.setAttribute('x2', to.x);
-            line.setAttribute('y2', to.y);
-            line.setAttribute('class', 'sf-path ' + (cls || ''));
-            line.setAttribute('marker-end', 'url(#sfArrowIdle)');
-            line.id = id;
-            S.sfPaths.appendChild(line);
-            var length = Math.sqrt(Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2));
-            S.sfConnectors.push({ id: id, from: from, to: to, length: length, element: line, active: false, rate: 0, _spawnAccum: 0 });
-            return line;
-        }
-
-        function makeLabel(mid, id) {
-            var text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', mid.x);
-            text.setAttribute('y', mid.y - 8);
-            text.setAttribute('text-anchor', 'middle');
-            text.setAttribute('class', 'sf-rate-label');
-            text.id = id;
-            S.sfLabels.appendChild(text);
-            return text;
-        }
-
-        // Device → Host
-        var devR = rightEdge(deviceNode);
-        var hostL = leftEdge(hostNode);
-        makeLine(devR, hostL, 'sfPathDevHost', '');
-        makeLabel({ x: (devR.x + hostL.x) / 2, y: (devR.y + hostL.y) / 2 }, 'sfLabelIn');
-
-        // Host → Monitor
-        if (monitorNode) {
-            var hostR = rightEdge(hostNode);
-            var monL = leftEdge(monitorNode);
-            makeLine(hostR, monL, 'sfPathHostMon', '');
-        }
-
-        // Host → each client
-        var clientNodes = document.querySelectorAll('.sf-card-client');
-        if (clientNodes.length > 0) {
-            var hostB = bottomCenter(hostNode);
-            clientNodes.forEach(function(cEl, i) {
-                var cT = topCenter(cEl);
-                makeLine(hostB, cT, 'sfPathClient' + i, '');
-            });
-            // Fan-out label
-            if (clientNodes.length > 0) {
-                var firstC = topCenter(clientNodes[0]);
-                makeLabel({ x: (hostB.x + firstC.x) / 2, y: (hostB.y + firstC.y) / 2 }, 'sfLabelOut');
-            }
-        }
-    }
-
-    function sfUpdateConnector(pathId, labelId, active, rate) {
-        var pathEl = document.getElementById(pathId);
-        if (pathEl) {
-            pathEl.classList.toggle('active', active);
-            pathEl.setAttribute('marker-end', active ? 'url(#sfArrow)' : 'url(#sfArrowIdle)');
-        }
-        if (labelId) {
-            var labelEl = document.getElementById(labelId);
-            if (labelEl) {
-                labelEl.textContent = active && rate > 0 ? rate + ' msg/s' : '';
-                labelEl.classList.toggle('active', active);
-            }
-        }
-        var conn = S.sfConnectors.find(function(c) { return c.id === pathId; });
-        if (conn) { conn.active = active; conn.rate = rate; }
-    }
-
-    function sfUpdateReturnPath(focusId) {
-        var existing = document.getElementById('sfPathReturn');
-        if (existing) existing.remove();
-
-        var returnEl = $('sfReturn');
-        var returnText = $('sfReturnText');
-
-        if (focusId != null) {
-            var focusClient = S.clients.find(function(c) { return c.id === focusId; });
-            returnText.textContent = 'Return: ' + (focusClient ? (focusClient.hostname || focusClient.ip) : 'Client #' + focusId) + ' (focus)';
-            returnEl.classList.add('active');
-
-            var focusNode = document.querySelector('.sf-card-client[data-client-id="' + focusId + '"]');
-            var deviceNode = $('sfNodeDevice');
-            if (focusNode && deviceNode && S.sfPaths) {
-                var container = $('signalFlow');
-                var rect = container.getBoundingClientRect();
-                var fromR = focusNode.getBoundingClientRect();
-                var toR = deviceNode.getBoundingClientRect();
-                var from = { x: fromR.left + fromR.width / 2 - rect.left, y: fromR.bottom - rect.top + 4 };
-                var to = { x: toR.left + toR.width / 2 - rect.left, y: toR.bottom - rect.top + 4 };
-                var midY = Math.max(from.y, to.y) + 18;
-                var returnPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                returnPath.setAttribute('d', 'M' + from.x + ',' + from.y + ' Q' + ((from.x + to.x) / 2) + ',' + midY + ' ' + to.x + ',' + to.y);
-                returnPath.setAttribute('class', 'sf-path return-path');
-                returnPath.setAttribute('marker-end', 'url(#sfArrowReturn)');
-                returnPath.id = 'sfPathReturn';
-                S.sfPaths.appendChild(returnPath);
-            }
-        } else {
-            returnText.textContent = 'No return path';
-            returnEl.classList.remove('active');
-        }
-    }
-
-    // Laptop SVG icon for client nodes
-    var LAPTOP_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="12" rx="2"/><line x1="2" y1="20" x2="22" y2="20"/></svg>';
-    var RING_SVG = '<svg class="sf-ring-svg" viewBox="0 0 56 56"><circle cx="28" cy="28" r="24" fill="none" stroke="var(--sep)" stroke-width="2.5" opacity="0.3"/><circle class="sf-ring-active" cx="28" cy="28" r="24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-dasharray="150.8" stroke-dashoffset="0" stroke-linecap="round"/></svg>';
-
-    function renderClientNodes(clients, focusId) {
-        var newIds = clients.map(function(c) { return c.id + ':' + c.hostname; }).join(',');
-        if (newIds === S._sfLastClientIds) {
-            // Just update health + focus on existing nodes
-            clients.forEach(function(c) {
-                var node = document.querySelector('.sf-card-client[data-client-id="' + c.id + '"]');
-                if (!node) return;
-                var health = (c.packet_loss_percent > 1 || c.latency_ms >= 50) ? 'red' : c.latency_ms >= 10 ? 'amber' : 'green';
-                node.dataset.health = c.id === focusId ? '' : health;
-                node.classList.toggle('focus', c.id === focusId);
-                var sub = node.querySelector('.sf-card-sub');
-                if (sub) sub.textContent = c.latency_ms.toFixed(1) + 'ms';
-            });
-            return false; // no rebuild
-        }
-        S._sfLastClientIds = newIds;
-
-        var fanout = $('sfFanout');
-        fanout.replaceChildren();
-
-        if (clients.length === 0) {
-            fanout.appendChild(elText('div', 'No clients', 'sf-fanout-empty'));
-            return true; // rebuilt
-        }
-
-        var maxShow = 5;
-        var shown = clients.slice(0, maxShow);
-
-        shown.forEach(function(c, i) {
-            var health = (c.packet_loss_percent > 1 || c.latency_ms >= 50) ? 'red' : c.latency_ms >= 10 ? 'amber' : 'green';
-            var isFocus = c.id === focusId;
-
-            var node = el('div', 'sf-card sf-card-client' + (isFocus ? ' focus' : ''));
-            node.dataset.health = isFocus ? '' : health;
-            node.dataset.clientId = c.id;
-            node.style.animationDelay = (0.05 + i * 0.06) + 's';
-
-            var ring = el('div', 'sf-card-ring');
-            ring.innerHTML = RING_SVG + '<div class="sf-card-icon">' + LAPTOP_SVG + '</div>';
-            node.appendChild(ring);
-
-            var info = el('div', 'sf-card-info');
-            info.appendChild(elText('span', c.hostname || c.ip, 'sf-card-label'));
-            info.appendChild(elText('span', c.latency_ms.toFixed(1) + 'ms', 'sf-card-sub'));
-            node.appendChild(info);
-
-            fanout.appendChild(node);
-        });
-
-        if (clients.length > maxShow) {
-            fanout.appendChild(elText('div', '+' + (clients.length - maxShow) + ' more', 'sf-fanout-more'));
-        }
-        return true; // rebuilt
-    }
-
-    function updateSignalFlow() {
-        var d = S.lastStatus;
-        if (!d) return;
-
-        var midiIn = d.traffic?.midi_in_per_sec ?? 0;
-        var midiOut = d.traffic?.midi_out_per_sec ?? 0;
-
-        // Crown
-        var activeDevice = S.devices.find(function(dev) { return dev.id === S.activeDevice; });
-        var crownEl = $('sfCrown');
-        if (activeDevice) {
-            $('sfDeviceName').textContent = activeDevice.name;
-            $('sfDeviceMfr').textContent = activeDevice.manufacturer || '';
-            crownEl.classList.toggle('active', activeDevice.connected && midiIn > 0);
-        } else if (S.hosts.length > 0 && S.hosts[0].device_name) {
-            $('sfDeviceName').textContent = S.hosts[0].device_name;
-            $('sfDeviceMfr').textContent = '';
-            crownEl.classList.toggle('active', midiIn > 0);
-        } else {
-            $('sfDeviceName').textContent = 'No MIDI Device';
-            $('sfDeviceMfr').textContent = '';
-            crownEl.classList.remove('active');
-        }
-
-        // Device health
-        var deviceHealth = 'gray';
-        if (activeDevice) {
-            if (activeDevice.connected && midiIn > 0) deviceHealth = 'green';
-            else if (activeDevice.connected) deviceHealth = 'amber';
-            else deviceHealth = 'red';
-        } else if (S.hosts.length > 0) {
-            var h = S.hosts.find(function(h) { return h.role === (d.failover?.active_host ?? 'primary'); }) || S.hosts[0];
-            if (h.midi_active && midiIn > 0) deviceHealth = 'green';
-            else if (h.midi_active) deviceHealth = 'amber';
-            else deviceHealth = 'gray';
-        }
-        $('sfNodeDevice').dataset.health = deviceHealth;
-        $('sfDeviceSub').textContent = deviceHealth === 'green' ? 'active' :
-            deviceHealth === 'amber' ? 'connected' :
-            deviceHealth === 'red' ? 'disconnected' : 'unknown';
-
-        // Host health
-        var hostHealth = 'gray';
-        var activeRole = d.failover?.active_host ?? 'primary';
-        var host = S.hosts.find(function(h) { return h.role === activeRole; }) || S.hosts[0];
-        if (host) {
-            if (host.heartbeat_ok && host.midi_active) hostHealth = 'green';
-            else if (host.heartbeat_ok) hostHealth = 'amber';
-            else hostHealth = 'red';
-            $('sfHostSub').textContent = host.role || activeRole;
-        } else {
-            $('sfHostSub').textContent = activeRole;
-        }
-        $('sfNodeHost').dataset.health = hostHealth;
-
-        // Monitor
-        $('sfNodeMonitor').dataset.health = S.connected ? 'green' : 'red';
-
-        // Connectors
-        sfUpdateConnector('sfPathDevHost', 'sfLabelIn', midiIn > 0, midiIn);
-        sfUpdateConnector('sfPathHostMon', null, S.connected, 0);
-
-        // Client nodes
-        var focusId = d.focus_holder;
-        var rebuilt = renderClientNodes(S.clients, focusId);
-
-        // Client connectors
-        var clientNodes = document.querySelectorAll('.sf-card-client');
-        clientNodes.forEach(function(_, i) {
-            sfUpdateConnector('sfPathClient' + i, null, midiOut > 0, midiOut);
-        });
-        // Fan-out label
-        sfUpdateConnector(null, 'sfLabelOut', midiOut > 0, midiOut);
-
-        // Return path
-        sfUpdateReturnPath(focusId);
-
-        // Relayout SVG if client count changed
-        if (rebuilt) {
-            requestAnimationFrame(sfLayoutPaths);
-        }
-    }
-
-    // ── Particle Animation ──
-    function sfStartAnimation() {
-        if (S.sfRafId) return;
-        S._sfLastTime = performance.now();
-        S.sfRafId = requestAnimationFrame(sfAnimate);
-    }
-
-    function sfStopAnimation() {
-        if (S.sfRafId) {
-            cancelAnimationFrame(S.sfRafId);
-            S.sfRafId = null;
-        }
-        if (S.sfParticles) S.sfParticles.innerHTML = '';
-        S.sfParticlePool = [];
-    }
-
-    function sfAnimate(timestamp) {
-        var dt = Math.min(timestamp - (S._sfLastTime || timestamp), 50);
-        S._sfLastTime = timestamp;
-
-        if (!S.sfPrefersReducedMotion) {
-            sfSpawnParticles(dt);
-            sfMoveParticles(dt);
-        }
-
-        S.sfRafId = requestAnimationFrame(sfAnimate);
-    }
-
-    function sfSpawnParticles(dt) {
-        S.sfConnectors.forEach(function(conn, idx) {
-            if (!conn.active) return;
-            conn._spawnAccum = (conn._spawnAccum || 0) + dt;
-            var interval = Math.max(120, 600 - Math.min(conn.rate, 500));
-            if (conn._spawnAccum >= interval) {
-                conn._spawnAccum = 0;
-                sfCreateParticle(idx);
-            }
-        });
-    }
-
-    function sfCreateParticle(connIdx) {
-        if (S.sfParticlePool.length >= SF_MAX_PARTICLES) {
-            var oldest = S.sfParticlePool.shift();
-            if (oldest.element.parentNode) oldest.element.parentNode.removeChild(oldest.element);
-        }
-        var conn = S.sfConnectors[connIdx];
-        if (!conn || !S.sfParticles) return;
-
-        var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        circle.setAttribute('cx', conn.from.x);
-        circle.setAttribute('cy', conn.from.y);
-        circle.setAttribute('r', '2.5');
-        circle.setAttribute('fill', conn.id === 'sfPathReturn' ? 'var(--purple)' : 'var(--green)');
-        circle.setAttribute('opacity', '0.9');
-        S.sfParticles.appendChild(circle);
-
-        S.sfParticlePool.push({
-            element: circle,
-            connIdx: connIdx,
-            progress: 0,
-            speed: 0.0008 + Math.random() * 0.0004,
-        });
-    }
-
-    function sfMoveParticles(dt) {
-        var toRemove = [];
-        S.sfParticlePool.forEach(function(p, i) {
-            p.progress += p.speed * dt;
-            if (p.progress >= 1) { toRemove.push(i); return; }
-            var conn = S.sfConnectors[p.connIdx];
-            if (!conn) { toRemove.push(i); return; }
-            var x = conn.from.x + (conn.to.x - conn.from.x) * p.progress;
-            var y = conn.from.y + (conn.to.y - conn.from.y) * p.progress;
-            p.element.setAttribute('cx', x);
-            p.element.setAttribute('cy', y);
-            if (p.progress > 0.8) {
-                var opacity = 1 - ((p.progress - 0.8) / 0.2);
-                p.element.setAttribute('opacity', Math.max(0, opacity * 0.9));
-            }
-        });
-        for (var i = toRemove.length - 1; i >= 0; i--) {
-            var idx = toRemove[i];
-            var p = S.sfParticlePool[idx];
-            if (p.element.parentNode) p.element.parentNode.removeChild(p.element);
-            S.sfParticlePool.splice(idx, 1);
-        }
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Utilities
-    // ────────────────────────────────────────────────────────
-    function capitalize(s) { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
-
-    function fmtUptime(sec) {
-        const d = Math.floor(sec / 86400);
-        const h = Math.floor((sec % 86400) / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
-        if (h > 0) return h + 'h ' + m + 'm';
-        return m + 'm ' + (sec % 60) + 's';
-    }
-
-    function fmtTime(ts) {
-        if (!ts) return '';
-        return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Reusable Modal
-    // ────────────────────────────────────────────────────────
-    let _modalCallback = null;
-
-    function showModal(title, message, confirmText, onConfirm) {
-        $('modalTitle').textContent = title;
-        $('modalMessage').textContent = message;
-        $('modalConfirm').textContent = confirmText || 'Confirm';
-        _modalCallback = onConfirm;
-        $('modalConfirm').onclick = () => { closeModal(); if (_modalCallback) _modalCallback(); };
-        $('modalBg').classList.add('open');
-    }
-
-    function closeModal() {
-        $('modalBg').classList.remove('open');
-        _modalCallback = null;
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  Settings Tab
-    // ────────────────────────────────────────────────────────
-
-    function loadSettings() {
-        S.settingsLoaded = true;
-        fetchSettings();
-        fetchPresets();
-        bindSettingsEvents();
-    }
-
-    function fetchSettings() {
-        fetch('/api/settings')
-            .then(r => r.json())
-            .then(d => {
-                S.settingsData = d;
-                renderSettings(d);
-            })
-            .catch(() => {});
-    }
-
-    function fetchPresets() {
-        fetch('/api/settings/presets')
-            .then(r => r.json())
-            .then(d => {
-                S.presets = d.presets || [];
-                renderPresets(S.presets, S.settingsData?.active_preset);
-            })
-            .catch(() => {});
-    }
-
-    function renderSettings(d) {
-        // MIDI device
-        renderMidiDeviceSelect(d.midi_device);
-        updateStatusPill('midiDeviceStatusPill', d.midi_device?.status);
-
-        // OSC port
-        $('oscPortInput').value = d.osc?.listen_port ?? 8000;
-        updateStatusPill('oscPortStatusPill', d.osc?.status);
-
-        // Failover
-        const fo = d.failover || {};
-        $('foAutoToggle').checked = fo.auto_enabled !== false;
-        $('foSwitchBackSelect').value = fo.switch_back_policy || 'manual';
-        $('foLockoutInput').value = fo.lockout_seconds ?? 5;
-        $('foConfirmSelect').value = fo.confirmation_mode || 'immediate';
-
-        // Heartbeat
-        const hb = fo.heartbeat || {};
-        $('hbIntervalInput').value = hb.interval_ms ?? 3;
-        $('hbThresholdInput').value = hb.miss_threshold ?? 3;
-        updateFailoverTimeEstimate();
-
-        // MIDI trigger
-        const mt = fo.triggers?.midi || {};
-        $('midiTriggerToggle').checked = mt.enabled || false;
-        $('midiTrigChannel').value = mt.channel ?? 16;
-        $('midiTrigNote').value = mt.note ?? 127;
-        $('midiTrigVelocity').value = mt.velocity_threshold ?? 100;
-        $('midiTrigGuard').value = mt.guard_note ?? 0;
-        toggleSubSection('midiTriggerSub', mt.enabled);
-
-        // OSC trigger
-        const ot = fo.triggers?.osc || {};
-        $('oscTriggerToggle').checked = ot.enabled || false;
-        $('oscTrigPort').value = ot.listen_port ?? 8000;
-        $('oscTrigAddress').value = ot.address || '/midinet/failover/switch';
-        $('oscTrigSources').value = (ot.allowed_sources || []).join(', ');
-        toggleSubSection('oscTriggerSub', ot.enabled);
-
-        // Validate
-        validateLockout();
-        validateHeartbeatInterval();
-        validateMidiTriggerChannel();
-        validateOscTriggerSources();
-    }
-
-    function renderMidiDeviceSelect(midiDevice) {
-        const select = $('midiDeviceSelect');
-        select.replaceChildren();
-
-        const devices = midiDevice?.available_devices || [];
-        const active = midiDevice?.active_device;
-
-        if (devices.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = '';
-            opt.textContent = 'No devices found';
-            select.appendChild(opt);
-        }
-
-        // "Auto-detect" option
-        const autoOpt = document.createElement('option');
-        autoOpt.value = 'auto';
-        autoOpt.textContent = 'Auto-detect';
-        if (active === 'auto' || !active) autoOpt.selected = true;
-        select.appendChild(autoOpt);
-
-        devices.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d.id;
-            opt.textContent = d.name + (d.connected ? '' : ' (disconnected)');
-            if (d.id === active) opt.selected = true;
-            select.appendChild(opt);
-        });
-
-        // Show device details
-        const details = $('midiDeviceDetails');
-        details.replaceChildren();
-        const activeDevice = devices.find(d => d.id === active);
-        if (activeDevice) {
-            const info = el('div', 'setting-row');
-            const infoText = el('div', 'setting-info');
-            infoText.appendChild(elText('span', 'Manufacturer: ' + activeDevice.manufacturer, 'setting-tip'));
-            infoText.appendChild(elText('span', 'Ports: ' + activeDevice.port_count_in + ' in, ' + activeDevice.port_count_out + ' out', 'setting-tip'));
-            info.appendChild(infoText);
-            details.appendChild(info);
-        }
-    }
-
-    function renderPresets(presets, activePreset) {
-        const grid = $('presetGrid');
-        grid.replaceChildren();
-        presets.forEach(p => {
-            const card = el('div', 'preset-card' + (p.id === activePreset ? ' active' : ''));
-            card.dataset.presetId = p.id;
-            card.appendChild(elText('div', p.name, 'preset-name'));
-            card.appendChild(elText('div', p.description, 'preset-desc'));
-            card.addEventListener('click', () => {
-                showModal(
-                    'Apply Preset: ' + p.name,
-                    p.description + ' This will overwrite your current failover settings.',
-                    'Apply',
-                    () => applyPreset(p.id)
-                );
-            });
-            grid.appendChild(card);
-        });
-    }
-
-    function updateStatusPill(id, status) {
-        const pill = $(id);
-        if (!pill) return;
-        pill.classList.remove('ok', 'warn', 'err', 'switching');
-        switch (status) {
-            case 'connected':
-            case 'listening':
-                pill.textContent = status === 'connected' ? 'Connected' : 'Listening';
-                pill.classList.add('ok');
-                break;
-            case 'switching':
-            case 'starting':
-                pill.textContent = 'Switching';
-                pill.classList.add('switching');
-                break;
-            case 'error':
-                pill.textContent = 'Error';
-                pill.classList.add('err');
-                break;
-            default:
-                pill.textContent = status || 'Unknown';
-                break;
-        }
-    }
-
-    function toggleSubSection(id, open) {
-        const sub = $(id);
-        if (!sub) return;
-        if (open) sub.classList.add('open');
-        else sub.classList.remove('open');
-    }
-
-    function updateFailoverTimeEstimate() {
-        const interval = parseInt($('hbIntervalInput').value) || 3;
-        const threshold = parseInt($('hbThresholdInput').value) || 3;
-        const total = interval * threshold;
-        const el = $('foTimeEstimate');
-        el.textContent = total + ' ms';
-        el.classList.remove('accent', 'ok', 'warn', 'crit');
-        if (total <= 15) el.classList.add('ok');
-        else if (total <= 50) el.classList.add('warn');
-        else el.classList.add('crit');
-    }
-
-    // ── Validation ──
-    function validateLockout() {
-        const val = parseInt($('foLockoutInput').value);
-        const warn = $('foLockoutWarning');
-        if (val < 1) {
-            warn.textContent = 'Lockout of 0s is dangerous \u2014 failover can oscillate with no delay between switches.';
-            warn.className = 'setting-warning active crit';
-        } else if (val < 3) {
-            warn.textContent = 'Values below 3s risk oscillation during power surges or network instability.';
-            warn.className = 'setting-warning active warn';
-        } else {
-            warn.className = 'setting-warning';
-        }
-    }
-
-    function validateHeartbeatInterval() {
-        const val = parseInt($('hbIntervalInput').value);
-        const warn = $('hbIntervalWarning');
-        if (val < 2) {
-            warn.textContent = 'Below 2ms may cause false positives on congested networks.';
-            warn.className = 'setting-warning active warn';
-        } else {
-            warn.className = 'setting-warning';
-        }
-    }
-
-    function validateMidiTriggerChannel() {
-        const val = parseInt($('midiTrigChannel').value);
-        const warn = $('midiTrigChannelWarning');
-        if (val >= 1 && val <= 10) {
-            warn.textContent = 'Channels 1\u201310 may conflict with performance data. Consider 15 or 16.';
-            warn.className = 'setting-warning active warn';
-        } else {
-            warn.className = 'setting-warning';
-        }
-    }
-
-    function validateOscTriggerSources() {
-        const val = ($('oscTrigSources').value || '').trim();
-        const warn = $('oscTrigSourcesWarning');
-        if ($('oscTriggerToggle').checked && val === '') {
-            warn.textContent = 'No source restriction \u2014 any device on the network can trigger failover.';
-            warn.className = 'setting-warning active warn';
-        } else {
-            warn.className = 'setting-warning';
-        }
-    }
-
-    function validateOscPort() {
-        const val = parseInt($('oscPortInput').value);
-        const msg = $('oscPortValidation');
-        const reserved = [5004, 5005, 5006];
-        if (val < 1024) {
-            msg.textContent = 'Port must be 1024 or higher (privileged ports require root).';
-            msg.className = 'setting-validation active crit';
-            return false;
-        }
-        if (reserved.includes(val)) {
-            msg.textContent = 'Port ' + val + ' conflicts with MIDInet data/heartbeat/control channels.';
-            msg.className = 'setting-validation active crit';
-            return false;
-        }
-        msg.className = 'setting-validation';
-        return true;
-    }
-
-    // ── Settings events ──
-    function bindSettingsEvents() {
-        // MIDI device change
-        $('midiDeviceSelect').addEventListener('change', (e) => {
-            const deviceId = e.target.value;
-            if (!deviceId) return;
-            showModal(
-                'Switch MIDI Device',
-                'Switching the MIDI device will briefly interrupt output (~50ms). The host daemon will pick up the change on config reload.',
-                'Switch',
-                () => {
-                    fetch('/api/settings/midi-device', {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ device_id: deviceId }),
-                    })
-                        .then(r => r.json())
-                        .then(d => {
-                            if (d.success) {
-                                updateStatusPill('midiDeviceStatusPill', d.status);
-                                clearActivePreset();
-                            }
-                        })
-                        .catch(() => {});
-                }
-            );
-        });
-
-        // OSC port apply
-        $('oscPortApply').addEventListener('click', () => {
-            if (!validateOscPort()) return;
-            const port = parseInt($('oscPortInput').value);
-            fetch('/api/settings/osc-port', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ port }),
-            })
-                .then(r => r.json())
-                .then(d => {
-                    if (d.success) {
-                        updateStatusPill('oscPortStatusPill', d.status);
-                        const msg = $('oscPortValidation');
-                        msg.textContent = 'Port updated to ' + d.port;
-                        msg.className = 'setting-validation active ok';
-                        setTimeout(() => { msg.className = 'setting-validation'; }, 3000);
-                    } else {
-                        const msg = $('oscPortValidation');
-                        msg.textContent = d.error || 'Failed to change port';
-                        msg.className = 'setting-validation active crit';
-                    }
-                })
-                .catch(() => {});
-        });
-
-        // OSC port enter key
-        $('oscPortInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') $('oscPortApply').click();
-        });
-        $('oscPortInput').addEventListener('input', validateOscPort);
-
-        // Failover save
-        $('foSaveBtn').addEventListener('click', saveFailoverSettings);
-
-        // Live validation
-        $('foLockoutInput').addEventListener('input', validateLockout);
-        $('hbIntervalInput').addEventListener('input', () => {
-            validateHeartbeatInterval();
-            updateFailoverTimeEstimate();
-        });
-        $('hbThresholdInput').addEventListener('input', updateFailoverTimeEstimate);
-        $('midiTrigChannel').addEventListener('input', validateMidiTriggerChannel);
-        $('oscTrigSources').addEventListener('input', validateOscTriggerSources);
-        $('oscTriggerToggle').addEventListener('change', validateOscTriggerSources);
-
-        // Collapsible sub-sections
-        $('midiTriggerToggle').addEventListener('change', (e) => {
-            toggleSubSection('midiTriggerSub', e.target.checked);
-        });
-        $('oscTriggerToggle').addEventListener('change', (e) => {
-            toggleSubSection('oscTriggerSub', e.target.checked);
-        });
-
-        // Capture buttons
-        $('midiCaptureBtn').addEventListener('click', () => {
-            if (S.captureType === 'midi') stopCapture('Cancelled');
-            else startCapture('midi');
-        });
-        $('oscCaptureBtn').addEventListener('click', () => {
-            if (S.captureType === 'osc') stopCapture('Cancelled');
-            else startCapture('osc');
-        });
-
-        // Safe defaults button
-        $('safeDefaultsBtn').addEventListener('click', () => {
-            showModal(
-                'Revert to Safe Defaults',
-                'This will reset all failover settings to factory defaults. MIDI device and OSC port are not affected.',
-                'Revert',
-                () => applyPreset('safe_defaults')
-            );
-        });
-    }
-
-    // ────────────────────────────────────────────────────────
-    //  MIDI / OSC Capture
-    // ────────────────────────────────────────────────────────
-    function startCapture(type) {
-        if (S.captureWs) stopCapture();
-        S.captureType = type;
-
-        const btn = $(type === 'midi' ? 'midiCaptureBtn' : 'oscCaptureBtn');
-        const status = $(type === 'midi' ? 'midiCaptureStatus' : 'oscCaptureStatus');
-
-        btn.classList.add('listening');
-        btn.textContent = 'Cancel';
-        status.textContent = 'Listening\u2026 send a ' + (type === 'midi' ? 'note' : 'message') + ' now';
-        status.className = 'capture-status listening';
-
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        S.captureWs = new WebSocket(proto + '//' + location.host + '/ws/traffic');
-
-        S.captureWs.onmessage = function (ev) {
-            try {
-                var msg = JSON.parse(ev.data);
-                if (type === 'midi' && (msg.ch === 'midi_in' || msg.ch === 'midi')) {
-                    captureMidiFromTraffic(msg.msg);
-                } else if (type === 'osc' && msg.ch === 'osc') {
-                    captureOscFromTraffic(msg.msg);
-                }
-            } catch (e) {}
-        };
-
-        S.captureWs.onerror = function () { S.captureWs.close(); };
-        S.captureWs.onclose = function () {
-            if (S.captureType === type) {
-                // Connection lost while still listening — reopen
-                setTimeout(function () {
-                    if (S.captureType === type) startCapture(type);
-                }, 1000);
-            }
-        };
-
-        // Auto-timeout after 30 s
-        S.captureTimeout = setTimeout(function () {
-            stopCapture('Timed out \u2014 no message received');
-        }, 30000);
-    }
-
-    function stopCapture(statusMsg) {
-        var type = S.captureType;
-        S.captureType = null;
-
-        if (S.captureWs) {
-            S.captureWs.onclose = null; // prevent reconnect
-            S.captureWs.close();
-            S.captureWs = null;
-        }
-        if (S.captureTimeout) {
-            clearTimeout(S.captureTimeout);
-            S.captureTimeout = null;
-        }
-
-        if (!type) return;
-
-        var btn = $(type === 'midi' ? 'midiCaptureBtn' : 'oscCaptureBtn');
-        var status = $(type === 'midi' ? 'midiCaptureStatus' : 'oscCaptureStatus');
-
-        btn.classList.remove('listening');
-        btn.textContent = type === 'midi' ? 'Capture Note' : 'Capture Message';
-
-        if (statusMsg) {
-            status.textContent = statusMsg;
-            status.className = 'capture-status timeout';
-            setTimeout(function () { status.className = 'capture-status'; status.textContent = ''; }, 4000);
-        }
-    }
-
-    function captureMidiFromTraffic(msg) {
-        // Traffic format examples:
-        //   "Note On ch=16 note=127 vel=100"
-        //   "NoteOn Ch16 N127 V100"
-        //   "90 7F 64" (raw hex — ch1 note 127 vel 100)
-        var chMatch = msg.match(/ch(?:annel)?[=:\s]*(\d+)/i);
-        var noteMatch = msg.match(/note[=:\s]*(\d+)/i) || msg.match(/\bN(\d+)\b/);
-        var velMatch = msg.match(/vel(?:ocity)?[=:\s]*(\d+)/i) || msg.match(/\bV(\d+)\b/);
-
-        if (noteMatch) {
-            if (chMatch) $('midiTrigChannel').value = chMatch[1];
-            $('midiTrigNote').value = noteMatch[1];
-            if (velMatch) $('midiTrigVelocity').value = velMatch[1];
-
-            var label = (chMatch ? 'Ch' + chMatch[1] + ' ' : '') +
-                'Note ' + noteMatch[1] +
-                (velMatch ? ' Vel ' + velMatch[1] : '');
-
-            showCaptureSuccess('midi', label);
-            validateMidiTriggerChannel();
-        }
-    }
-
-    function captureOscFromTraffic(msg) {
-        // Traffic format: "/some/address [arg1, arg2] from 192.168.1.10"
-        var addrMatch = msg.match(/^(\/\S+)/);
-        if (addrMatch) {
-            $('oscTrigAddress').value = addrMatch[1];
-            showCaptureSuccess('osc', addrMatch[1]);
-        }
-    }
-
-    function showCaptureSuccess(type, label) {
-        stopCapture();
-        var status = $(type === 'midi' ? 'midiCaptureStatus' : 'oscCaptureStatus');
-        status.textContent = 'Captured: ' + label;
-        status.className = 'capture-status captured';
-        setTimeout(function () { status.className = 'capture-status'; status.textContent = ''; }, 5000);
-    }
-
-    function saveFailoverSettings() {
-        const btn = $('foSaveBtn');
-        btn.disabled = true;
-        btn.textContent = 'Saving\u2026';
-
-        const sourcesRaw = ($('oscTrigSources').value || '').trim();
-        const sources = sourcesRaw ? sourcesRaw.split(',').map(s => s.trim()).filter(s => s) : [];
-
-        const payload = {
-            auto_enabled: $('foAutoToggle').checked,
-            switch_back_policy: $('foSwitchBackSelect').value,
-            lockout_seconds: parseInt($('foLockoutInput').value) || 5,
-            confirmation_mode: $('foConfirmSelect').value,
-            heartbeat: {
-                interval_ms: parseInt($('hbIntervalInput').value) || 3,
-                miss_threshold: parseInt($('hbThresholdInput').value) || 3,
-            },
-            triggers: {
-                midi: {
-                    enabled: $('midiTriggerToggle').checked,
-                    channel: parseInt($('midiTrigChannel').value) || 16,
-                    note: parseInt($('midiTrigNote').value) || 127,
-                    velocity_threshold: parseInt($('midiTrigVelocity').value) || 100,
-                    guard_note: parseInt($('midiTrigGuard').value) || 0,
-                },
-                osc: {
-                    enabled: $('oscTriggerToggle').checked,
-                    listen_port: parseInt($('oscTrigPort').value) || 8000,
-                    address: $('oscTrigAddress').value || '/midinet/failover/switch',
-                    allowed_sources: sources,
-                },
-            },
-        };
-
-        fetch('/api/settings/failover', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-            .then(r => r.json())
-            .then(d => {
-                if (d.success) {
-                    btn.textContent = 'Saved!';
-                    clearActivePreset();
-                    // Show warnings if any
-                    if (d.warnings && d.warnings.length > 0) {
-                        setTimeout(() => {
-                            alert('Settings saved with warnings:\n\n' + d.warnings.join('\n'));
-                        }, 200);
-                    }
-                } else {
-                    btn.textContent = 'Error';
-                    alert(d.error || 'Failed to save failover settings');
-                }
-            })
-            .catch(() => {
-                btn.textContent = 'Error';
-            })
-            .finally(() => {
-                setTimeout(() => {
-                    btn.disabled = false;
-                    btn.textContent = 'Save Failover Settings';
-                }, 2000);
-            });
-    }
-
-    function applyPreset(presetId) {
-        fetch('/api/settings/preset', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ preset: presetId }),
-        })
-            .then(r => r.json())
-            .then(d => {
-                if (d.success) {
-                    // Re-render with new settings
-                    fetchSettings();
-                    highlightPreset(presetId);
-                } else {
-                    alert(d.error || 'Failed to apply preset');
-                }
-            })
-            .catch(() => {});
-    }
-
-    function highlightPreset(activeId) {
-        document.querySelectorAll('.preset-card').forEach(card => {
-            card.classList.toggle('active', card.dataset.presetId === activeId);
-        });
-    }
-
-    function clearActivePreset() {
-        document.querySelectorAll('.preset-card').forEach(card => {
-            card.classList.remove('active');
-        });
-    }
-
-    // ── Settings sync from WebSocket ──
-    function updateSettingsStatus(settings) {
-        if (!settings) return;
-        updateStatusPill('midiDeviceStatusPill', settings.midi_device_status);
-        updateStatusPill('oscPortStatusPill', settings.osc_status);
-        if (settings.active_preset) {
-            highlightPreset(settings.active_preset);
-        }
-    }
-})();
+    if (fo.confirmation_mode === 'confirm') {
+      dispatch({ type: 'MODAL', modal: { title: 'Confirm Failover', message: `Switch from "${s.failover?.active_host}" to "${s.failover?.active_host === 'primary' ? 'standby' : 'primary'}"? MIDI output will briefly interrupt.`, onConfirm: go, ok: 'Switch', cls: 'btn-danger' } });
+    } else go();
+  };
+  const toggleAuto = () => {
+    const nv = !fo.auto_enabled;
+    const go = async () => {
+      const r = await apiFetch('/api/failover/auto', { method: 'PUT', body: JSON.stringify({ enabled: nv }) });
+      if (r.success) { dispatch({ type: 'SET_FAILOVER', data: { ...fo, auto_enabled: r.auto_enabled } }); dispatch({ type: 'ADD_TOAST', toast: mkToast('info', `Auto-failover ${nv ? 'enabled' : 'disabled'}`) }); }
+    };
+    if (!nv) dispatch({ type: 'MODAL', modal: { title: 'Disable Auto-Failover?', message: 'Manual intervention will be required if the active host fails.', onConfirm: go, ok: 'Disable', cls: 'btn-danger' } });
+    else go();
+  };
+  return html`<div class="card" style="flex-shrink:0">
+    <div class="card-header">Failover Control</div>
+    <div class="card-body" style="padding:12px 20px">
+      <div class="flex items-center gap-md" style="flex-wrap:wrap">
+        <div style="flex:1;min-width:120px">
+          <div style="font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;font-weight:600">Active</div>
+          <div style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--green)">${(fo.active_host || 'primary').toUpperCase()}</div>
+        </div>
+        <button class="btn btn-danger" onClick=${doSwitch}>Switch Host</button>
+        <div style="display:flex;align-items:center;gap:8px;padding-left:12px;border-left:0.5px solid var(--border)">
+          <span style="font-size:12px;font-weight:500">Auto</span>
+          <button class="toggle ${fo.auto_enabled ? 'on' : ''}" onClick=${toggleAuto} />
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:0.5px solid var(--border)">
+          <span style="font-size:12px;color:var(--text-3)">Standby</span>
+          <span class="status-dot" data-status=${s.failover?.standby_healthy ? 'ok' : 'error'} />
+        </div>
+        ${fo.history?.length > 0 && html`
+          <div style="display:flex;align-items:center;gap:8px;padding-left:12px;border-left:0.5px solid var(--border);font-size:11px;color:var(--text-3)">
+            ${fo.history.slice(-2).reverse().map((ev,i) => html`<span class="mono" key=${i}>${new Date(ev.timestamp*1000).toLocaleTimeString()} ${ev.from_host}→${ev.to_host}</span>`)}
+          </div>
+        `}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Settings Page ─────────────────────────────────────────────
+function SettingsPage() {
+  const { state, dispatch } = useContext(AppContext);
+  useEffect(() => {
+    apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
+    apiFetch('/api/settings/presets').then(d => dispatch({ type: 'SET_PRESETS', data: d.presets }));
+    apiFetch('/api/devices').then(d => dispatch({ type: 'SET_DEVICES', data: d.devices }));
+  }, []);
+  return html`<div class="page-scroll">
+    <div class="page-grid">
+      <${DeviceSettings} />
+      <${OscSettings} />
+      <div class="card-wide"><${FailoverSettingsPanel} /></div>
+      <div class="card-wide"><${PresetGrid} /></div>
+    </div>
+  </div>`;
+}
+
+function DeviceSettings() {
+  const { state, dispatch } = useContext(AppContext);
+  const s = state.settings?.midi_device;
+  const [activeDid, setActiveDid] = useState('');
+  const [backupDid, setBackupDid] = useState('');
+  useEffect(() => { if (s?.active_device) setActiveDid(s.active_device); }, [s?.active_device]);
+  useEffect(() => { setBackupDid(s?.backup_device || ''); }, [s?.backup_device]);
+  const devices = state.devices || [];
+  const activity = state.deviceActivity || {};
+  const identifying = state.identifyActive || {};
+
+  // Connect to device-activity WebSocket when settings page is open
+  useEffect(() => {
+    if (state.page !== 'settings') return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/device-activity`);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'snapshot') dispatch({ type: 'DEVICE_ACTIVITY_SNAPSHOT', data: msg.activity });
+        else if (msg.type === 'update') dispatch({ type: 'DEVICE_ACTIVITY_UPDATE', data: msg.data });
+      } catch {}
+    };
+    return () => ws.close();
+  }, [state.page]);
+
+  const saveRole = (role, deviceId) => {
+    const clearing = role === 'backup' && !deviceId;
+    const label = role === 'active' ? 'Active' : 'Backup';
+    const msg = clearing ? 'Clear backup device assignment?' : `Assign "${deviceId}" as ${label}?`;
+    dispatch({ type: 'MODAL', modal: { title: `${clearing ? 'Clear' : 'Change'} ${label} Device`, message: msg,
+      onConfirm: async () => {
+        const r = await apiFetch('/api/settings/midi-device', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, role }) });
+        dispatch({ type: 'ADD_TOAST', toast: mkToast(r.success ? 'success' : 'error', r.success ? (clearing ? 'Backup cleared' : `${label} device changed`) : (r.error || 'Failed')) });
+        if (r.success) apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
+      }, ok: clearing ? 'Clear' : 'Apply',
+    }});
+  };
+
+  const doIdentify = async (deviceId) => {
+    dispatch({ type: 'IDENTIFY_START', deviceId });
+    const r = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/identify`, { method: 'POST' });
+    if (r.success) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('info', 'Identifying device...') });
+      setTimeout(() => dispatch({ type: 'IDENTIFY_END', deviceId }), r.duration_ms || 3000);
+    } else {
+      dispatch({ type: 'IDENTIFY_END', deviceId });
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Identify failed') });
+    }
+  };
+
+  const isActive = (deviceId) => {
+    const a = activity[deviceId];
+    return a && (Date.now() - a.last_activity_ms) < 2000;
+  };
+
+  return html`<div class="card">
+    <div class="card-header">MIDI Controllers</div>
+    <div class="card-body">
+      <div class="form-group"><label class="form-label">Active Controller</label>
+        <div class="form-row">
+          <select value=${activeDid} onChange=${(e) => setActiveDid(e.target.value)} style="flex:1">
+            <option value="">Select...</option>
+            ${devices.filter(d => d.id !== backupDid).map(d => html`<option value=${d.id} key=${d.id}>${d.name}${d.connected ? '' : ' (offline)'}</option>`)}
+          </select>
+          <button class="btn btn-sm btn-accent" onClick=${() => saveRole('active', activeDid)} disabled=${!activeDid}>Apply</button>
+        </div>
+        <div class="flex items-center gap-sm mt-sm">
+          <span class="status-dot" data-status=${s?.status === 'connected' ? 'ok' : s?.status === 'switching' ? 'warn' : 'disconnected'} />
+          <span style="font-size:12px;color:var(--text-2)">${s?.status || 'disconnected'}</span>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:16px"><label class="form-label">Backup Controller</label>
+        <div class="form-row">
+          <select value=${backupDid} onChange=${(e) => setBackupDid(e.target.value)} style="flex:1">
+            <option value="">None</option>
+            ${devices.filter(d => d.id !== activeDid).map(d => html`<option value=${d.id} key=${d.id}>${d.name}${d.connected ? '' : ' (offline)'}</option>`)}
+          </select>
+          <button class="btn btn-sm btn-accent" onClick=${() => saveRole('backup', backupDid)}>Apply</button>
+        </div>
+        ${backupDid && html`<div class="flex items-center gap-sm mt-sm">
+          <span class="status-dot" data-status=${devices.find(d => d.id === backupDid)?.connected ? 'ok' : 'disconnected'} />
+          <span style="font-size:12px;color:var(--text-2)">${devices.find(d => d.id === backupDid)?.connected ? 'standby' : 'disconnected'}</span>
+        </div>`}
+        ${!backupDid && html`<div style="font-size:11px;color:var(--text-3);margin-top:6px">No backup — input redundancy disabled</div>`}
+      </div>
+      ${devices.length > 0 && html`
+        <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
+        <div class="device-id-list">
+          ${devices.map(d => {
+            const act = isActive(d.id);
+            const lastMsg = activity[d.id]?.last_message;
+            const isId = identifying[d.id];
+            const role = d.id === activeDid ? 'active' : d.id === backupDid ? 'backup' : null;
+            return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+              <div class="device-id-dot ${act ? 'active' : ''}" />
+              <div class="device-id-info">
+                <div class="device-id-name">
+                  ${d.name}
+                  ${role && html`<span class="device-id-role" data-role=${role}>${role}</span>`}
+                </div>
+                <div class="device-id-meta">
+                  ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
+                </div>
+              </div>
+              <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
+                ${isId ? 'Flashing...' : 'Identify'}
+              </button>
+            </div>`;
+          })}
+        </div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:8px">Move a fader or press a key to see which device responds. Use Identify to flash the controller's LEDs.</div>
+      `}
+    </div>
+  </div>`;
+}
+
+function OscSettings() {
+  const { state, dispatch } = useContext(AppContext);
+  const osc = state.settings?.osc;
+  const [port, setPort] = useState('');
+  useEffect(() => { if (osc?.listen_port) setPort(String(osc.listen_port)); }, [osc?.listen_port]);
+  const save = async () => {
+    const p = parseInt(port, 10);
+    if (!p || p < 1024 || p > 65535) { dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Port must be 1024-65535') }); return; }
+    const r = await apiFetch('/api/settings/osc-port', { method: 'PUT', body: JSON.stringify({ port: p }) });
+    dispatch({ type: 'ADD_TOAST', toast: mkToast(r.success ? 'success' : 'error', r.success ? `OSC port set to ${p}` : (r.error || 'Failed')) });
+    if (r.success) apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
+  };
+  return html`<div class="card">
+    <div class="card-header">OSC Settings</div>
+    <div class="card-body">
+      <div class="form-group"><label class="form-label">Listen Port</label>
+        <div class="form-row"><input type="number" value=${port} onInput=${(e) => setPort(e.target.value)} min="1024" max="65535" style="width:100px" /><button class="btn btn-sm btn-accent" onClick=${save}>Apply</button></div>
+      </div>
+      <div class="flex items-center gap-sm mt-sm">
+        <span class="status-dot" data-status=${osc?.status === 'listening' ? 'ok' : 'error'} />
+        <span style="font-size:12px;color:var(--text-2)">${osc?.status || 'stopped'}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function FailoverSettingsPanel() {
+  const { state, dispatch } = useContext(AppContext);
+  const fo = state.settings?.failover;
+  const [cfg, setCfg] = useState(null);
+  const [warns, setWarns] = useState([]);
+  const [cap, setCap] = useState(null);
+  useEffect(() => { if (fo && !cfg) setCfg(JSON.parse(JSON.stringify(fo))); }, [fo]);
+  if (!cfg) return html`<div class="card card-wide"><div class="card-header">Failover Settings</div><div class="card-body"><div class="empty-state">Loading...</div></div></div>`;
+  const u = (path, v) => { const n = JSON.parse(JSON.stringify(cfg)); const k = path.split('.'); let o = n; for (let i = 0; i < k.length - 1; i++) o = o[k[i]]; o[k[k.length-1]] = v; setCfg(n); };
+  const save = async () => {
+    const r = await apiFetch('/api/settings/failover', { method: 'PUT', body: JSON.stringify(cfg) });
+    if (r.success) { dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Settings saved') }); setWarns(r.warnings || []); apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d })); }
+    else dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed') });
+  };
+  useEffect(() => {
+    if (cap !== 'midi') return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/traffic`);
+    const t = setTimeout(() => { ws.close(); setCap(null); dispatch({ type: 'ADD_TOAST', toast: mkToast('warning', 'Capture timed out') }); }, 10000);
+    ws.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.ch === 'midi' && d.msg) { const m = d.msg.match(/ch=(\d+)\s+note=(\d+)/i); if (m) { u('triggers.midi.channel', +m[1]); u('triggers.midi.note', +m[2]); ws.close(); clearTimeout(t); setCap(null); dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `ch=${m[1]} note=${m[2]}`) }); } } } catch {} };
+    return () => { clearTimeout(t); ws.close(); };
+  }, [cap]);
+  return html`<div class="card card-wide">
+    <div class="card-header">Failover Settings<div class="card-header-right"><button class="btn btn-sm btn-accent" onClick=${save}>Save</button></div></div>
+    <div class="card-body-flush">
+      <div class="form-section">
+        <div class="form-section-title">Core</div>
+        <div class="flex gap-md" style="flex-wrap:wrap">
+          <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Switch-back</label>
+            <select value=${cfg.switch_back_policy} onChange=${(e) => u('switch_back_policy', e.target.value)}><option value="manual">Manual</option><option value="auto">Auto</option></select></div>
+          <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Lockout (s)</label>
+            <input type="number" value=${cfg.lockout_seconds} onInput=${(e) => u('lockout_seconds', +e.target.value||0)} min="0" max="300" /></div>
+          <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Confirmation</label>
+            <select value=${cfg.confirmation_mode} onChange=${(e) => u('confirmation_mode', e.target.value)}><option value="immediate">Immediate</option><option value="confirm">Confirm</option></select></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <div class="form-section-title">Heartbeat</div>
+        <div class="flex gap-md" style="flex-wrap:wrap">
+          <div class="form-group" style="flex:1;min-width:120px"><label class="form-label">Interval (ms)</label><input type="number" value=${cfg.heartbeat?.interval_ms} onInput=${(e) => u('heartbeat.interval_ms', +e.target.value||1)} min="1" max="1000" /></div>
+          <div class="form-group" style="flex:1;min-width:120px"><label class="form-label">Miss Threshold</label><input type="number" value=${cfg.heartbeat?.miss_threshold} onInput=${(e) => u('heartbeat.miss_threshold', +e.target.value||1)} min="1" max="20" /></div>
+          <div class="form-group" style="flex:1;min-width:120px"><label class="form-label">Detection</label><span class="mono" style="font-size:14px;padding-top:6px;color:var(--accent)">${(cfg.heartbeat?.interval_ms||3)*(cfg.heartbeat?.miss_threshold||3)}ms</span></div>
+        </div>
+      </div>
+      <div class="form-section">
+        <div class="form-section-title">MIDI Trigger</div>
+        <div class="flex items-center justify-between mb-sm"><span style="font-size:12px">Enable</span><button class="toggle ${cfg.triggers?.midi?.enabled?'on':''}" onClick=${()=>u('triggers.midi.enabled',!cfg.triggers?.midi?.enabled)} /></div>
+        ${cfg.triggers?.midi?.enabled && html`<div class="flex gap-md" style="flex-wrap:wrap">
+          <div class="form-group" style="min-width:70px"><label class="form-label">Channel</label><input type="number" value=${cfg.triggers.midi.channel} onInput=${(e)=>u('triggers.midi.channel',+e.target.value||1)} min="1" max="16" style="width:70px" /></div>
+          <div class="form-group" style="min-width:70px"><label class="form-label">Note</label><input type="number" value=${cfg.triggers.midi.note} onInput=${(e)=>u('triggers.midi.note',+e.target.value||0)} min="0" max="127" style="width:70px" /></div>
+          <div class="form-group" style="min-width:70px"><label class="form-label">Velocity</label><input type="number" value=${cfg.triggers.midi.velocity_threshold} onInput=${(e)=>u('triggers.midi.velocity_threshold',+e.target.value||0)} min="0" max="127" style="width:70px" /></div>
+          <div class="form-group" style="align-self:flex-end"><button class="btn btn-sm ${cap==='midi'?'btn-warn':''}" onClick=${()=>setCap(cap==='midi'?null:'midi')}>${cap==='midi'?'Listening...':'Capture'}</button></div>
+        </div>`}
+      </div>
+      <div class="form-section">
+        <div class="form-section-title">OSC Trigger</div>
+        <div class="flex items-center justify-between mb-sm"><span style="font-size:12px">Enable</span><button class="toggle ${cfg.triggers?.osc?.enabled?'on':''}" onClick=${()=>u('triggers.osc.enabled',!cfg.triggers?.osc?.enabled)} /></div>
+        ${cfg.triggers?.osc?.enabled && html`<div class="flex gap-md" style="flex-wrap:wrap">
+          <div class="form-group" style="flex:1;min-width:100px"><label class="form-label">Port</label><input type="number" value=${cfg.triggers.osc.listen_port} onInput=${(e)=>u('triggers.osc.listen_port',+e.target.value||8000)} min="1024" max="65535" /></div>
+          <div class="form-group" style="flex:2;min-width:200px"><label class="form-label">Address</label><input type="text" value=${cfg.triggers.osc.address} onInput=${(e)=>u('triggers.osc.address',e.target.value)} /></div>
+        </div>`}
+      </div>
+      ${warns.length > 0 && html`<div class="form-section" style="background:var(--orange-dim)">${warns.map((w,i)=>html`<div class="form-warn" key=${i}>${w}</div>`)}</div>`}
+    </div>
+  </div>`;
+}
+
+function PresetGrid() {
+  const { state, dispatch } = useContext(AppContext);
+  const active = state.settings?.active_preset;
+  const apply = async (id) => {
+    const r = await apiFetch('/api/settings/preset', { method: 'POST', body: JSON.stringify({ preset: id }) });
+    if (r.success) { dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `"${r.name}" applied`) }); apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d })); }
+    else dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed') });
+  };
+  return html`<div class="card card-wide">
+    <div class="card-header">Presets</div>
+    <div class="card-body">
+      <div class="preset-grid">
+        ${(state.presets||[]).map(p => html`<div class="preset-card ${active===p.id?'active':''}" key=${p.id} onClick=${()=>apply(p.id)}>
+          <div class="preset-name">${p.name}</div><div class="preset-desc">${p.description}</div>
+        </div>`)}
+      </div>
+      ${(!state.presets||!state.presets.length) && html`<div class="empty-state">No presets</div>`}
+    </div>
+  </div>`;
+}
+
+// ── Help Page ─────────────────────────────────────────────────
+function HelpPage() {
+  const { dispatch } = useContext(AppContext);
+  const cmd = (text) => html`<div class="cmd-block"><span class="cmd-text">${text}</span><button class="cmd-copy" onClick=${(e)=>{copyText(text,dispatch);e.target.textContent='OK';setTimeout(()=>e.target.textContent='COPY',1500)}}>COPY</button></div>`;
+  return html`<div class="page-scroll">
+    <div class="help-section">
+      <div class="help-title">Quick Start</div>
+      <div class="help-subtitle">macOS</div>${cmd('curl -fsSL https://raw.githubusercontent.com/yourorg/midinet/main/scripts/client-install-macos.sh | bash')}
+      <div class="help-subtitle">Linux</div>${cmd('curl -fsSL https://raw.githubusercontent.com/yourorg/midinet/main/scripts/client-install-linux.sh | bash')}
+      <div class="help-subtitle">Windows</div>${cmd('irm https://raw.githubusercontent.com/yourorg/midinet/main/scripts/client-install-windows.ps1 | iex')}
+    </div>
+    <div class="help-section">
+      <div class="help-title">API Reference</div>
+      <table class="tbl ref-tbl"><thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead><tbody>
+        <tr><td>GET</td><td class="mono">/api/status</td><td>System status</td></tr>
+        <tr><td>GET</td><td class="mono">/api/hosts</td><td>Host list</td></tr>
+        <tr><td>GET</td><td class="mono">/api/clients</td><td>Connected clients</td></tr>
+        <tr><td>GET</td><td class="mono">/api/devices</td><td>MIDI devices</td></tr>
+        <tr><td>GET/PUT</td><td class="mono">/api/pipeline</td><td>Pipeline config</td></tr>
+        <tr><td>GET</td><td class="mono">/api/failover</td><td>Failover state</td></tr>
+        <tr><td>POST</td><td class="mono">/api/failover/switch</td><td>Trigger switch</td></tr>
+        <tr><td>PUT</td><td class="mono">/api/failover/auto</td><td>Auto-failover toggle</td></tr>
+        <tr><td>GET</td><td class="mono">/api/input-redundancy</td><td>Input redundancy</td></tr>
+        <tr><td>GET</td><td class="mono">/api/settings</td><td>Full settings</td></tr>
+        <tr><td>PUT</td><td class="mono">/api/settings/midi-device</td><td>Assign device (role: active/backup)</td></tr>
+        <tr><td>PUT</td><td class="mono">/api/settings/failover</td><td>Update failover config</td></tr>
+        <tr><td>GET</td><td class="mono">/api/alerts</td><td>Active alerts</td></tr>
+      </tbody></table>
+    </div>
+    <div class="help-section">
+      <div class="help-title">Network</div>
+      <table class="tbl ref-tbl"><thead><tr><th>Port</th><th>Protocol</th><th>Use</th></tr></thead><tbody>
+        <tr><td class="mono">5004</td><td>UDP Multicast</td><td>MIDI data</td></tr>
+        <tr><td class="mono">5005</td><td>UDP Multicast</td><td>Heartbeat</td></tr>
+        <tr><td class="mono">5006</td><td>UDP Unicast</td><td>Control</td></tr>
+        <tr><td class="mono">8080</td><td>HTTP</td><td>Admin panel + API</td></tr>
+        <tr><td class="mono">8000</td><td>UDP</td><td>OSC (configurable)</td></tr>
+        <tr><td class="mono">5353</td><td>mDNS</td><td>Discovery</td></tr>
+      </tbody></table>
+    </div>
+    <div class="help-section">
+      <div class="help-title">WebSocket Streams</div>
+      <table class="tbl ref-tbl"><thead><tr><th>Endpoint</th><th>Rate</th><th>Data</th></tr></thead><tbody>
+        <tr><td class="mono">/ws/status</td><td>1s</td><td>System status + metrics</td></tr>
+        <tr><td class="mono">/ws/traffic</td><td>Live</td><td>Traffic sniffer</td></tr>
+        <tr><td class="mono">/ws/alerts</td><td>5s</td><td>Alert deltas</td></tr>
+        <tr><td class="mono">/ws/midi</td><td>Live</td><td>Raw MIDI stream</td></tr>
+      </tbody></table>
+    </div>
+    <div class="help-section">
+      <div class="help-title">Keyboard Shortcuts</div>
+      <table class="tbl ref-tbl"><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+        <tr><td class="mono">1</td><td>Overview</td></tr>
+        <tr><td class="mono">2</td><td>Control</td></tr>
+        <tr><td class="mono">3</td><td>Settings</td></tr>
+        <tr><td class="mono">4</td><td>Help</td></tr>
+        <tr><td class="mono">Esc</td><td>Close overlay</td></tr>
+      </tbody></table>
+    </div>
+  </div>`;
+}
+
+// ── App Root ──────────────────────────────────────────────────
+function App() {
+  const [state, dispatch] = useReducer(reducer, INIT);
+
+  useEffect(() => {
+    const go = () => dispatch({ type: 'SET_PAGE', page: window.location.hash.slice(1) || 'overview' });
+    window.addEventListener('hashchange', go); go();
+    return () => window.removeEventListener('hashchange', go);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
+      const pages = ['overview','control','settings','help'];
+      if (e.key >= '1' && e.key <= '4') window.location.hash = '#' + pages[+e.key - 1];
+      if (e.key === 'Escape') { dispatch({ type: 'MODAL_CLOSE' }); dispatch({ type: 'SNIFFER_CLOSE' }); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useWS('/ws/status', (d) => dispatch({ type: 'WS_STATUS', data: d }), (ok) => dispatch({ type: 'WS_OK', v: ok }));
+  usePoll('/api/hosts', 5000, (d) => dispatch({ type: 'SET_HOSTS', data: d.hosts }));
+  usePoll('/api/clients', 5000, (d) => dispatch({ type: 'SET_CLIENTS', data: d.clients }));
+  usePoll('/api/alerts', 10000, (d) => dispatch({ type: 'SET_ALERTS', data: d.active_alerts }));
+
+  useWarningPopups(state.alerts, dispatch);
+
+  const ctx = useMemo(() => ({ state, dispatch }), [state]);
+
+  return html`<${AppContext.Provider} value=${ctx}>
+    <${Header} />
+    <main class="main">
+      ${state.page === 'overview' && html`<${OverviewPage} />`}
+      ${state.page === 'control' && html`<${ControlPage} />`}
+      ${state.page === 'settings' && html`<${SettingsPage} />`}
+      ${state.page === 'help' && html`<${HelpPage} />`}
+    </main>
+    <${Footer} />
+    <${ConfirmModal} />
+    <${ToastContainer} />
+    <${WarningPopupContainer} />
+    <${SnifferDrawer} />
+  <//>`;
+}
+
+render(html`<${App} />`, document.getElementById('app'));

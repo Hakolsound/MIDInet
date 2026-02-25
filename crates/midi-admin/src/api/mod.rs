@@ -66,20 +66,28 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
     }
 }
 
+/// Dashboard polling endpoints — housekeeping, excluded from traffic counter.
+const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts"];
+
 /// Lightweight middleware to count API requests and log details for the traffic sniffer.
 async fn count_api_requests(
     State(state): State<AppState>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    state
-        .inner
-        .traffic_counters
-        .api_requests
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
+    let is_poll = method == "GET" && POLL_PATHS.contains(&path.as_str());
+
+    // Only count operational requests, not dashboard housekeeping polls
+    if !is_poll {
+        state
+            .inner
+            .traffic_counters
+            .api_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     let start = std::time::Instant::now();
     let resp = next.run(req).await;
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -111,6 +119,9 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/clients", get(status::get_clients))
         // MIDI devices
         .route("/api/devices", get(devices::list_devices))
+        .route("/api/devices/activity", get(devices::get_device_activity))
+        .route("/api/devices/:id/identify", post(devices::identify_device).delete(devices::cancel_identify))
+        .route("/api/devices/:id/activity", post(devices::report_device_activity))
         // MIDI pipeline
         .route("/api/pipeline", get(pipeline::get_pipeline).put(pipeline::update_pipeline))
         // Metrics
@@ -146,6 +157,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         // WebSocket streams (not counted as API requests)
         .route("/ws/status", get(websocket::ws_status_handler))
         .route("/ws/midi", get(websocket::ws_midi_handler))
+        .route("/ws/device-activity", get(websocket::ws_device_activity_handler))
         .route("/ws/alerts", get(websocket::ws_alerts_handler))
         .route("/ws/traffic", get(websocket::ws_traffic_handler))
         // Auth middleware (only checks /api/* paths, static + ws are exempt)

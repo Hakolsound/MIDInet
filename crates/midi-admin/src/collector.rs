@@ -101,6 +101,59 @@ pub async fn run(state: AppState) {
             failover.standby_healthy
         };
 
+        // --- Timestamp for this tick ---
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // --- Compute health score ---
+        let health_score = {
+            let mut score: i32 = 100;
+
+            // Primary: latency p95
+            if avg_latency_p95 > 20.0 {
+                score -= 30;
+            } else if avg_latency_p95 > 10.0 {
+                score -= 15;
+            } else if avg_latency_p95 > 5.0 {
+                score -= 5;
+            }
+
+            // Primary: packet loss
+            if avg_packet_loss > 5.0 {
+                score -= 30;
+            } else if avg_packet_loss > 1.0 {
+                score -= 15;
+            } else if avg_packet_loss > 0.5 {
+                score -= 5;
+            }
+
+            // Primary: no clients connected
+            if client_count == 0 {
+                score -= 5;
+            }
+
+            // Secondary: CPU temperature
+            if cpu_temp_c > 80.0 {
+                score -= 15;
+            } else if cpu_temp_c > 70.0 {
+                score -= 5;
+            }
+
+            // Secondary: MIDI device disconnected
+            if !midi_device_connected {
+                score -= 20;
+            }
+
+            // Secondary: disk space low
+            if disk_free_mb < 100 {
+                score -= 5;
+            }
+
+            score.clamp(0, 100) as u8
+        };
+
         // --- Update SystemStatus ---
         {
             let mut status = state.inner.system_status.write().await;
@@ -109,15 +162,8 @@ pub async fn run(state: AppState) {
             status.memory_used_mb = memory_used_mb;
             status.memory_total_mb = memory_total_mb;
             status.disk_free_mb = disk_free_mb;
-            // network_tx/rx are updated by the host/client protocol handlers;
-            // we leave them untouched here unless they are zero (initial state).
+            status.health_score = health_score;
         }
-
-        // --- Build metrics sample and record ---
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
 
         let sample = MetricsSample {
             timestamp: now,

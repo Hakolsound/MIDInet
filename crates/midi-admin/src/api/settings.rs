@@ -93,6 +93,13 @@ fn builtin_presets() -> Vec<Preset> {
 #[derive(Deserialize)]
 pub struct SetMidiDeviceRequest {
     pub device_id: String,
+    /// "active" or "backup" — which role to assign this device to.
+    #[serde(default = "default_role_active")]
+    pub role: String,
+}
+
+fn default_role_active() -> String {
+    "active".to_string()
 }
 
 #[derive(Deserialize)]
@@ -175,6 +182,7 @@ fn validate_port(port: u16) -> Result<(), String> {
 pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
     let devices = state.inner.devices.read().await;
     let active_device = state.inner.active_device.read().await;
+    let backup_device = state.inner.backup_device.read().await;
     let midi_status = state.inner.midi_device_status.read().await;
     let osc_state = state.inner.osc_port_state.read().await;
     let failover_config = state.inner.failover_config.read().await;
@@ -184,6 +192,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
         "midi_device": {
             "available_devices": *devices,
             "active_device": *active_device,
+            "backup_device": *backup_device,
             "status": midi_status.status,
             "error_message": midi_status.error_message,
         },
@@ -196,12 +205,36 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// PUT /api/settings/midi-device — switch the active MIDI device.
+/// PUT /api/settings/midi-device — assign a MIDI device to active or backup role.
 pub async fn set_midi_device(
     State(state): State<AppState>,
     Json(req): Json<SetMidiDeviceRequest>,
 ) -> Json<Value> {
     let device_id = req.device_id.trim().to_string();
+    let role = req.role.trim().to_lowercase();
+
+    if role != "active" && role != "backup" {
+        return Json(json!({ "success": false, "error": "role must be 'active' or 'backup'" }));
+    }
+
+    // Allow empty device_id to clear the backup assignment
+    if device_id.is_empty() && role == "backup" {
+        *state.inner.backup_device.write().await = None;
+        // Update input redundancy state
+        {
+            let mut ir = state.inner.input_redundancy.write().await;
+            ir.secondary_device = String::new();
+            ir.secondary_health = "unknown".to_string();
+            ir.enabled = false;
+        }
+        *state.inner.active_preset.write().await = None;
+        if let Err(e) = persist_config(&state).await {
+            return Json(json!({ "success": false, "error": format!("Config save failed: {}", e) }));
+        }
+        info!("Backup MIDI device cleared via settings API");
+        return Json(json!({ "success": true, "role": "backup", "device": Value::Null, "note": "Backup device cleared." }));
+    }
+
     if device_id.is_empty() {
         return Json(json!({ "success": false, "error": "device_id cannot be empty" }));
     }
@@ -215,19 +248,49 @@ pub async fn set_midi_device(
             "error": format!("Device '{}' not found. Available: {:?}", device_id, devices.iter().map(|d| &d.id).collect::<Vec<_>>())
         }));
     }
+    let device_name = devices.iter().find(|d| d.id == device_id).map(|d| d.name.clone()).unwrap_or_else(|| device_id.clone());
     drop(devices);
 
-    // Update state
+    // Prevent assigning the same device to both roles
     {
-        let mut active = state.inner.active_device.write().await;
-        *active = Some(device_id.clone());
-    }
-    {
-        let mut status = state.inner.midi_device_status.write().await;
-        *status = MidiDeviceStatus {
-            status: "switching".to_string(),
-            error_message: None,
+        let other = if role == "active" {
+            state.inner.backup_device.read().await.clone()
+        } else {
+            state.inner.active_device.read().await.clone()
         };
+        if other.as_deref() == Some(device_id.as_str()) {
+            return Json(json!({
+                "success": false,
+                "error": format!("Device '{}' is already assigned as {}. Choose a different device.", device_id, if role == "active" { "backup" } else { "active" })
+            }));
+        }
+    }
+
+    // Update state based on role
+    if role == "active" {
+        *state.inner.active_device.write().await = Some(device_id.clone());
+        {
+            let mut status = state.inner.midi_device_status.write().await;
+            *status = MidiDeviceStatus {
+                status: "switching".to_string(),
+                error_message: None,
+            };
+        }
+        // Update input redundancy primary device
+        {
+            let mut ir = state.inner.input_redundancy.write().await;
+            ir.primary_device = device_name.clone();
+            ir.primary_health = "active".to_string();
+        }
+    } else {
+        *state.inner.backup_device.write().await = Some(device_id.clone());
+        // Update input redundancy secondary device and enable it
+        {
+            let mut ir = state.inner.input_redundancy.write().await;
+            ir.secondary_device = device_name.clone();
+            ir.secondary_health = "active".to_string();
+            ir.enabled = true;
+        }
     }
 
     // Clear active preset (manual change)
@@ -241,12 +304,13 @@ pub async fn set_midi_device(
         }));
     }
 
-    info!(device = %device_id, "MIDI device changed via settings API");
+    info!(device = %device_id, role = %role, "MIDI device assigned via settings API");
 
     Json(json!({
         "success": true,
-        "active_device": device_id,
-        "status": "switching",
+        "role": role,
+        "device": device_id,
+        "status": if role == "active" { "switching" } else { "assigned" },
         "note": "Device change persisted. The host daemon will pick up the new device on its next config reload."
     }))
 }
