@@ -1,17 +1,15 @@
 /// Windows virtual MIDI device implementation.
-/// Uses teVirtualMIDI (Tobias Erichsen) via FFI for broad Windows compatibility (7-11).
+/// Uses teVirtualMIDI (Tobias Erichsen) via runtime DLL loading.
+/// Tries teVirtualMIDI64.dll first (64-bit), then teVirtualMIDI.dll as fallback.
 /// Requires teVirtualMIDI driver installed on the target system.
 ///
-/// Fallback: logs a warning and operates as a no-op if the DLL is not found.
+/// Gracefully falls back to no-op if no DLL is found.
 
 use std::sync::Mutex;
 
 use crate::virtual_device::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 use tracing::{error, info, warn};
-
-// ── teVirtualMIDI FFI bindings ──
-// These map to the teVirtualMIDI SDK C API.
 
 #[cfg(target_os = "windows")]
 mod ffi {
@@ -22,53 +20,54 @@ mod ffi {
     pub type BOOL = i32;
     pub type HANDLE = *mut c_void;
     pub type WORD = u16;
+    pub type HMODULE = *mut c_void;
+    pub type FARPROC = *mut c_void;
 
-    // teVirtualMIDI flag constants (SDK >= 1.3)
+    // teVirtualMIDI flag constants
     pub const TE_VM_FLAGS_PARSE_RX: DWORD = 0x01;
     pub const TE_VM_FLAGS_PARSE_TX: DWORD = 0x02;
-    pub const TE_VM_FLAGS_INSTANTIATE_RX_ONLY: DWORD = 0x04;
-    pub const TE_VM_FLAGS_INSTANTIATE_TX_ONLY: DWORD = 0x08;
     pub const TE_VM_FLAGS_INSTANTIATE_BOTH: DWORD = 0x0C;
 
-    #[link(name = "teVirtualMIDI")]
+    // Function pointer types for teVirtualMIDI
+    pub type FnCreatePortEx2 = unsafe extern "system" fn(
+        port_name: LPCWSTR,
+        callback: *const c_void,
+        callback_instance: *mut c_void,
+        max_sysex_length: DWORD,
+        flags: DWORD,
+    ) -> HANDLE;
+
+    pub type FnClosePort = unsafe extern "system" fn(port: HANDLE);
+
+    pub type FnSendData = unsafe extern "system" fn(
+        port: HANDLE,
+        data: *const u8,
+        length: DWORD,
+    ) -> BOOL;
+
+    pub type FnGetData = unsafe extern "system" fn(
+        port: HANDLE,
+        data: *mut u8,
+        length: *mut DWORD,
+    ) -> BOOL;
+
+    pub type FnGetVersion = unsafe extern "system" fn(
+        major: *mut WORD,
+        minor: *mut WORD,
+        release: *mut WORD,
+        build: *mut WORD,
+    ) -> LPCWSTR;
+
+    // kernel32 - always available on Windows
+    #[link(name = "kernel32")]
     extern "system" {
-        pub fn virtualMIDICreatePortEx2(
-            port_name: LPCWSTR,
-            callback: *const c_void,
-            callback_instance: *mut c_void,
-            max_sysex_length: DWORD,
-            flags: DWORD,
-        ) -> HANDLE;
-
-        pub fn virtualMIDIClosePort(port: HANDLE);
-
-        pub fn virtualMIDISendData(
-            port: HANDLE,
-            data: *const u8,
-            length: DWORD,
-        ) -> BOOL;
-
-        pub fn virtualMIDIGetData(
-            port: HANDLE,
-            data: *mut u8,
-            length: *mut DWORD,
-        ) -> BOOL;
-
-        pub fn virtualMIDIGetVersion(
-            major: *mut WORD,
-            minor: *mut WORD,
-            release: *mut WORD,
-            build: *mut WORD,
-        ) -> LPCWSTR;
-
-        pub fn virtualMIDIGetDriverVersion(
-            major: *mut WORD,
-            minor: *mut WORD,
-            release: *mut WORD,
-            build: *mut WORD,
-        ) -> LPCWSTR;
+        pub fn LoadLibraryW(lpFileName: LPCWSTR) -> HMODULE;
+        pub fn GetProcAddress(hModule: HMODULE, lpProcName: *const u8) -> FARPROC;
+        pub fn FreeLibrary(hModule: HMODULE) -> BOOL;
+        pub fn GetModuleFileNameW(hModule: HMODULE, lpFilename: *mut u16, nSize: DWORD) -> DWORD;
     }
 
+    // winmm - always available on Windows
     #[link(name = "winmm")]
     extern "system" {
         pub fn midiInGetNumDevs() -> u32;
@@ -76,16 +75,149 @@ mod ffi {
     }
 }
 
+// ── Runtime-loaded teVirtualMIDI library ──
+
+#[cfg(target_os = "windows")]
+struct TeVirtualMidiLib {
+    _dll: ffi::HMODULE,
+    dll_name: String,
+    dll_path: String,
+    pub create_port_ex2: ffi::FnCreatePortEx2,
+    pub close_port: ffi::FnClosePort,
+    pub send_data: ffi::FnSendData,
+    pub get_data: ffi::FnGetData,
+    pub get_version: ffi::FnGetVersion,
+    pub get_driver_version: ffi::FnGetVersion,
+}
+
+#[cfg(target_os = "windows")]
+impl TeVirtualMidiLib {
+    /// Try to load teVirtualMIDI. Tries 64-bit DLL first, then generic name.
+    fn load() -> Option<Self> {
+        let dll_names = [
+            "teVirtualMIDI64.dll",
+            "teVirtualMIDI.dll",
+        ];
+
+        for name in &dll_names {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let dll = unsafe { ffi::LoadLibraryW(wide.as_ptr()) };
+            if dll.is_null() {
+                info!(dll = %name, "DLL not found, trying next");
+                continue;
+            }
+
+            // Get the actual file path of the loaded DLL
+            let mut path_buf = [0u16; 512];
+            let path_len = unsafe { ffi::GetModuleFileNameW(dll, path_buf.as_mut_ptr(), 512) };
+            let dll_path = if path_len > 0 {
+                String::from_utf16_lossy(&path_buf[..path_len as usize])
+            } else {
+                "(unknown path)".to_string()
+            };
+
+            info!(dll = %name, path = %dll_path, "Loaded teVirtualMIDI DLL");
+
+            // Resolve all required function pointers
+            macro_rules! resolve {
+                ($fname:expr) => {{
+                    let p = unsafe { ffi::GetProcAddress(dll, concat!($fname, "\0").as_ptr()) };
+                    if p.is_null() {
+                        warn!(dll = %name, func = $fname, "Function not exported");
+                        unsafe { ffi::FreeLibrary(dll) };
+                        continue;
+                    }
+                    p
+                }};
+            }
+
+            let p_create = resolve!("virtualMIDICreatePortEx2");
+            let p_close = resolve!("virtualMIDIClosePort");
+            let p_send = resolve!("virtualMIDISendData");
+            let p_get = resolve!("virtualMIDIGetData");
+            let p_ver = resolve!("virtualMIDIGetVersion");
+            let p_drv = resolve!("virtualMIDIGetDriverVersion");
+
+            info!(dll = %name, "All function pointers resolved successfully");
+
+            return Some(Self {
+                _dll: dll,
+                dll_name: name.to_string(),
+                dll_path,
+                create_port_ex2: unsafe { std::mem::transmute(p_create) },
+                close_port: unsafe { std::mem::transmute(p_close) },
+                send_data: unsafe { std::mem::transmute(p_send) },
+                get_data: unsafe { std::mem::transmute(p_get) },
+                get_version: unsafe { std::mem::transmute(p_ver) },
+                get_driver_version: unsafe { std::mem::transmute(p_drv) },
+            });
+        }
+
+        error!("teVirtualMIDI DLL not found. Install from https://www.tobias-erichsen.de/software/virtualmidi.html");
+        None
+    }
+
+    fn log_versions(&self) {
+        unsafe {
+            let (mut maj, mut min, mut rel, mut bld) = (0u16, 0u16, 0u16, 0u16);
+
+            let sdk_str = (self.get_version)(&mut maj, &mut min, &mut rel, &mut bld);
+            let sdk_ver = wide_ptr_to_string(sdk_str);
+            info!(
+                dll = %self.dll_name,
+                path = %self.dll_path,
+                sdk_version = format!("{}.{}.{}.{}", maj, min, rel, bld),
+                sdk_string = %sdk_ver,
+                "teVirtualMIDI SDK version"
+            );
+
+            let drv_str = (self.get_driver_version)(&mut maj, &mut min, &mut rel, &mut bld);
+            let drv_ver = wide_ptr_to_string(drv_str);
+            info!(
+                driver_version = format!("{}.{}.{}.{}", maj, min, rel, bld),
+                driver_string = %drv_ver,
+                "teVirtualMIDI driver version"
+            );
+
+            if maj == 0 && min == 0 && rel == 0 && bld == 0 {
+                warn!("teVirtualMIDI driver version 0.0.0.0 - kernel driver may not be installed");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for TeVirtualMidiLib {
+    fn drop(&mut self) {
+        unsafe { ffi::FreeLibrary(self._dll) };
+    }
+}
+
+/// Convert a null-terminated wide string pointer to a Rust String.
+#[cfg(target_os = "windows")]
+unsafe fn wide_ptr_to_string(ptr: ffi::LPCWSTR) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    let mut len = 0;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+}
+
+// ── WindowsVirtualDevice ──
+
 pub struct WindowsVirtualDevice {
     name: String,
+    #[cfg(target_os = "windows")]
+    lib: Option<TeVirtualMidiLib>,
     #[cfg(target_os = "windows")]
     port: Mutex<Option<ffi::HANDLE>>,
     #[cfg(not(target_os = "windows"))]
     _phantom: (),
 }
 
-// teVirtualMIDI HANDLE is a raw pointer - safe to send across threads
-// when access is synchronized via Mutex.
 #[cfg(target_os = "windows")]
 unsafe impl Send for WindowsVirtualDevice {}
 #[cfg(target_os = "windows")]
@@ -96,24 +228,13 @@ impl WindowsVirtualDevice {
         Self {
             name: String::new(),
             #[cfg(target_os = "windows")]
+            lib: TeVirtualMidiLib::load(),
+            #[cfg(target_os = "windows")]
             port: Mutex::new(None),
             #[cfg(not(target_os = "windows"))]
             _phantom: (),
         }
     }
-}
-
-/// Read a null-terminated wide string pointer into a Rust String.
-#[cfg(target_os = "windows")]
-unsafe fn wide_to_string(ptr: ffi::LPCWSTR) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    let mut len = 0;
-    while *ptr.add(len) != 0 {
-        len += 1;
-    }
-    String::from_utf16(std::slice::from_raw_parts(ptr, len)).ok()
 }
 
 impl VirtualMidiDevice for WindowsVirtualDevice {
@@ -122,41 +243,27 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
 
         #[cfg(target_os = "windows")]
         {
+            let lib = match self.lib.as_ref() {
+                Some(lib) => lib,
+                None => {
+                    warn!(name = %self.name, "teVirtualMIDI DLL not loaded - virtual MIDI device disabled");
+                    return Ok(());
+                }
+            };
+
             use std::ffi::OsStr;
             use std::os::windows::ffi::OsStrExt;
 
-            // ── Diagnostics: SDK and driver versions ──
-            unsafe {
-                let (mut maj, mut min, mut rel, mut bld) = (0u16, 0u16, 0u16, 0u16);
+            // Log SDK and driver versions
+            lib.log_versions();
 
-                let sdk_str = ffi::virtualMIDIGetVersion(&mut maj, &mut min, &mut rel, &mut bld);
-                let sdk_ver = wide_to_string(sdk_str).unwrap_or_default();
-                info!(
-                    sdk_version = format!("{}.{}.{}.{}", maj, min, rel, bld),
-                    sdk_string = %sdk_ver,
-                    "teVirtualMIDI SDK"
-                );
-
-                let drv_str = ffi::virtualMIDIGetDriverVersion(&mut maj, &mut min, &mut rel, &mut bld);
-                let drv_ver = wide_to_string(drv_str).unwrap_or_default();
-                info!(
-                    driver_version = format!("{}.{}.{}.{}", maj, min, rel, bld),
-                    driver_string = %drv_ver,
-                    "teVirtualMIDI driver"
-                );
-
-                if maj == 0 && min == 0 && rel == 0 && bld == 0 {
-                    warn!("teVirtualMIDI driver version is 0.0.0.0 - driver may not be properly installed");
-                }
-            }
-
-            // ── Diagnostics: MIDI devices before port creation ──
+            // Log MIDI device counts before creation
             let midi_in_before = unsafe { ffi::midiInGetNumDevs() };
             let midi_out_before = unsafe { ffi::midiOutGetNumDevs() };
             info!(
                 midi_in = midi_in_before,
                 midi_out = midi_out_before,
-                "Windows MIDI device counts BEFORE virtual port creation"
+                "MIDI device counts BEFORE virtual port creation"
             );
 
             // Convert name to wide string (UTF-16 null-terminated)
@@ -165,17 +272,7 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                 .chain(std::iter::once(0))
                 .collect();
 
-            // Flag strategy:
-            //   PARSE_RX (0x01) = Parse incoming MIDI data
-            //   PARSE_TX (0x02) = Parse outgoing MIDI data
-            //   INSTANTIATE_RX_ONLY (0x04) = Create MIDI Input port only
-            //   INSTANTIATE_TX_ONLY (0x08) = Create MIDI Output port only
-            //   INSTANTIATE_BOTH   (0x0C) = Create both Input and Output
-            //   When no INSTANTIATE flags set: default should be BOTH (SDK >= 1.3)
-            //
-            // We try each combination, and after a successful port creation we check
-            // whether MIDI Input was actually created (midiInGetNumDevs increased).
-            // If not, we close the port and try the next flags.
+            // Try flag combinations, verify MIDI Input actually appears after each attempt
             let flag_attempts: &[(ffi::DWORD, &str)] = &[
                 (
                     ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
@@ -193,20 +290,16 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                     ffi::TE_VM_FLAGS_PARSE_RX,
                     "PARSE_RX (default=both)",
                 ),
-                (
-                    ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_PARSE_TX,
-                    "PARSE_RX|PARSE_TX",
-                ),
                 (0, "none"),
             ];
 
             let mut final_handle: ffi::HANDLE = std::ptr::null_mut();
-            let mut final_flags_label: &str = "";
-            let mut midi_input_created = false;
+            let mut final_label = "";
+            let mut midi_input_ok = false;
 
             for (flags, label) in flag_attempts {
                 let h = unsafe {
-                    ffi::virtualMIDICreatePortEx2(
+                    (lib.create_port_ex2)(
                         wide_name.as_ptr(),
                         std::ptr::null(),
                         std::ptr::null_mut(),
@@ -217,110 +310,93 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
 
                 if h.is_null() {
                     let err = std::io::Error::last_os_error();
-                    warn!(
-                        name = %self.name,
-                        flags = label,
-                        flags_hex = format!("{:#x}", flags),
-                        "Port creation failed: {}",
-                        err
-                    );
+                    warn!(flags = label, "Port creation failed: {}", err);
                     continue;
                 }
 
-                // Port created - check if MIDI Input was registered
-                // Give Windows a moment to register the device
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                // Wait for Windows to register the MIDI device
+                std::thread::sleep(std::time::Duration::from_millis(200));
 
-                let midi_in_after = unsafe { ffi::midiInGetNumDevs() };
-                let midi_out_after = unsafe { ffi::midiOutGetNumDevs() };
+                let midi_in_now = unsafe { ffi::midiInGetNumDevs() };
+                let midi_out_now = unsafe { ffi::midiOutGetNumDevs() };
 
                 info!(
-                    name = %self.name,
                     flags = label,
                     flags_hex = format!("{:#x}", flags),
-                    midi_in_before = midi_in_before,
-                    midi_in_after = midi_in_after,
-                    midi_out_before = midi_out_before,
-                    midi_out_after = midi_out_after,
-                    "Port created, checking MIDI device counts"
+                    midi_in = format!("{} -> {}", midi_in_before, midi_in_now),
+                    midi_out = format!("{} -> {}", midi_out_before, midi_out_now),
+                    "Port created, checking device registration"
                 );
 
-                if midi_in_after > midi_in_before {
-                    info!(
-                        name = %self.name,
-                        flags = label,
-                        "MIDI Input device successfully created! Resolume will see this device."
-                    );
+                if midi_in_now > midi_in_before {
+                    info!(flags = label, "MIDI Input device created successfully");
                     final_handle = h;
-                    final_flags_label = label;
-                    midi_input_created = true;
+                    final_label = label;
+                    midi_input_ok = true;
                     break;
                 }
 
-                // MIDI Input not created with these flags - try next
-                warn!(
-                    name = %self.name,
-                    flags = label,
-                    "Port opened but MIDI Input NOT created (midiIn: {} -> {}). Trying next flags...",
-                    midi_in_before,
-                    midi_in_after
-                );
-                unsafe { ffi::virtualMIDIClosePort(h) };
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                // Also check if midi_out increased (at least the port IS registering something)
+                if midi_out_now > midi_out_before {
+                    info!(flags = label, "MIDI Output created but not Input - trying next flags");
+                }
+
+                warn!(flags = label, "Port handle valid but no new MIDI devices registered");
+                unsafe { (lib.close_port)(h) };
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
-            // If no flags created MIDI Input, fall back to the first that at least creates a port
+            // Fallback: use any port that at least returns a handle
             if final_handle.is_null() {
-                warn!("No flag combination created MIDI Input. Falling back to any working port...");
-                for (flags, label) in flag_attempts {
-                    let h = unsafe {
-                        ffi::virtualMIDICreatePortEx2(
-                            wide_name.as_ptr(),
-                            std::ptr::null(),
-                            std::ptr::null_mut(),
-                            65535,
-                            *flags,
-                        )
-                    };
-
-                    if !h.is_null() {
-                        final_handle = h;
-                        final_flags_label = label;
-                        break;
-                    }
+                warn!("No flags created MIDI Input - falling back to first working port");
+                let h = unsafe {
+                    (lib.create_port_ex2)(
+                        wide_name.as_ptr(),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        65535,
+                        ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    )
+                };
+                if !h.is_null() {
+                    final_handle = h;
+                    final_label = "fallback (PARSE_RX|INSTANTIATE_BOTH)";
                 }
             }
 
             if final_handle.is_null() {
-                error!(
-                    name = %self.name,
-                    "All teVirtualMIDI flag combinations failed - is the driver installed?"
-                );
+                error!("All teVirtualMIDI port creation attempts failed");
                 return Err(anyhow::anyhow!(
                     "teVirtualMIDI port creation failed. Install from https://www.tobias-erichsen.de/software/virtualmidi.html"
                 ));
             }
 
-            if !midi_input_created {
+            // Final diagnostics
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let midi_in_final = unsafe { ffi::midiInGetNumDevs() };
+            let midi_out_final = unsafe { ffi::midiOutGetNumDevs() };
+
+            if !midi_input_ok {
                 error!(
-                    name = %self.name,
-                    flags = final_flags_label,
-                    "WARNING: Virtual MIDI port created but MIDI Input device was NOT registered. \
-                     Applications like Resolume will only see MIDI Output (cannot receive MIDI). \
-                     This usually means the teVirtualMIDI driver needs to be updated. \
-                     Download the latest from: https://www.tobias-erichsen.de/software/virtualmidi.html"
+                    dll = %lib.dll_name,
+                    dll_path = %lib.dll_path,
+                    flags = final_label,
+                    midi_in = midi_in_final,
+                    midi_out = midi_out_final,
+                    "CRITICAL: Virtual MIDI port handle created but NO MIDI devices registered in Windows. \
+                     The teVirtualMIDI kernel driver may not be properly installed. \
+                     Try: (1) Install loopMIDI from https://www.tobias-erichsen.de/software/loopmidi.html \
+                     (2) Or reinstall teVirtualMIDI SDK from https://www.tobias-erichsen.de/software/virtualmidi.html \
+                     (3) Reboot after installation"
                 );
             }
 
-            // Final diagnostics: log all MIDI device names
-            let midi_in_final = unsafe { ffi::midiInGetNumDevs() };
-            let midi_out_final = unsafe { ffi::midiOutGetNumDevs() };
             info!(
+                flags = final_label,
                 midi_in = midi_in_final,
                 midi_out = midi_out_final,
-                flags = final_flags_label,
-                input_created = midi_input_created,
-                "Final MIDI device counts after virtual port creation"
+                input_created = midi_input_ok,
+                "Virtual MIDI port creation complete"
             );
 
             *self.port.lock().unwrap() = Some(final_handle);
@@ -337,14 +413,16 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
     fn send(&self, data: &[u8]) -> anyhow::Result<()> {
         #[cfg(target_os = "windows")]
         {
-            let guard = self.port.lock().unwrap();
-            if let Some(handle) = *guard {
-                let ok = unsafe {
-                    ffi::virtualMIDISendData(handle, data.as_ptr(), data.len() as ffi::DWORD)
-                };
-                if ok == 0 {
-                    let err = std::io::Error::last_os_error();
-                    return Err(anyhow::anyhow!("virtualMIDISendData failed: {}", err));
+            if let Some(ref lib) = self.lib {
+                let guard = self.port.lock().unwrap();
+                if let Some(handle) = *guard {
+                    let ok = unsafe {
+                        (lib.send_data)(handle, data.as_ptr(), data.len() as ffi::DWORD)
+                    };
+                    if ok == 0 {
+                        let err = std::io::Error::last_os_error();
+                        return Err(anyhow::anyhow!("virtualMIDISendData failed: {}", err));
+                    }
                 }
             }
         }
@@ -355,15 +433,17 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
     fn receive(&self) -> anyhow::Result<Option<Vec<u8>>> {
         #[cfg(target_os = "windows")]
         {
-            let guard = self.port.lock().unwrap();
-            if let Some(handle) = *guard {
-                let mut buf = [0u8; 1024];
-                let mut len: ffi::DWORD = buf.len() as ffi::DWORD;
-                let ok = unsafe {
-                    ffi::virtualMIDIGetData(handle, buf.as_mut_ptr(), &mut len)
-                };
-                if ok != 0 && len > 0 {
-                    return Ok(Some(buf[..len as usize].to_vec()));
+            if let Some(ref lib) = self.lib {
+                let guard = self.port.lock().unwrap();
+                if let Some(handle) = *guard {
+                    let mut buf = [0u8; 1024];
+                    let mut len: ffi::DWORD = buf.len() as ffi::DWORD;
+                    let ok = unsafe {
+                        (lib.get_data)(handle, buf.as_mut_ptr(), &mut len)
+                    };
+                    if ok != 0 && len > 0 {
+                        return Ok(Some(buf[..len as usize].to_vec()));
+                    }
                 }
             }
         }
@@ -373,10 +453,12 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
     fn close(&mut self) -> anyhow::Result<()> {
         #[cfg(target_os = "windows")]
         {
-            let mut guard = self.port.lock().unwrap();
-            if let Some(handle) = guard.take() {
-                unsafe { ffi::virtualMIDIClosePort(handle) };
-                info!(name = %self.name, "Closed Windows virtual MIDI device");
+            if let Some(ref lib) = self.lib {
+                let mut guard = self.port.lock().unwrap();
+                if let Some(handle) = guard.take() {
+                    unsafe { (lib.close_port)(handle) };
+                    info!(name = %self.name, "Closed Windows virtual MIDI device");
+                }
             }
         }
         Ok(())
@@ -390,9 +472,12 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
 #[cfg(target_os = "windows")]
 impl Drop for WindowsVirtualDevice {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.port.lock() {
-            if let Some(handle) = guard.take() {
-                unsafe { ffi::virtualMIDIClosePort(handle) };
+        // Close port before lib is dropped (lib drop calls FreeLibrary)
+        if let Some(ref lib) = self.lib {
+            if let Ok(mut guard) = self.port.lock() {
+                if let Some(handle) = guard.take() {
+                    unsafe { (lib.close_port)(handle) };
+                }
             }
         }
     }
