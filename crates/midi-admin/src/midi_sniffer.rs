@@ -133,7 +133,7 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                 {
                     let mut metrics = state.inner.midi_metrics.write().await;
                     metrics.messages_in_per_sec = msg_count as f32 / elapsed;
-                    metrics.bytes_in_per_sec = byte_count / elapsed.max(0.001) as u64;
+                    metrics.bytes_in_per_sec = (byte_count as f32 / elapsed) as u64;
                     metrics.total_messages = total_messages;
                     metrics.active_notes = active_notes;
                 }
