@@ -1,5 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::Json;
@@ -10,6 +11,13 @@ use tracing::info;
 
 use crate::state::AppState;
 use crate::test_generator::{self, TestConfig, TestProfile};
+
+fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
 
 #[derive(Deserialize)]
 pub struct StartTestBody {
@@ -164,7 +172,55 @@ pub async fn get_test_status(
         "elapsed_secs": elapsed_secs,
         "packets_sent": packets_sent,
         "duration_secs": ts.duration_secs,
+        "fire_enabled": state.inner.test_fire_enabled.load(Ordering::Relaxed),
         "clients": client_metrics,
         "results": ts.client_snapshots,
     }))
+}
+
+// ── Echo-based round-trip latency ──
+
+#[derive(Deserialize)]
+pub struct EchoBody {
+    pub client_id: u32,
+    pub timestamp_us: u64,
+}
+
+/// POST /api/test/echo — client echoes the admin's timestamp back.
+/// Both timestamps use the admin's clock, so RTT = now - echo.
+pub async fn echo_test(
+    State(state): State<AppState>,
+    Json(body): Json<EchoBody>,
+) -> Json<Value> {
+    let now = now_us();
+    let rtt_us = now.saturating_sub(body.timestamp_us);
+    let latency_ms = rtt_us as f32 / 2000.0; // RTT / 2
+
+    // Update the client's latency
+    let mut clients = state.inner.clients.write().await;
+    if let Some(client) = clients.iter_mut().find(|c| c.id == body.client_id) {
+        client.latency_ms = latency_ms;
+    }
+
+    Json(json!({ "rtt_us": rtt_us, "latency_ms": latency_ms }))
+}
+
+// ── Fire control ──
+
+#[derive(Deserialize)]
+pub struct FireBody {
+    pub enabled: bool,
+}
+
+/// POST /api/test/fire — enable or disable packet sending.
+/// UI toggles this based on tab visibility + "Fire Commands" switch.
+pub async fn set_fire(
+    State(state): State<AppState>,
+    Json(body): Json<FireBody>,
+) -> Json<Value> {
+    state
+        .inner
+        .test_fire_enabled
+        .store(body.enabled, Ordering::Relaxed);
+    Json(json!({ "fire_enabled": body.enabled }))
 }

@@ -4,7 +4,6 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
@@ -16,14 +15,6 @@ use midi_protocol::packets::MidiDataPacket;
 
 use crate::health::TaskPulse;
 use crate::ClientState;
-
-/// Timestamp in microseconds since UNIX epoch.
-fn now_us() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
-}
 
 /// Create a multicast listener socket that joins the specified group.
 fn create_multicast_listener(
@@ -73,11 +64,13 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                 if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
                     state.health.counters.packets_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                    // One-way latency measurement (host stamps timestamp_us)
-                    let now = now_us();
-                    if packet.timestamp_us > 0 && packet.timestamp_us < now {
-                        let latency = now - packet.timestamp_us;
-                        state.health.update_latency(latency);
+                    // Test traffic (host_id=254): count for metrics but don't
+                    // forward to the virtual device.  Echo the admin's timestamp
+                    // back so the admin can compute round-trip latency.
+                    if packet.host_id == 254 {
+                        let _ = state.echo_tx.try_send(packet.timestamp_us);
+                        debug!(seq = packet.sequence, "Test packet received (not forwarded to device)");
+                        continue;
                     }
 
                     // Duplicate detection: skip if we already processed this sequence

@@ -152,6 +152,15 @@ pub async fn run(
             break;
         }
 
+        // Pause when fire is disabled (tab not focused or toggle off)
+        if !state.test_fire_enabled.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+                _ = cancel.cancelled() => break,
+            }
+            continue;
+        }
+
         // Compute current rate based on profile
         let elapsed_secs = start.elapsed().as_secs_f32();
         let (interval_us, channels, send_notes, send_pitchbend) =

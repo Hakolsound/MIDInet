@@ -140,6 +140,10 @@ pub struct ClientState {
     pub health: Arc<HealthCollector>,
     /// Set to true after a failover to request journal reconciliation
     pub needs_reconciliation: AtomicBool,
+    /// Discovered admin panel URL (set by admin_reporter, read by echo task)
+    pub admin_url: RwLock<Option<String>>,
+    /// Channel to send test-packet timestamps for echo-based RTT measurement
+    pub echo_tx: tokio::sync::mpsc::Sender<u64>,
 }
 
 #[tokio::main]
@@ -192,6 +196,9 @@ async fn main() -> anyhow::Result<()> {
     health.register_monitor(failover_monitor);
     health.register_monitor(focus_monitor);
 
+    // Echo channel for test-packet RTT measurement (receiver → echo task)
+    let (echo_tx, echo_rx) = tokio::sync::mpsc::channel(16);
+
     let state = Arc::new(ClientState {
         config: config.clone(),
         identity: RwLock::new(DeviceIdentity::default()),
@@ -203,6 +210,8 @@ async fn main() -> anyhow::Result<()> {
         pipeline_config: RwLock::new(PipelineConfig::default()),
         health: Arc::clone(&health),
         needs_reconciliation: AtomicBool::new(false),
+        admin_url: RwLock::new(None),
+        echo_tx,
     });
 
     info!(client_id = client_id, "MIDInet client starting");
@@ -300,6 +309,14 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Spawn echo task for test-packet RTT measurement
+    let echo_handle = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            admin_reporter::run_echo(state, echo_rx).await;
+        })
+    };
+
     // Spawn HTTP-based host discovery fallback (if admin_url is configured)
     let http_discovery_handle = if let Some(ref admin_url) = config.network.admin_url {
         let state = Arc::clone(&state);
@@ -346,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
     health_server_handle.abort();
     watchdog_handle.abort();
     admin_reporter_handle.abort();
+    echo_handle.abort();
     if let Some(h) = http_discovery_handle {
         h.abort();
     }

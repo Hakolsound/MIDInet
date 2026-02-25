@@ -68,7 +68,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 /// Dashboard polling endpoints — housekeeping, excluded from traffic counter.
-const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register", "/api/clients/add", "/api/test/status"];
+const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register", "/api/clients/add", "/api/test/status", "/api/test/echo", "/api/test/fire"];
 
 /// Lightweight middleware to count API requests and log details for the traffic sniffer.
 async fn count_api_requests(
@@ -161,6 +161,8 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/test/start", post(test::start_test))
         .route("/api/test/stop", post(test::stop_test))
         .route("/api/test/status", get(test::get_test_status))
+        .route("/api/test/fire", post(test::set_fire))
+        .route("/api/test/echo", post(test::echo_test))
         // Count API requests for traffic monitor
         .layer(middleware::from_fn_with_state(state.clone(), count_api_requests));
 

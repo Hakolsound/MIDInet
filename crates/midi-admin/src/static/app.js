@@ -5,7 +5,7 @@
 import { h, render, createContext } from 'https://esm.sh/preact@10.25.4';
 import {
   useState, useEffect, useRef, useReducer,
-  useContext, useMemo
+  useContext, useMemo, useCallback
 } from 'https://esm.sh/preact@10.25.4/hooks';
 import htm from 'https://esm.sh/htm@3.1.1';
 
@@ -1147,17 +1147,47 @@ function PresetGrid() {
 // ── Test Playground ──────────────────────────────────────────
 function TestPlaygroundPage() {
   const { state, dispatch } = useContext(AppContext);
-  const [testState, setTestState] = useState({ running: false, profile: '', packets_sent: 0, elapsed_secs: 0, clients: [], results: {} });
+  const [testState, setTestState] = useState({ running: false, profile: '', packets_sent: 0, elapsed_secs: 0, clients: [], results: {}, fire_enabled: false });
   const [profile, setProfile] = useState('ramp');
   const [duration, setDuration] = useState(30);
+  const [fireCommands, setFireCommands] = useState(false);
   const pollRef = useRef(null);
+  const fireRef = useRef(false); // tracks the last fire state sent to server
 
-  // Poll test status while running
+  // Poll test status
   useEffect(() => {
     const poll = () => fetch('/api/test/status').then(r => r.json()).then(d => setTestState(d)).catch(() => {});
-    poll(); // initial fetch
+    poll();
     pollRef.current = setInterval(poll, 1000);
     return () => clearInterval(pollRef.current);
+  }, []);
+
+  // Fire control: only send MIDI when tab visible + toggle on + test running
+  const syncFire = useCallback((toggle) => {
+    const visible = document.visibilityState === 'visible';
+    const shouldFire = toggle && visible;
+    if (shouldFire !== fireRef.current) {
+      fireRef.current = shouldFire;
+      fetch('/api/test/fire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: shouldFire }) }).catch(() => {});
+    }
+  }, []);
+
+  // Sync fire state when toggle changes
+  useEffect(() => { syncFire(fireCommands); }, [fireCommands, syncFire]);
+
+  // Pause firing when tab loses focus, resume when it gains focus
+  useEffect(() => {
+    const handler = () => syncFire(fireCommands);
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, [fireCommands, syncFire]);
+
+  // Disable fire when navigating away from test page
+  useEffect(() => {
+    return () => {
+      fireRef.current = false;
+      fetch('/api/test/fire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
+    };
   }, []);
 
   const startTest = async () => {
@@ -1170,6 +1200,7 @@ function TestPlaygroundPage() {
   };
 
   const stopTest = async () => {
+    setFireCommands(false);
     const r = await apiFetch('/api/test/stop', { method: 'POST' });
     if (r.success) {
       dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Test stopped') });
@@ -1179,6 +1210,7 @@ function TestPlaygroundPage() {
   const ts = testState;
   const running = ts.running;
   const clients = ts.clients || [];
+  const firing = ts.fire_enabled;
 
   // Compute aggregate stats
   const avgLatency = clients.length > 0 ? (clients.reduce((s, c) => s + (c.latency_ms || 0), 0) / clients.length) : 0;
@@ -1186,7 +1218,7 @@ function TestPlaygroundPage() {
   const avgLoss = clients.length > 0 ? (clients.reduce((s, c) => s + (c.packet_loss_percent || 0), 0) / clients.length) : 0;
   const connectedCount = clients.filter(c => c.connection_state === 'connected').length;
 
-  const latLv = (ms) => ms < 3 ? 'ok' : ms < 10 ? 'warn' : 'crit';
+  const latLv = (ms) => ms === 0 ? '' : ms < 3 ? 'ok' : ms < 10 ? 'warn' : 'crit';
   const lossLv = (p) => p < 0.1 ? 'ok' : p < 1 ? 'warn' : 'crit';
 
   return html`<div class="page-scroll">
@@ -1196,7 +1228,8 @@ function TestPlaygroundPage() {
         <div class="card-header">
           <span class="card-header-icon">${ICO.music()}</span>
           Load Test
-          ${running && html`<span class="badge badge-pulse" style="margin-left:8px;background:var(--green)">RUNNING</span>`}
+          ${running && firing && html`<span class="badge badge-pulse" style="margin-left:8px;background:var(--green)">FIRING</span>`}
+          ${running && !firing && html`<span class="badge" style="margin-left:8px;background:var(--yellow);color:#000">PAUSED</span>`}
         </div>
         <div class="card-body">
           <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
@@ -1219,6 +1252,13 @@ function TestPlaygroundPage() {
                 : html`<button class="btn btn-primary" onClick=${startTest}>Start Test</button>`
               }
             </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+              <label class="field-label" style="margin:0;white-space:nowrap;cursor:pointer" onClick=${() => running && setFireCommands(f => !f)}>
+                Fire Commands
+              </label>
+              <input type="checkbox" checked=${fireCommands} onChange=${e => setFireCommands(e.target.checked)} disabled=${!running}
+                style="width:18px;height:18px;accent-color:var(--green);cursor:pointer" />
+            </div>
           </div>
           ${running && html`
             <div class="test-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-top:16px">
@@ -1229,7 +1269,9 @@ function TestPlaygroundPage() {
             </div>
           `}
           <p style="margin-top:12px;color:var(--text-3);font-size:12px">
-            Sends synthetic MIDI (host_id=254) via multicast. Clients measure one-way latency and report via heartbeat.
+            Sends synthetic MIDI (host_id=254) via multicast. Test packets are NOT forwarded to virtual devices.
+            Latency is measured via round-trip echo.
+            ${!running ? ' Start a test, then enable Fire Commands to begin sending.' : ''}
             ${duration === 0 ? ' Duration 0 = run until stopped.' : ''}
           </p>
         </div>
@@ -1245,11 +1287,11 @@ function TestPlaygroundPage() {
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px">
             <div class="stat-mini">
               <div class="stat-mini-label">Avg Latency</div>
-              <div class="stat-mini-value" data-lv=${latLv(avgLatency)}>${avgLatency.toFixed(1)}ms</div>
+              <div class="stat-mini-value" data-lv=${latLv(avgLatency)}>${avgLatency > 0 ? avgLatency.toFixed(1) + 'ms' : '--'}</div>
             </div>
             <div class="stat-mini">
               <div class="stat-mini-label">Max Latency</div>
-              <div class="stat-mini-value" data-lv=${latLv(maxLatency)}>${maxLatency.toFixed(1)}ms</div>
+              <div class="stat-mini-value" data-lv=${latLv(maxLatency)}>${maxLatency > 0 ? maxLatency.toFixed(1) + 'ms' : '--'}</div>
             </div>
             <div class="stat-mini">
               <div class="stat-mini-label">Avg Packet Loss</div>
@@ -1280,10 +1322,11 @@ function TestPlaygroundPage() {
                 ${clients.map(c => {
                   const cState = c.connection_state || 'unknown';
                   const stDot = cState === 'connected' ? 'ok' : cState === 'discovering' ? 'warn' : 'err';
+                  const lat = c.latency_ms || 0;
                   return html`<tr key=${c.id}>
                     <td><strong>${c.hostname || 'Client ' + c.id}</strong></td>
                     <td class="mono">${c.ip}</td>
-                    <td data-lv=${latLv(c.latency_ms || 0)}>${(c.latency_ms || 0).toFixed(1)}ms</td>
+                    <td data-lv=${latLv(lat)}>${lat > 0 ? lat.toFixed(1) + 'ms' : '--'}</td>
                     <td data-lv=${lossLv(c.packet_loss_percent || 0)}>${(c.packet_loss_percent || 0).toFixed(2)}%</td>
                     <td>${fmtRate(c.midi_rate_in || 0)}/s</td>
                     <td>${c.device_ready ? (c.device_name || 'Ready') : 'No device'}</td>

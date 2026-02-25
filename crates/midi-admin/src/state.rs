@@ -3,7 +3,7 @@
 /// All fields are thread-safe for use with axum's State extractor.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -334,6 +334,8 @@ pub struct AppStateInner {
     pub test_cancel: RwLock<Option<CancellationToken>>,
     /// Atomic counter for test packets sent (incremented by generator, read by API)
     pub test_packets_sent: AtomicU64,
+    /// When false, test generator pauses sending (UI controls via tab focus + toggle)
+    pub test_fire_enabled: AtomicBool,
 }
 
 impl AppState {
@@ -373,6 +375,7 @@ impl AppState {
                 test_state: RwLock::new(TestState::default()),
                 test_cancel: RwLock::new(None),
                 test_packets_sent: AtomicU64::new(0),
+                test_fire_enabled: AtomicBool::new(false),
             }),
         }
     }
