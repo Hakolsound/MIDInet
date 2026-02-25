@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod pipeline;
 pub mod settings;
 pub mod status;
+pub mod test;
 
 use axum::{
     body::Body,
@@ -67,7 +68,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 /// Dashboard polling endpoints — housekeeping, excluded from traffic counter.
-const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register", "/api/clients/add"];
+const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register", "/api/clients/add", "/api/test/status"];
 
 /// Lightweight middleware to count API requests and log details for the traffic sniffer.
 async fn count_api_requests(
@@ -156,6 +157,10 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/settings/failover", put(settings::set_failover))
         .route("/api/settings/presets", get(settings::list_presets))
         .route("/api/settings/preset", post(settings::apply_preset))
+        // Load test
+        .route("/api/test/start", post(test::start_test))
+        .route("/api/test/stop", post(test::stop_test))
+        .route("/api/test/status", get(test::get_test_status))
         // Count API requests for traffic monitor
         .layer(middleware::from_fn_with_state(state.clone(), count_api_requests));
 

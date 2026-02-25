@@ -225,6 +225,7 @@ function Header() {
     { id: 'overview', label: 'Overview' },
     { id: 'control', label: 'Control' },
     { id: 'settings', label: 'Settings' },
+    { id: 'test', label: 'Test' },
     { id: 'help', label: 'Help' },
   ];
   const alerts = state.alerts || [];
@@ -1143,6 +1144,186 @@ function PresetGrid() {
 }
 
 // ── Help Page ─────────────────────────────────────────────────
+// ── Test Playground ──────────────────────────────────────────
+function TestPlaygroundPage() {
+  const { state, dispatch } = useContext(AppContext);
+  const [testState, setTestState] = useState({ running: false, profile: '', packets_sent: 0, elapsed_secs: 0, clients: [], results: {} });
+  const [profile, setProfile] = useState('ramp');
+  const [duration, setDuration] = useState(30);
+  const pollRef = useRef(null);
+
+  // Poll test status while running
+  useEffect(() => {
+    const poll = () => fetch('/api/test/status').then(r => r.json()).then(d => setTestState(d)).catch(() => {});
+    poll(); // initial fetch
+    pollRef.current = setInterval(poll, 1000);
+    return () => clearInterval(pollRef.current);
+  }, []);
+
+  const startTest = async () => {
+    const r = await apiFetch('/api/test/start', { method: 'POST', body: JSON.stringify({ profile, duration_secs: duration, ramp_duration_secs: Math.max(Math.floor(duration * 0.7), 5) }) });
+    if (r.success) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Test started (${profile})`) });
+    } else {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to start test') });
+    }
+  };
+
+  const stopTest = async () => {
+    const r = await apiFetch('/api/test/stop', { method: 'POST' });
+    if (r.success) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Test stopped') });
+    }
+  };
+
+  const ts = testState;
+  const running = ts.running;
+  const clients = ts.clients || [];
+
+  // Compute aggregate stats
+  const avgLatency = clients.length > 0 ? (clients.reduce((s, c) => s + (c.latency_ms || 0), 0) / clients.length) : 0;
+  const maxLatency = clients.length > 0 ? Math.max(...clients.map(c => c.latency_ms || 0)) : 0;
+  const avgLoss = clients.length > 0 ? (clients.reduce((s, c) => s + (c.packet_loss_percent || 0), 0) / clients.length) : 0;
+  const connectedCount = clients.filter(c => c.connection_state === 'connected').length;
+
+  const latLv = (ms) => ms < 3 ? 'ok' : ms < 10 ? 'warn' : 'crit';
+  const lossLv = (p) => p < 0.1 ? 'ok' : p < 1 ? 'warn' : 'crit';
+
+  return html`<div class="page-scroll">
+    <div class="page-grid">
+      <!-- Control Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-header-icon">${ICO.music()}</span>
+          Load Test
+          ${running && html`<span class="badge badge-pulse" style="margin-left:8px;background:var(--green)">RUNNING</span>`}
+        </div>
+        <div class="card-body">
+          <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+            <div>
+              <label class="field-label">Profile</label>
+              <select class="field-select" value=${profile} onChange=${e => setProfile(e.target.value)} disabled=${running}>
+                <option value="gentle">Gentle (~10/s)</option>
+                <option value="normal">Normal (~50/s)</option>
+                <option value="stress">Stress (~200/s)</option>
+                <option value="ramp">Ramp (auto-increase)</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">Duration (s)</label>
+              <input class="field-input" type="number" min="0" max="300" step="5" value=${duration} onInput=${e => setDuration(+e.target.value)} disabled=${running} style="width:80px" />
+            </div>
+            <div>
+              ${running
+                ? html`<button class="btn btn-danger" onClick=${stopTest}>Stop</button>`
+                : html`<button class="btn btn-primary" onClick=${startTest}>Start Test</button>`
+              }
+            </div>
+          </div>
+          ${running && html`
+            <div class="test-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-top:16px">
+              <div class="stat-mini"><div class="stat-mini-label">Packets Sent</div><div class="stat-mini-value">${fmtRate(ts.packets_sent)}</div></div>
+              <div class="stat-mini"><div class="stat-mini-label">Elapsed</div><div class="stat-mini-value">${ts.elapsed_secs}s${ts.duration_secs > 0 ? ' / ' + ts.duration_secs + 's' : ''}</div></div>
+              <div class="stat-mini"><div class="stat-mini-label">Profile</div><div class="stat-mini-value">${ts.profile}</div></div>
+              <div class="stat-mini"><div class="stat-mini-label">Clients</div><div class="stat-mini-value">${connectedCount}/${clients.length}</div></div>
+            </div>
+          `}
+          <p style="margin-top:12px;color:var(--text-3);font-size:12px">
+            Sends synthetic MIDI (host_id=254) via multicast. Clients measure one-way latency and report via heartbeat.
+            ${duration === 0 ? ' Duration 0 = run until stopped.' : ''}
+          </p>
+        </div>
+      </div>
+
+      <!-- Aggregate Metrics -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-header-icon">${ICO.wifi()}</span>
+          Metrics
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px">
+            <div class="stat-mini">
+              <div class="stat-mini-label">Avg Latency</div>
+              <div class="stat-mini-value" data-lv=${latLv(avgLatency)}>${avgLatency.toFixed(1)}ms</div>
+            </div>
+            <div class="stat-mini">
+              <div class="stat-mini-label">Max Latency</div>
+              <div class="stat-mini-value" data-lv=${latLv(maxLatency)}>${maxLatency.toFixed(1)}ms</div>
+            </div>
+            <div class="stat-mini">
+              <div class="stat-mini-label">Avg Packet Loss</div>
+              <div class="stat-mini-value" data-lv=${lossLv(avgLoss)}>${avgLoss.toFixed(2)}%</div>
+            </div>
+            <div class="stat-mini">
+              <div class="stat-mini-label">Delivery</div>
+              <div class="stat-mini-value" data-lv=${connectedCount === clients.length && clients.length > 0 ? 'ok' : clients.length > 0 ? 'warn' : ''}>${clients.length > 0 ? connectedCount + '/' + clients.length : '--'}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-Client Table -->
+      <div class="card" style="grid-column:1/-1">
+        <div class="card-header">
+          <span class="card-header-icon">${ICO.users()}</span>
+          Client Results
+        </div>
+        <div class="card-body">
+          ${clients.length === 0
+            ? html`<div style="color:var(--text-3);text-align:center;padding:24px">No clients connected. Start the client daemon on your workstations first.</div>`
+            : html`<table class="tbl" style="width:100%">
+              <thead><tr>
+                <th>Client</th><th>IP</th><th>Latency</th><th>Loss</th><th>MIDI Rate</th><th>Device</th><th>Status</th>
+              </tr></thead>
+              <tbody>
+                ${clients.map(c => {
+                  const cState = c.connection_state || 'unknown';
+                  const stDot = cState === 'connected' ? 'ok' : cState === 'discovering' ? 'warn' : 'err';
+                  return html`<tr key=${c.id}>
+                    <td><strong>${c.hostname || 'Client ' + c.id}</strong></td>
+                    <td class="mono">${c.ip}</td>
+                    <td data-lv=${latLv(c.latency_ms || 0)}>${(c.latency_ms || 0).toFixed(1)}ms</td>
+                    <td data-lv=${lossLv(c.packet_loss_percent || 0)}>${(c.packet_loss_percent || 0).toFixed(2)}%</td>
+                    <td>${fmtRate(c.midi_rate_in || 0)}/s</td>
+                    <td>${c.device_ready ? (c.device_name || 'Ready') : 'No device'}</td>
+                    <td><span class="status-dot" data-status=${stDot === 'ok' ? 'ok' : stDot === 'warn' ? 'warn' : 'error'} /> ${cState}</td>
+                  </tr>`;
+                })}
+              </tbody>
+            </table>`
+          }
+        </div>
+      </div>
+
+      <!-- Frozen Results (after test stops) -->
+      ${!running && Object.keys(ts.results || {}).length > 0 && html`
+        <div class="card" style="grid-column:1/-1">
+          <div class="card-header">
+            <span class="card-header-icon">${ICO.grid()}</span>
+            Last Test Results
+            <span style="margin-left:auto;font-size:12px;color:var(--text-3)">${ts.profile} / ${ts.packets_sent} packets</span>
+          </div>
+          <div class="card-body">
+            <table class="tbl" style="width:100%">
+              <thead><tr><th>Client</th><th>Latency (avg)</th><th>Latency (min)</th><th>Latency (max)</th><th>Loss</th></tr></thead>
+              <tbody>
+                ${Object.entries(ts.results).map(([id, r]) => html`<tr key=${id}>
+                  <td><strong>${r.hostname || 'Client ' + id}</strong></td>
+                  <td>${r.latency_avg_ms?.toFixed(1) || '--'}ms</td>
+                  <td>${r.latency_min_ms?.toFixed(1) || '--'}ms</td>
+                  <td>${r.latency_max_ms?.toFixed(1) || '--'}ms</td>
+                  <td>${r.packet_loss_percent?.toFixed(2) || '0'}%</td>
+                </tr>`)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `}
+    </div>
+  </div>`;
+}
+
 function HelpPage() {
   const { dispatch } = useContext(AppContext);
   const cmd = (text) => html`<div class="cmd-block"><span class="cmd-text">${text}</span><button class="cmd-copy" onClick=${(e)=>{copyText(text,dispatch);e.target.textContent='OK';setTimeout(()=>e.target.textContent='COPY',1500)}}>COPY</button></div>`;
@@ -1169,6 +1350,9 @@ function HelpPage() {
         <tr><td>PUT</td><td class="mono">/api/settings/midi-device</td><td>Assign device (role: active/backup)</td></tr>
         <tr><td>PUT</td><td class="mono">/api/settings/failover</td><td>Update failover config</td></tr>
         <tr><td>GET</td><td class="mono">/api/alerts</td><td>Active alerts</td></tr>
+        <tr><td>POST</td><td class="mono">/api/test/start</td><td>Start load test</td></tr>
+        <tr><td>POST</td><td class="mono">/api/test/stop</td><td>Stop load test</td></tr>
+        <tr><td>GET</td><td class="mono">/api/test/status</td><td>Test status + results</td></tr>
       </tbody></table>
     </div>
     <div class="help-section">
@@ -1197,7 +1381,8 @@ function HelpPage() {
         <tr><td class="mono">1</td><td>Overview</td></tr>
         <tr><td class="mono">2</td><td>Control</td></tr>
         <tr><td class="mono">3</td><td>Settings</td></tr>
-        <tr><td class="mono">4</td><td>Help</td></tr>
+        <tr><td class="mono">4</td><td>Test</td></tr>
+        <tr><td class="mono">5</td><td>Help</td></tr>
         <tr><td class="mono">Esc</td><td>Close overlay</td></tr>
       </tbody></table>
     </div>
@@ -1217,8 +1402,8 @@ function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
-      const pages = ['overview','control','settings','help'];
-      if (e.key >= '1' && e.key <= '4') window.location.hash = '#' + pages[+e.key - 1];
+      const pages = ['overview','control','settings','test','help'];
+      if (e.key >= '1' && e.key <= '5') window.location.hash = '#' + pages[+e.key - 1];
       if (e.key === 'Escape') { dispatch({ type: 'MODAL_CLOSE' }); dispatch({ type: 'SNIFFER_CLOSE' }); }
     };
     window.addEventListener('keydown', onKey);
@@ -1240,6 +1425,7 @@ function App() {
       ${state.page === 'overview' && html`<${OverviewPage} />`}
       ${state.page === 'control' && html`<${ControlPage} />`}
       ${state.page === 'settings' && html`<${SettingsPage} />`}
+      ${state.page === 'test' && html`<${TestPlaygroundPage} />`}
       ${state.page === 'help' && html`<${HelpPage} />`}
     </main>
     <${Footer} />

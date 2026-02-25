@@ -70,7 +70,7 @@ pub async fn run(state: Arc<ClientState>) {
 
         let snapshot = state.health.snapshot(&state).await;
         let body = json!({
-            "latency_ms": 0.0,
+            "latency_ms": state.health.latency_us.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0,
             "packet_loss_percent": snapshot.packet_loss_percent,
             "midi_rate_in": snapshot.midi_rate_in,
             "midi_rate_out": snapshot.midi_rate_out,
