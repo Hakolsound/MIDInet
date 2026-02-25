@@ -3,6 +3,7 @@ pub mod alerting;
 pub mod auth;
 pub mod collector;
 pub mod metrics_store;
+pub mod midi_sniffer;
 pub mod osc_listener;
 pub mod state;
 pub mod websocket;
@@ -54,10 +55,12 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::new(args.config.clone());
 
     // Load config from disk if the file exists
+    let mut network_config = None;
     if std::path::Path::new(&args.config).exists() {
         match load_config(&args.config) {
             Ok(config) => {
                 info!(path = %args.config, "Loaded configuration from disk");
+                network_config = config.network.clone();
                 state.apply_config(config).await;
             }
             Err(e) => {
@@ -79,6 +82,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn background metrics collector
     tokio::spawn(collector::run(state.clone()));
+
+    // Spawn multicast MIDI sniffer (reads host's multicast stream for metrics)
+    if let Some(net) = network_config {
+        info!(group = %net.multicast_group, port = net.data_port, "Starting MIDI multicast sniffer");
+        tokio::spawn(midi_sniffer::run(
+            state.clone(),
+            net.multicast_group,
+            net.data_port,
+            net.interface,
+        ));
+    }
 
     // Initialize OSC port state from CLI arg
     {

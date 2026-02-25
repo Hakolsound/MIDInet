@@ -22,6 +22,9 @@ pub struct MidinetConfig {
     pub osc: Option<OscConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub midi: Option<MidiConfig>,
+    /// Network config (read from shared host TOML, not persisted by admin)
+    #[serde(default, skip_serializing)]
+    pub network: Option<NetworkConfig>,
 }
 
 impl Default for MidinetConfig {
@@ -32,9 +35,25 @@ impl Default for MidinetConfig {
             alerts: AlertConfig::default(),
             osc: None,
             midi: None,
+            network: None,
         }
     }
 }
+
+/// Network section from the shared host config (read-only by admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    #[serde(default = "default_multicast_group")]
+    pub multicast_group: String,
+    #[serde(default = "default_data_port")]
+    pub data_port: u16,
+    #[serde(default = "default_interface")]
+    pub interface: String,
+}
+
+fn default_multicast_group() -> String { "239.69.83.1".to_string() }
+fn default_data_port() -> u16 { 5004 }
+fn default_interface() -> String { "eth0".to_string() }
 
 /// Persisted OSC monitor configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +132,7 @@ pub async fn build_config_from_state(state: &AppState) -> MidinetConfig {
             active_device: active_device.clone(),
             backup_device: backup_device.clone(),
         }),
+        network: None, // not persisted by admin
     }
 }
 
