@@ -186,27 +186,73 @@ cat ~/.midinet/midinet-tray.log
 
 ### Prerequisites
 
-- Windows 10/11
-- [Git](https://git-scm.com)
-- [Rust](https://rustup.rs)
+- Windows 10 or Windows 11
 - [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — select "Desktop development with C++"
-- [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html) — for virtual MIDI ports
+- Git and Rust are auto-installed by the script if missing
 
-### Deploy
+**MIDI virtual device backend (auto-selected):**
+- **Windows 11** — No third-party driver needed. The installer auto-installs Windows MIDI Services SDK, which provides native virtual MIDI support.
+- **Windows 10** — Requires the [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html). The installer prompts if it's missing.
+- If both teVirtualMIDI and Windows MIDI Services are available, teVirtualMIDI is used as the primary backend with automatic fallback.
 
-Open **PowerShell as Administrator**:
+### Deploy (One-Liner)
+
+Open **PowerShell** (Administrator recommended):
+
+```powershell
+powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
+```
+
+Or clone first:
 
 ```powershell
 git clone https://github.com/Hakolsound/MIDInet.git
 cd MIDInet
-.\scripts\deploy.ps1
+.\scripts\client-install-windows.ps1
 ```
 
-This installs:
-- `midinet-client.exe` — background daemon (ScheduledTask, auto-starts at logon, auto-restarts)
-- `midinet-tray.exe` — system tray icon (Registry Run key, auto-starts at logon)
-- `midinet-cli.exe` — command-line tool
-- All binaries to `%LOCALAPPDATA%\MIDInet\bin\` (added to PATH)
+### What Gets Installed
+
+| Component | Location | Auto-Start |
+|-----------|----------|------------|
+| `midinet-client.exe` | `%LOCALAPPDATA%\MIDInet\bin\` | Scheduled Task (at logon, auto-restarts) |
+| `midinet-tray.exe` | `%LOCALAPPDATA%\MIDInet\bin\` | Registry Run key (at logon) |
+| `midinet-cli.exe` | `%LOCALAPPDATA%\MIDInet\bin\` | Manual (added to PATH) |
+| Config | `%LOCALAPPDATA%\MIDInet\config\client.toml` | — |
+| Logs | `%LOCALAPPDATA%\MIDInet\log\` | — |
+
+### Updating
+
+Re-run the same install script. It is **update-safe**:
+1. Stops all running MIDInet processes (daemon + tray)
+2. Pulls latest source and rebuilds
+3. Replaces binaries (with retry logic for file locks)
+4. Re-registers Scheduled Task and restarts all services
+5. Ensures exactly one tray instance is running
+
+```powershell
+cd $env:LOCALAPPDATA\MIDInet\src
+.\scripts\client-install-windows.ps1
+```
+
+### What You'll See
+
+- A **colored circle** in the Windows system tray:
+  - **Gray** — daemon starting / not connected to daemon
+  - **Green (blinking)** — connected, healthy, MIDI flowing
+  - **Yellow** — connected with warnings (packet loss, unhealthy task)
+  - **Red** — disconnected / both hosts unreachable
+- Right-click the icon for live metrics and actions (claim/release focus, open dashboard)
+- Desktop notifications on failover events
+
+### Task Supervisor
+
+The client daemon includes an internal watchdog that monitors its core tasks (discovery, receiver, failover, focus). If any task crashes:
+- It is automatically restarted with exponential backoff (2s, 4s, ... up to 30s)
+- The virtual MIDI device stays open (it lives at process level, unaffected by task restarts)
+- The tray icon turns yellow to indicate an unhealthy task, then green once recovered
+
+If the entire process crashes, the Windows Scheduled Task automatically restarts it (3 retries, 1 minute interval). The virtual MIDI device is recreated with the same name, so Resolume / your DAW will reconnect automatically — similar to unplugging and replugging a USB MIDI controller.
 
 ### Client Management Commands (Windows)
 
@@ -220,6 +266,9 @@ midinet-cli status
 
 # Health endpoint
 Invoke-WebRequest http://127.0.0.1:5009/health
+
+# Check installed version
+Get-Content $env:LOCALAPPDATA\MIDInet\bin\version.txt
 ```
 
 ---

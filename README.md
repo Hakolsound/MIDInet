@@ -42,7 +42,7 @@ Built for live production environments where reliability is non-negotiable.
 - **Zero-config** — mDNS/DNS-SD discovery (like AirPlay/NDI). Plug in a client and it finds hosts automatically
 - **Identity cloning** — Virtual devices match the physical controller's name so Resolume Arena sees "Akai APC40", not a generic port
 - **Bidirectional MIDI** — LED feedback and fader sync back to the controller via switchable focus
-- **Cross-platform** — Host runs on Raspberry Pi (Linux/ALSA). Clients run on macOS (CoreMIDI), Windows (teVirtualMIDI), and Linux (ALSA)
+- **Cross-platform** — Host runs on Raspberry Pi (Linux/ALSA). Clients run on macOS (CoreMIDI), Windows (teVirtualMIDI or Windows MIDI Services), and Linux (ALSA)
 
 ---
 
@@ -244,12 +244,19 @@ Run in PowerShell (as Administrator):
 powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
 ```
 
-**Prerequisite:** Install the [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html) for virtual MIDI port creation. The installer will prompt you if it's missing.
+**MIDI virtual device support:**
+- **Windows 11** — Works out of the box via Windows MIDI Services (auto-installed by the script). No third-party driver needed.
+- **Windows 10** — Requires the [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html). The installer will prompt you if it's missing.
+- On Windows 11 with teVirtualMIDI installed, the driver is used as the primary backend with MIDI Services as automatic fallback.
 
 Installs:
-- `midinet-client.exe` and `midinet-cli.exe` to `%LOCALAPPDATA%\MIDInet\bin\` (added to PATH)
-- Scheduled Task for auto-start at logon
+- `midinet-client.exe` — background daemon (Scheduled Task, auto-starts at logon, auto-restarts on failure)
+- `midinet-tray.exe` — system tray icon (Registry Run key, auto-starts at logon)
+- `midinet-cli.exe` — command-line tool
+- All binaries to `%LOCALAPPDATA%\MIDInet\bin\` (added to PATH)
 - Config at `%LOCALAPPDATA%\MIDInet\config\client.toml`
+
+The script is **update-safe** — re-running it stops any running MIDInet processes, replaces binaries, and restarts services cleanly. No stale processes or duplicate tray icons.
 
 ```powershell
 # Manage the service
@@ -558,9 +565,11 @@ MIDInet/
 │   │       ├── focus.rs          # Bidirectional focus + feedback
 │   │       ├── virtual_device.rs # Platform abstraction trait
 │   │       └── platform/
-│   │           ├── macos.rs      # CoreMIDI virtual ports
-│   │           ├── linux.rs      # ALSA sequencer virtual ports
-│   │           └── windows.rs    # teVirtualMIDI FFI
+│   │           ├── macos.rs          # CoreMIDI virtual ports
+│   │           ├── linux.rs          # ALSA sequencer virtual ports
+│   │           ├── windows.rs        # Windows orchestrator (auto-selects backend)
+│   │           ├── te_virtual_midi.rs # teVirtualMIDI FFI (Win10/11)
+│   │           └── midi_services.rs  # Windows MIDI Services (Win11 native)
 │   │
 │   ├── midi-admin/               # Web admin panel
 │   │   └── src/

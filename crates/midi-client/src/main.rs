@@ -18,8 +18,10 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -27,7 +29,7 @@ use tracing::{error, info, warn};
 use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::pipeline::PipelineConfig;
 
-use crate::health::{task_pulse, HealthCollector};
+use crate::health::{task_pulse, HealthCollector, TaskPulse};
 use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
 
 #[derive(Parser, Debug)]
@@ -207,69 +209,24 @@ async fn main() -> anyhow::Result<()> {
 
     let cancel = CancellationToken::new();
 
-    // Spawn discovery
-    let discovery_handle = {
-        let state = Arc::clone(&state);
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                result = discovery::run(state, discovery_pulse) => {
-                    if let Err(e) = result {
-                        error!("Discovery error: {}", e);
-                    }
-                }
-                _ = cancel.cancelled() => {}
-            }
-        })
-    };
-
-    // Spawn receiver
-    let receiver_handle = {
-        let state = Arc::clone(&state);
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                result = receiver::run(state, receiver_pulse) => {
-                    if let Err(e) = result {
-                        error!("Receiver error: {}", e);
-                    }
-                }
-                _ = cancel.cancelled() => {}
-            }
-        })
-    };
-
-    // Spawn failover monitor
-    let failover_handle = {
-        let state = Arc::clone(&state);
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                result = failover::run(state, failover_pulse) => {
-                    if let Err(e) = result {
-                        error!("Failover monitor error: {}", e);
-                    }
-                }
-                _ = cancel.cancelled() => {}
-            }
-        })
-    };
-
-    // Spawn focus manager
-    let focus_handle = {
-        let state = Arc::clone(&state);
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            tokio::select! {
-                result = focus::run(state, focus_pulse) => {
-                    if let Err(e) = result {
-                        error!("Focus manager error: {}", e);
-                    }
-                }
-                _ = cancel.cancelled() => {}
-            }
-        })
-    };
+    // Spawn supervised tasks — auto-restart on error/panic with backoff.
+    // The virtual MIDI device is unaffected since it lives at process level.
+    let discovery_handle = spawn_supervised(
+        "discovery", Arc::clone(&state), discovery_pulse,
+        Arc::clone(&health), cancel.clone(), discovery::run,
+    );
+    let receiver_handle = spawn_supervised(
+        "receiver", Arc::clone(&state), receiver_pulse,
+        Arc::clone(&health), cancel.clone(), receiver::run,
+    );
+    let failover_handle = spawn_supervised(
+        "failover", Arc::clone(&state), failover_pulse,
+        Arc::clone(&health), cancel.clone(), failover::run,
+    );
+    let focus_handle = spawn_supervised(
+        "focus", Arc::clone(&state), focus_pulse,
+        Arc::clone(&health), cancel.clone(), focus::run,
+    );
 
     // Spawn virtual device init loop
     let init_handle = {
@@ -404,4 +361,110 @@ fn rand_client_id() -> u32 {
         .unwrap_or_default()
         .as_nanos() as u32;
     seed ^ (seed >> 16)
+}
+
+/// Spawn a supervised task that auto-restarts on error or panic.
+///
+/// Each supervised task runs in its own tokio::spawn so panics are caught
+/// by the JoinHandle rather than bringing down the process.  On failure,
+/// the task is restarted with exponential backoff (2s, 4s, 6s … 30s max).
+/// Backoff resets if the task ran successfully for > 60 seconds.
+///
+/// The virtual MIDI device is **not** affected by task restarts — it lives
+/// at process level in `ClientState.virtual_device` and stays open.
+fn spawn_supervised<F, Fut>(
+    name: &'static str,
+    state: Arc<ClientState>,
+    pulse: TaskPulse,
+    health: Arc<HealthCollector>,
+    cancel: CancellationToken,
+    task_fn: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(Arc<ClientState>, TaskPulse) -> Fut + Send + Sync + Copy + 'static,
+    Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut restarts = 0u32;
+
+        loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+
+            let run_start = std::time::Instant::now();
+            let task_state = Arc::clone(&state);
+            let task_pulse = pulse.clone();
+            let task_cancel = cancel.clone();
+            let f = task_fn;
+
+            // Spawn inner task so panics are caught by JoinHandle
+            let handle = tokio::spawn(async move {
+                tokio::select! {
+                    result = f(task_state, task_pulse) => result,
+                    _ = task_cancel.cancelled() => Ok(()),
+                }
+            });
+
+            match handle.await {
+                // Clean exit (task completed normally or was cancelled)
+                Ok(Ok(())) => return,
+
+                // Task returned an error
+                Ok(Err(e)) => {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    // Reset backoff if the task ran long enough (transient issue)
+                    if run_start.elapsed() > Duration::from_secs(60) {
+                        restarts = 0;
+                    }
+                    restarts += 1;
+                    health.restart_count.fetch_add(1, Ordering::Relaxed);
+
+                    let backoff_secs = std::cmp::min(restarts as u64 * 2, 30);
+                    warn!(
+                        task = name,
+                        error = %e,
+                        restarts,
+                        backoff_secs,
+                        "Task error — restarting after backoff"
+                    );
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                        _ = cancel.cancelled() => return,
+                    }
+                }
+
+                // Task panicked
+                Err(join_err) => {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    if run_start.elapsed() > Duration::from_secs(60) {
+                        restarts = 0;
+                    }
+                    restarts += 1;
+                    health.restart_count.fetch_add(1, Ordering::Relaxed);
+
+                    let backoff_secs = std::cmp::min(restarts as u64 * 2, 30);
+                    error!(
+                        task = name,
+                        error = %join_err,
+                        restarts,
+                        backoff_secs,
+                        "Task panicked — restarting after backoff"
+                    );
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                        _ = cancel.cancelled() => return,
+                    }
+                }
+            }
+        }
+    })
 }

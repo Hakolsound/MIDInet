@@ -1,8 +1,10 @@
 # ──────────────────────────────────────────────────────────────
 # MIDInet - Windows Client Installer (PowerShell)
 # Clones from GitHub, builds natively, and installs as a startup task.
+# Safe for both fresh installs and updates — stops running processes
+# before replacing binaries to prevent stale versions.
 #
-# Usage (one-liner - run in PowerShell):
+# Usage (one-liner - run in PowerShell as Administrator):
 #   powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
 #
 # Or clone first:
@@ -21,7 +23,12 @@ $BinDir = "$InstallDir\bin"
 $ConfigDir = "$InstallDir\config"
 $LogDir = "$InstallDir\log"
 $TaskName = "MIDInet Client"
+$TrayRegName = "MIDInet Tray"
 $Errors = @()
+
+$IsWin11 = ([Environment]::OSVersion.Version.Build -ge 22000)
+
+# ── Helper Functions ─────────────────────────────────────────
 
 function Write-Step($num, $total, $msg) {
     Write-Host "`n[$num/$total] $msg" -ForegroundColor Cyan
@@ -37,6 +44,44 @@ function Write-Err($msg) {
     $script:Errors += $msg
 }
 
+function Stop-MidiNetProcesses {
+    # Stop the scheduled task first (graceful)
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($task -and $task.State -eq 'Running') {
+        Write-Warn "Stopping scheduled task '$TaskName'..."
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+
+    # Force-kill any running MIDInet processes
+    $procs = @("midinet-client", "midinet-tray", "midi-client", "midi-tray")
+    foreach ($name in $procs) {
+        $running = Get-Process -Name $name -ErrorAction SilentlyContinue
+        if ($running) {
+            Write-Warn "Stopping $name (PID: $($running.Id -join ', '))..."
+            $running | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Wait for file handles to release
+    Start-Sleep -Milliseconds 500
+}
+
+function Copy-WithRetry($src, $dst) {
+    for ($i = 0; $i -lt 3; $i++) {
+        try {
+            Copy-Item $src $dst -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq 2) { throw $_ }
+            Write-Warn "File locked, retrying in 1s..."
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
+# ── Banner ────────────────────────────────────────────────────
+
 Write-Host ""
 Write-Host "  ========================================" -ForegroundColor Cyan
 Write-Host "    MIDInet - Windows Client Installer" -ForegroundColor Cyan
@@ -44,7 +89,22 @@ Write-Host "    Hakol Fine AV Services" -ForegroundColor Cyan
 Write-Host "  ========================================" -ForegroundColor Cyan
 Write-Host ""
 
-$TotalSteps = 8
+if ($IsWin11) {
+    Write-Host "  Detected: Windows 11 (build $([Environment]::OSVersion.Version.Build))" -ForegroundColor DarkGray
+} else {
+    Write-Host "  Detected: Windows 10 (build $([Environment]::OSVersion.Version.Build))" -ForegroundColor DarkGray
+}
+
+# Check for existing installation
+if (Test-Path "$BinDir\version.txt") {
+    $prevVersion = Get-Content "$BinDir\version.txt" -ErrorAction SilentlyContinue
+    Write-Host "  Previous install: $prevVersion" -ForegroundColor DarkGray
+} else {
+    Write-Host "  Fresh installation" -ForegroundColor DarkGray
+}
+Write-Host ""
+
+$TotalSteps = 10
 
 # ── 1. Prerequisites ─────────────────────────────────────────
 Write-Step 1 $TotalSteps "Checking prerequisites..."
@@ -101,34 +161,98 @@ if (Test-Path $vsWhere) {
     Write-Warn "Select 'Desktop development with C++' workload."
 }
 
-# ── 2. teVirtualMIDI Driver ─────────────────────────────────
-Write-Step 2 $TotalSteps "Checking teVirtualMIDI driver..."
+# ── 2. MIDI Driver Check ─────────────────────────────────────
+Write-Step 2 $TotalSteps "Checking MIDI virtual device support..."
 
 $teVmDll = "$env:SystemRoot\System32\teVirtualMIDI64.dll"
 $teVmDll32 = "$env:SystemRoot\System32\teVirtualMIDI32.dll"
+$HasTeVirtualMidi = (Test-Path $teVmDll) -or (Test-Path $teVmDll32)
 
-if ((Test-Path $teVmDll) -or (Test-Path $teVmDll32)) {
-    Write-Ok "teVirtualMIDI driver found"
+if ($HasTeVirtualMidi) {
+    Write-Ok "teVirtualMIDI driver found (primary backend)"
 } else {
-    Write-Warn "teVirtualMIDI driver NOT found."
-    Write-Host ""
-    Write-Host "    MIDInet requires the teVirtualMIDI driver to create virtual MIDI ports." -ForegroundColor Yellow
-    Write-Host "    Download from: https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "    The client will build and install, but virtual MIDI ports won't work" -ForegroundColor Yellow
-    Write-Host "    until the driver is installed." -ForegroundColor Yellow
-    Write-Host ""
+    if ($IsWin11) {
+        Write-Ok "Windows 11 detected - Windows MIDI Services will be used as fallback"
+        Write-Host "    teVirtualMIDI driver not found, but not required on Windows 11." -ForegroundColor DarkGray
+        Write-Host "    The client uses Windows MIDI Services as a native alternative." -ForegroundColor DarkGray
+    } else {
+        Write-Warn "teVirtualMIDI driver NOT found."
+        Write-Host ""
+        Write-Host "    On Windows 10, MIDInet requires the teVirtualMIDI driver" -ForegroundColor Yellow
+        Write-Host "    to create virtual MIDI ports." -ForegroundColor Yellow
+        Write-Host "    Download from: https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "    The client will build and install, but virtual MIDI ports won't work" -ForegroundColor Yellow
+        Write-Host "    until the driver is installed." -ForegroundColor Yellow
+        Write-Host ""
 
-    $response = Read-Host "    Continue anyway? (Y/n)"
-    if ($response -eq 'n' -or $response -eq 'N') {
-        Write-Host "    Opening download page..."
-        Start-Process "https://www.tobias-erichsen.de/software/virtualmidi.html"
-        exit 0
+        $response = Read-Host "    Continue anyway? (Y/n)"
+        if ($response -eq 'n' -or $response -eq 'N') {
+            Write-Host "    Opening download page..."
+            Start-Process "https://www.tobias-erichsen.de/software/virtualmidi.html"
+            exit 0
+        }
     }
 }
 
-# ── 3. Clone / Update ───────────────────────────────────────
-Write-Step 3 $TotalSteps "Fetching MIDInet source..."
+# ── 3. Windows MIDI Services SDK (Win11 only) ────────────────
+Write-Step 3 $TotalSteps "Checking Windows MIDI Services SDK..."
+
+if ($IsWin11) {
+    # Check if Windows MIDI Services is installed
+    $midiSvcInstalled = $false
+    try {
+        $wingetList = winget list --id Microsoft.WindowsMIDIServices --accept-source-agreements 2>&1
+        if ($wingetList -match "Microsoft.WindowsMIDIServices") {
+            $midiSvcInstalled = $true
+        }
+    } catch {}
+
+    if ($midiSvcInstalled) {
+        Write-Ok "Windows MIDI Services SDK already installed"
+    } else {
+        if (-not $HasTeVirtualMidi) {
+            Write-Warn "Installing Windows MIDI Services SDK (required for virtual MIDI on Win11 without teVirtualMIDI)..."
+        } else {
+            Write-Host "    Installing Windows MIDI Services SDK (recommended fallback)..." -ForegroundColor DarkGray
+        }
+        try {
+            winget install Microsoft.WindowsMIDIServices --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Write-Ok "Windows MIDI Services SDK installed"
+        } catch {
+            if (-not $HasTeVirtualMidi) {
+                Write-Err "Failed to install Windows MIDI Services SDK: $_"
+                Write-Warn "Virtual MIDI may not work. Install manually: winget install Microsoft.WindowsMIDIServices"
+            } else {
+                Write-Warn "Could not install Windows MIDI Services SDK (teVirtualMIDI will be used instead)"
+            }
+        }
+    }
+} else {
+    Write-Ok "Skipped (Windows MIDI Services requires Windows 11)"
+}
+
+# ── 4. Stop Running MIDInet Processes ─────────────────────────
+Write-Step 4 $TotalSteps "Stopping any running MIDInet processes..."
+
+$hadRunning = $false
+$procs = @("midinet-client", "midinet-tray", "midi-client", "midi-tray")
+foreach ($name in $procs) {
+    if (Get-Process -Name $name -ErrorAction SilentlyContinue) {
+        $hadRunning = $true
+        break
+    }
+}
+
+if ($hadRunning) {
+    Stop-MidiNetProcesses
+    Write-Ok "All MIDInet processes stopped"
+} else {
+    Write-Ok "No running MIDInet processes found"
+}
+
+# ── 5. Clone / Update Source ──────────────────────────────────
+Write-Step 5 $TotalSteps "Fetching MIDInet source..."
 
 try {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
@@ -151,8 +275,8 @@ try {
     exit 1
 }
 
-# ── 4. Build ─────────────────────────────────────────────────
-Write-Step 4 $TotalSteps "Building midi-client (release mode - this may take a while)..."
+# ── 6. Build ──────────────────────────────────────────────────
+Write-Step 6 $TotalSteps "Building MIDInet (release mode - this may take a while)..."
 Set-Location $SrcDir
 cargo build --release -p midi-client -p midi-cli -p midi-tray
 if ($LASTEXITCODE -ne 0) {
@@ -163,15 +287,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Ok "Build complete"
 
-# ── 5. Install ───────────────────────────────────────────────
-Write-Step 5 $TotalSteps "Installing binaries..."
+# ── 7. Install Binaries ──────────────────────────────────────
+Write-Step 7 $TotalSteps "Installing binaries..."
+
+# Ensure processes are stopped before overwriting
+Stop-MidiNetProcesses
 
 try {
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-    Copy-Item "$SrcDir\target\release\midi-client.exe" "$BinDir\midinet-client.exe" -Force
-    Copy-Item "$SrcDir\target\release\midi-cli.exe"    "$BinDir\midinet-cli.exe" -Force
-    Copy-Item "$SrcDir\target\release\midi-tray.exe"   "$BinDir\midinet-tray.exe" -Force
+
+    Copy-WithRetry "$SrcDir\target\release\midi-client.exe" "$BinDir\midinet-client.exe"
+    Copy-WithRetry "$SrcDir\target\release\midi-cli.exe"    "$BinDir\midinet-cli.exe"
+    Copy-WithRetry "$SrcDir\target\release\midi-tray.exe"   "$BinDir\midinet-tray.exe"
+
+    # Write version info
+    $gitHash = (git -C $SrcDir rev-parse --short HEAD 2>$null)
+    $buildTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$gitHash ($buildTime)" | Set-Content "$BinDir\version.txt"
+
     Write-Ok "Binaries installed to $BinDir"
+    Write-Ok "Version: $gitHash ($buildTime)"
 } catch {
     Write-Err "Failed to install binaries: $_"
 }
@@ -190,8 +325,8 @@ try {
     Write-Warn "Could not update PATH: $_"
 }
 
-# ── 6. Config ────────────────────────────────────────────────
-Write-Step 6 $TotalSteps "Setting up configuration..."
+# ── 8. Config ─────────────────────────────────────────────────
+Write-Step 8 $TotalSteps "Setting up configuration..."
 
 try {
     New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
@@ -207,16 +342,17 @@ try {
     Write-Err "Failed to set up config: $_"
 }
 
-# ── 7. Startup Task ─────────────────────────────────────────
-Write-Step 7 $TotalSteps "Installing startup task..."
+# ── 9. Scheduled Task (midi-client daemon) ────────────────────
+Write-Step 9 $TotalSteps "Installing startup task..."
 
 try {
     # Remove existing task if present
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
+    # Execute the binary directly (no powershell.exe wrapper)
     $action = New-ScheduledTaskAction `
-        -Execute "powershell.exe" `
-        -Argument "-WindowStyle Hidden -Command `"& '$BinDir\midinet-client.exe' --config '$ConfigDir\client.toml'`"" `
+        -Execute "$BinDir\midinet-client.exe" `
+        -Argument "--config `"$ConfigDir\client.toml`"" `
         -WorkingDirectory $InstallDir
 
     $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
@@ -224,6 +360,7 @@ try {
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
+        -DontStopOnIdleEnd `
         -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit (New-TimeSpan -Days 365)
@@ -238,29 +375,41 @@ try {
 
     # Start it now
     Start-ScheduledTask -TaskName $TaskName
-    Write-Ok "Scheduled task installed and started"
+    Write-Ok "Scheduled task '$TaskName' installed and started"
 } catch {
     Write-Err "Failed to register scheduled task: $_"
     Write-Warn "You can start the client manually: midinet-client --config `"$ConfigDir\client.toml`""
 }
 
-# ── 8. Tray Auto-Start ─────────────────────────────────────
-Write-Step 8 $TotalSteps "Installing tray application (auto-start at login)..."
+# ── 10. Tray Auto-Start ──────────────────────────────────────
+Write-Step 10 $TotalSteps "Installing tray application (auto-start at login)..."
 
 try {
     # Register tray in user startup via Registry Run key
     $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    Set-ItemProperty -Path $regPath -Name "MIDInet Tray" -Value "`"$BinDir\midinet-tray.exe`""
+    Set-ItemProperty -Path $regPath -Name $TrayRegName -Value "`"$BinDir\midinet-tray.exe`""
     Write-Ok "Tray registered to start at login"
 
-    # Start tray now
+    # Start a single tray instance
     Start-Process -FilePath "$BinDir\midinet-tray.exe" -WindowStyle Hidden
-    Write-Ok "Tray started"
+    Start-Sleep -Milliseconds 500
+
+    # Verify single instance
+    $trayCount = (Get-Process -Name "midinet-tray" -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($trayCount -eq 1) {
+        Write-Ok "Tray running (single instance)"
+    } elseif ($trayCount -gt 1) {
+        Write-Warn "Multiple tray instances detected - killing extras..."
+        Get-Process -Name "midinet-tray" | Select-Object -Skip 1 | Stop-Process -Force
+        Write-Ok "Cleaned up to single tray instance"
+    } else {
+        Write-Warn "Tray process not detected - it may take a moment to start"
+    }
 } catch {
     Write-Err "Failed to set up tray: $_"
 }
 
-# ── Summary ──────────────────────────────────────────────────
+# ── Summary ───────────────────────────────────────────────────
 Write-Host ""
 if ($Errors.Count -eq 0) {
     Write-Host "  =================================================" -ForegroundColor Green
@@ -276,9 +425,22 @@ if ($Errors.Count -eq 0) {
         Write-Host "    - $err" -ForegroundColor Red
     }
 }
+
+Write-Host ""
+$installedVersion = if (Test-Path "$BinDir\version.txt") { Get-Content "$BinDir\version.txt" } else { "unknown" }
+Write-Host "  Version:  $installedVersion"
 Write-Host ""
 Write-Host "  The client will auto-discover hosts on your LAN."
 Write-Host "  Virtual MIDI device will appear once a host is found."
+
+if ($IsWin11 -and -not $HasTeVirtualMidi) {
+    Write-Host ""
+    Write-Host "  MIDI Backend: Windows MIDI Services (native)" -ForegroundColor DarkGray
+} elseif ($HasTeVirtualMidi) {
+    Write-Host ""
+    Write-Host "  MIDI Backend: teVirtualMIDI (driver)" -ForegroundColor DarkGray
+}
+
 Write-Host ""
 Write-Host "  Config:   $ConfigDir\client.toml"
 Write-Host "  Binaries: $BinDir"
@@ -288,13 +450,14 @@ Write-Host ""
 Write-Host "  Commands:"
 Write-Host "    midinet-cli status                            # Check connection"
 Write-Host "    midinet-cli focus                             # View/claim focus"
-Write-Host "    Stop-ScheduledTask -TaskName '$TaskName'      # Stop"
-Write-Host "    Start-ScheduledTask -TaskName '$TaskName'     # Start"
+Write-Host "    Stop-ScheduledTask -TaskName '$TaskName'      # Stop client"
+Write-Host "    Start-ScheduledTask -TaskName '$TaskName'     # Start client"
 Write-Host ""
-Write-Host "  Update: cd $SrcDir; .\scripts\client-install-windows.ps1"
+Write-Host "  Update:"
+Write-Host "    cd $SrcDir; .\scripts\client-install-windows.ps1"
 Write-Host ""
 
-if (-not ((Test-Path $teVmDll) -or (Test-Path $teVmDll32))) {
+if (-not $IsWin11 -and -not $HasTeVirtualMidi) {
     Write-Host "  REMINDER: Install teVirtualMIDI driver for virtual MIDI ports:" -ForegroundColor Yellow
     Write-Host "  https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
     Write-Host ""
