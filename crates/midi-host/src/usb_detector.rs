@@ -2,6 +2,8 @@
 /// Discovers connected MIDI controllers and reads their identity.
 
 use midi_protocol::identity::DeviceIdentity;
+#[cfg(target_os = "linux")]
+use tracing::info;
 
 /// List all available MIDI devices on the system.
 /// Returns a vector of (device_path, device_name) pairs.

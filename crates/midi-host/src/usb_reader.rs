@@ -36,6 +36,7 @@ pub mod platform {
     use alsa::Direction;
     use midi_protocol::ringbuf::MidiProducer;
     use std::ffi::CString;
+    use std::io::Read;
     use tokio::sync::mpsc;
     use tracing::{debug, error, info, warn};
 
@@ -103,7 +104,7 @@ pub mod platform {
                         return Ok(());
                     }
 
-                    match rawmidi.read(&mut buf) {
+                    match rawmidi.io().read(&mut buf) {
                         Ok(n) if n > 0 => {
                             debug!(bytes = n, "Read MIDI data");
                             producer.push_overwrite(&buf[..n]);

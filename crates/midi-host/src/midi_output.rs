@@ -10,6 +10,7 @@ pub mod platform {
     use alsa::rawmidi::Rawmidi;
     use alsa::Direction;
     use std::ffi::CString;
+    use std::io::Write;
     use tracing::{debug, error, info, warn};
 
     /// A handle to one or more ALSA rawmidi output devices.
@@ -64,7 +65,7 @@ pub mod platform {
         /// Errors on individual devices are logged but do not stop output to others.
         pub fn write_all(&self, data: &[u8]) {
             for dev in &self.devices {
-                match dev.rawmidi.write(data) {
+                match dev.rawmidi.io().write(data) {
                     Ok(n) => {
                         debug!(device = %dev.name, bytes = n, "Wrote MIDI feedback");
                     }
@@ -80,6 +81,12 @@ pub mod platform {
             self.devices.len()
         }
     }
+
+    // SAFETY: ALSA rawmidi handles are file-descriptor based and safe to send
+    // across threads. The alsa crate doesn't impl Send/Sync because the raw
+    // pointer isn't automatically Send, but the underlying fd is thread-safe.
+    unsafe impl Send for MidiOutputWriter {}
+    unsafe impl Sync for MidiOutputWriter {}
 }
 
 #[cfg(not(target_os = "linux"))]
