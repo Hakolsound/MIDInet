@@ -100,14 +100,32 @@ pub fn load_config(path: &str) -> anyhow::Result<MidinetConfig> {
 }
 
 /// Save a MidinetConfig to a TOML file on disk.
-/// Creates parent directories if needed. Overwrites any existing file.
+/// Preserves sections not managed by the admin (e.g. [host], [network], [heartbeat])
+/// by reading the existing file first and merging our sections into it.
 pub fn save_config(path: &str, config: &MidinetConfig) -> anyhow::Result<()> {
     if let Some(parent) = std::path::Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let contents = toml::to_string_pretty(config)?;
+
+    // Read existing file to preserve sections we don't manage
+    let mut base: toml::Table = if let Ok(existing) = std::fs::read_to_string(path) {
+        toml::from_str(&existing).unwrap_or_default()
+    } else {
+        toml::Table::new()
+    };
+
+    // Serialize our managed config and merge into the base
+    let managed_str = toml::to_string_pretty(config)?;
+    let managed: toml::Table = toml::from_str(&managed_str)?;
+
+    // Overwrite only our managed keys, preserving everything else
+    for (key, value) in managed {
+        base.insert(key, value);
+    }
+
+    let contents = toml::to_string_pretty(&base)?;
     std::fs::write(path, contents)?;
     Ok(())
 }
