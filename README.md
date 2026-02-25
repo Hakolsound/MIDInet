@@ -241,7 +241,7 @@ bash ~/.midinet/src/scripts/client-install-macos.sh
 Run in PowerShell (as Administrator):
 
 ```powershell
-irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex
+powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
 ```
 
 **Prerequisite:** Install the [teVirtualMIDI driver](https://www.tobias-erichsen.de/software/virtualmidi.html) for virtual MIDI port creation. The installer will prompt you if it's missing.
