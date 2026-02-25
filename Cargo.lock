@@ -1854,6 +1854,7 @@ dependencies = [
  "mdns-sd",
  "midi-protocol",
  "nix",
+ "reqwest",
  "rosc",
  "serde",
  "serde_json",

@@ -7,12 +7,14 @@ mod metrics;
 mod midi_output;
 mod osc_listener;
 mod pipeline;
+mod unicast_relay;
 mod usb_detector;
 mod usb_reader;
 
 use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicU64, AtomicU8};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +48,8 @@ pub struct HostConfig {
     pub admin: AdminSection,
     #[serde(default)]
     pub osc: OscSection,
+    #[serde(default)]
+    pub unicast: UnicastSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -192,6 +196,23 @@ impl Default for OscSection {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnicastSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_unicast_admin_url")]
+    pub admin_url: String,
+}
+
+impl Default for UnicastSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            admin_url: "http://127.0.0.1:8080".to_string(),
+        }
+    }
+}
+
 // Default value functions
 fn default_interface() -> String { "eth0".to_string() }
 fn default_heartbeat_interval() -> u64 { 3 }
@@ -208,6 +229,7 @@ fn default_osc_address() -> String { "/midinet/failover/switch".to_string() }
 fn default_admin_listen() -> String { "0.0.0.0:8080".to_string() }
 fn default_admin_user() -> String { "admin".to_string() }
 fn default_admin_pass() -> String { "midinet".to_string() }
+fn default_unicast_admin_url() -> String { "http://127.0.0.1:8080".to_string() }
 
 /// Shared state accessible across all tasks
 pub struct SharedState {
@@ -226,6 +248,8 @@ pub struct SharedState {
     pub input_switch_count: Arc<AtomicU64>,
     /// Whether dual-input redundancy is enabled
     pub input_redundancy_enabled: bool,
+    /// Unicast relay target addresses (populated by unicast_relay task)
+    pub unicast_targets: watch::Receiver<Vec<SocketAddrV4>>,
 }
 
 /// Adapter that tags InputHealth events with an input index
@@ -297,6 +321,8 @@ async fn main() -> anyhow::Result<()> {
     let input_active = Arc::new(AtomicU8::new(0));
     let dual_input = !config.midi.secondary_device.is_empty();
 
+    let (unicast_tx, unicast_rx) = watch::channel(Vec::<SocketAddrV4>::new());
+
     let state = Arc::new(SharedState {
         config: config.clone(),
         identity: RwLock::new(DeviceIdentity::default()),
@@ -307,6 +333,7 @@ async fn main() -> anyhow::Result<()> {
         input_active: Arc::clone(&input_active),
         input_switch_count: Arc::clone(&input_switch_count),
         input_redundancy_enabled: dual_input,
+        unicast_targets: unicast_rx,
     });
 
     // --- Dual-controller input setup ---
@@ -452,6 +479,18 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Spawn unicast relay target fetcher (if enabled)
+    let unicast_handle = if config.unicast.enabled {
+        let admin_url = config.unicast.admin_url.clone();
+        let data_port = config.network.data_port;
+        info!(admin_url = %admin_url, "Unicast relay enabled, fetching client targets from admin API");
+        Some(tokio::spawn(async move {
+            unicast_relay::run(admin_url, data_port, unicast_tx).await;
+        }))
+    } else {
+        None
+    };
+
     info!(role = ?initial_role, "Host daemon running");
 
     // Wait for shutdown signal
@@ -471,6 +510,9 @@ async fn main() -> anyhow::Result<()> {
         handle.abort();
     }
     feedback_handle.abort();
+    if let Some(handle) = unicast_handle {
+        handle.abort();
+    }
 
     Ok(())
 }

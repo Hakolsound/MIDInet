@@ -89,6 +89,7 @@ pub async fn register_client(
             midi_rate_in: 0.0,
             midi_rate_out: 0.0,
             connection_state: body.connection_state,
+            manual: false,
         });
     }
 
@@ -190,6 +191,77 @@ pub async fn set_client_focus(
 
     let designated = *state.inner.designated_focus.read().await;
     Json(json!({ "success": true, "designated_focus": designated }))
+}
+
+// ── Manual client management (operator actions) ──
+
+#[derive(Deserialize)]
+pub struct AddClientBody {
+    pub ip: String,
+    #[serde(default)]
+    pub hostname: String,
+}
+
+/// POST /api/clients/add — operator manually adds a client by IP address
+pub async fn add_client_manual(
+    State(state): State<AppState>,
+    Json(body): Json<AddClientBody>,
+) -> Json<Value> {
+    let ip: std::net::Ipv4Addr = match body.ip.parse() {
+        Ok(ip) => ip,
+        Err(_) => return Json(json!({ "success": false, "error": "Invalid IPv4 address" })),
+    };
+
+    let now_ms = epoch_ms();
+    let hostname = if body.hostname.is_empty() {
+        format!("manual-{}", ip)
+    } else {
+        body.hostname
+    };
+
+    // Deterministic ID from the IP to avoid duplicates
+    let id = u32::from(ip);
+
+    let mut clients = state.inner.clients.write().await;
+    if clients.iter().any(|c| c.ip == body.ip) {
+        return Json(json!({ "success": false, "error": "Client with this IP already exists" }));
+    }
+
+    info!(id = id, ip = %body.ip, hostname = %hostname, "Client manually added by operator");
+    clients.push(ClientInfo {
+        id,
+        ip: body.ip,
+        hostname,
+        os: "unknown".to_string(),
+        connected_since: now_ms,
+        last_heartbeat_ms: now_ms,
+        latency_ms: 0.0,
+        packet_loss_percent: 0.0,
+        device_name: String::new(),
+        device_ready: false,
+        midi_rate_in: 0.0,
+        midi_rate_out: 0.0,
+        connection_state: "manual".to_string(),
+        manual: true,
+    });
+
+    Json(json!({ "success": true, "id": id }))
+}
+
+/// DELETE /api/clients/:id — remove a client
+pub async fn remove_client(
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> Json<Value> {
+    let mut clients = state.inner.clients.write().await;
+    let before = clients.len();
+    clients.retain(|c| c.id != id);
+    if clients.len() < before {
+        info!(id = id, "Client removed");
+        Json(json!({ "success": true }))
+    } else {
+        Json(json!({ "success": false, "error": "Client not found" }))
+    }
 }
 
 fn epoch_ms() -> u64 {

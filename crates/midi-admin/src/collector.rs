@@ -237,7 +237,7 @@ pub async fn run(state: AppState) {
                 .as_millis() as u64;
             let mut clients = state.inner.clients.write().await;
             let before = clients.len();
-            clients.retain(|c| now_ms.saturating_sub(c.last_heartbeat_ms) < 30_000);
+            clients.retain(|c| c.manual || now_ms.saturating_sub(c.last_heartbeat_ms) < 30_000);
             if clients.len() < before {
                 debug!("Removed {} stale client(s)", before - clients.len());
             }

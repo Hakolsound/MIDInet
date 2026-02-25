@@ -15,7 +15,7 @@ use axum::{
     http::{header, Request, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Extension, Router,
 };
 use rust_embed::Embed;
@@ -67,7 +67,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 /// Dashboard polling endpoints — housekeeping, excluded from traffic counter.
-const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register"];
+const POLL_PATHS: &[&str] = &["/api/status", "/api/hosts", "/api/clients", "/api/alerts", "/api/clients/register", "/api/clients/add"];
 
 /// Lightweight middleware to count API requests and log details for the traffic sniffer.
 async fn count_api_requests(
@@ -142,6 +142,8 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/clients/:id/heartbeat", post(status::client_heartbeat))
         .route("/api/hosts/:id/role", put(status::set_host_role))
         .route("/api/clients/:id/focus", put(status::set_client_focus))
+        .route("/api/clients/add", post(status::add_client_manual))
+        .route("/api/clients/:id", delete(status::remove_client))
         // Alerts
         .route("/api/alerts", get(alerts::get_alerts))
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))

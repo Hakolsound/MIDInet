@@ -605,31 +605,53 @@ function NetworkCard() {
 
 function ClientsCard() {
   const { state, dispatch } = useContext(AppContext);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newIp, setNewIp] = useState('');
+  const [newHost, setNewHost] = useState('');
+
+  const addClient = () => {
+    if (!newIp.trim()) return;
+    apiFetch('/api/clients/add', { method: 'POST', body: JSON.stringify({ ip: newIp.trim(), hostname: newHost.trim() }) })
+      .then(d => { if (d.success) { setNewIp(''); setNewHost(''); setShowAdd(false); } else { alert(d.error || 'Failed'); } });
+  };
+  const removeClient = (id) => {
+    apiFetch('/api/clients/' + id, { method: 'DELETE' });
+  };
+
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.users()}</span>
       Clients
       <div class="card-header-right">
-        <span style="font-weight:400;color:var(--text-3);font-size:12px">${state.clients.length}</span>
+        <span style="font-weight:400;color:var(--text-3);font-size:12px;margin-right:8px">${state.clients.length}</span>
+        <button class="btn btn-xs" onClick=${() => setShowAdd(!showAdd)}>+ Add</button>
       </div>
     </div>
     <div class="card-body-flush" style="overflow-y:auto">
-      ${state.clients.length === 0 && html`<div class="empty-state">No clients connected</div>`}
+      ${showAdd && html`<div style="padding:8px 20px;display:flex;gap:6px;align-items:center;border-bottom:1px solid var(--border)">
+        <input type="text" placeholder="IP Address" value=${newIp} onInput=${e => setNewIp(e.target.value)}
+          style="flex:1;padding:4px 8px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;color:var(--text-1);font-size:12px" />
+        <input type="text" placeholder="Hostname" value=${newHost} onInput=${e => setNewHost(e.target.value)}
+          style="flex:1;padding:4px 8px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;color:var(--text-1);font-size:12px" />
+        <button class="btn btn-xs btn-active" onClick=${addClient}>Add</button>
+      </div>`}
+      ${state.clients.length === 0 && !showAdd && html`<div class="empty-state">No clients connected</div>`}
       <div style="padding:4px 20px">
         ${state.clients.map(c => {
           const hasFocus = state.designatedFocus === c.id;
-          const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'discovering' ? 'warn' : 'error';
+          const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'manual' ? 'warn' : c.connection_state === 'discovering' ? 'warn' : 'error';
           return html`<div class="client-row" key=${c.id}>
             <span class="status-dot" data-status=${connStatus} />
             <span class="client-name">${c.hostname || 'Client ' + c.id}</span>
             <span class="client-ip">${c.ip}</span>
-            <span class="client-stat">${c.device_ready ? (c.device_name || 'Ready') : 'No device'}</span>
+            <span class="client-stat">${c.device_ready ? (c.device_name || 'Ready') : c.manual ? 'Manual' : 'No device'}</span>
             <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
             <span class="client-stat" style="color:var(--${c.packet_loss_percent > 1 ? 'red' : c.packet_loss_percent > 0.1 ? 'orange' : 'text-3'})">${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
             <button class="btn btn-xs ${hasFocus ? 'btn-active' : ''}" onClick=${() =>
               apiFetch('/api/clients/' + c.id + '/focus', { method: 'PUT', body: JSON.stringify({ focus: !hasFocus }) })
                 .then(() => dispatch({ type: 'SET_DESIGNATED_FOCUS', id: hasFocus ? null : c.id }))
             }>${hasFocus ? '\u25C9 Focus' : 'Focus'}</button>
+            ${c.manual && html`<button class="btn btn-xs" style="color:var(--red);margin-left:4px" onClick=${() => removeClient(c.id)}>x</button>`}
           </div>`;
         })}
       </div>

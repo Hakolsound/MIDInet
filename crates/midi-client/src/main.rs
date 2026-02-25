@@ -63,6 +63,9 @@ pub struct NetworkSection {
     pub control_port: u16,
     #[serde(default = "default_interface")]
     pub interface: String,
+    /// Admin panel URL for HTTP-based host discovery (fallback when mDNS unavailable)
+    #[serde(default)]
+    pub admin_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -163,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
                 control_group: default_control_group(),
                 control_port: default_control_port(),
                 interface: default_interface(),
+                admin_url: None,
             },
             midi: MidiSection::default(),
             failover: FailoverSection { jitter_buffer_us: 0 },
@@ -339,6 +343,18 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Spawn HTTP-based host discovery fallback (if admin_url is configured)
+    let http_discovery_handle = if let Some(ref admin_url) = config.network.admin_url {
+        let state = Arc::clone(&state);
+        let url = admin_url.clone();
+        info!(admin_url = %url, "HTTP host discovery enabled (admin API fallback)");
+        Some(tokio::spawn(async move {
+            discovery::run_http_discovery(state, url).await;
+        }))
+    } else {
+        None
+    };
+
     info!("Client daemon running, waiting for hosts via mDNS...");
 
     // Wait for shutdown signal
@@ -365,6 +381,9 @@ async fn main() -> anyhow::Result<()> {
     health_server_handle.abort();
     watchdog_handle.abort();
     admin_reporter_handle.abort();
+    if let Some(h) = http_discovery_handle {
+        h.abort();
+    }
 
     Ok(())
 }

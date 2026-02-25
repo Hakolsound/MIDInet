@@ -405,6 +405,12 @@ pub struct HostInfo {
     pub midi_active: bool,
     pub heartbeat_ok: bool,
     pub last_heartbeat_ms: u64,
+    #[serde(default)]
+    pub multicast_group: String,
+    #[serde(default)]
+    pub data_port: u16,
+    #[serde(default)]
+    pub heartbeat_port: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,6 +433,9 @@ pub struct ClientInfo {
     pub midi_rate_out: f32,
     #[serde(default)]
     pub connection_state: String,
+    /// True if this client was manually added by the operator (not self-registered)
+    #[serde(default)]
+    pub manual: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

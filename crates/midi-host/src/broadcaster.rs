@@ -50,7 +50,7 @@ fn create_multicast_socket(
 
 /// Run the MIDI data broadcaster.
 /// Reads MIDI from the InputMux (which handles dual-controller failover),
-/// applies the pipeline, sends via UDP multicast.
+/// applies the pipeline, sends via UDP multicast (and unicast if enabled).
 pub async fn run(
     state: Arc<SharedState>,
     mux: Arc<InputMux>,
@@ -66,6 +66,15 @@ pub async fn run(
 
     let dest = SocketAddrV4::new(multicast_addr, port);
 
+    // Separate socket for unicast sends (plain UDP, no multicast options)
+    let unicast_socket = if state.config.unicast.enabled {
+        let std_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        std_sock.set_nonblocking(true)?;
+        Some(UdpSocket::from_std(std_sock)?)
+    } else {
+        None
+    };
+
     let mut sequence: u16 = 0;
     let mut send_buf = Vec::with_capacity(512);
     let mut midi_buf = [0u8; SLOT_SIZE];
@@ -78,6 +87,7 @@ pub async fn run(
     info!(
         multicast = %multicast_addr,
         port = port,
+        unicast = state.config.unicast.enabled,
         "MIDI broadcaster started (lock-free ring buffer)"
     );
 
@@ -159,6 +169,14 @@ pub async fn run(
             }
         }
 
+        // Unicast fan-out: send same packet to each registered client
+        if let Some(ref uc_socket) = unicast_socket {
+            let targets = state.unicast_targets.borrow().clone();
+            for target in &targets {
+                let _ = uc_socket.send_to(&send_buf, target).await;
+            }
+        }
+
         sequence = sequence.wrapping_add(1);
     }
 }
@@ -175,6 +193,15 @@ pub async fn run_heartbeat(state: Arc<SharedState>) -> anyhow::Result<()> {
     let socket = UdpSocket::from_std(std_socket)?;
 
     let dest = SocketAddrV4::new(multicast_addr, port);
+
+    // Separate socket for unicast heartbeats
+    let unicast_socket = if state.config.unicast.enabled {
+        let std_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        std_sock.set_nonblocking(true)?;
+        Some(UdpSocket::from_std(std_sock)?)
+    } else {
+        None
+    };
 
     let mut sequence: u16 = 0;
     let mut buf = [0u8; HeartbeatPacket::SIZE];
@@ -201,6 +228,16 @@ pub async fn run_heartbeat(state: Arc<SharedState>) -> anyhow::Result<()> {
 
         if let Err(e) = socket.send_to(&buf, dest).await {
             error!("Failed to send heartbeat: {}", e);
+        }
+
+        // Unicast heartbeats to each registered client
+        if let Some(ref uc_socket) = unicast_socket {
+            let targets = state.unicast_targets.borrow().clone();
+            for target in &targets {
+                // Targets are stored with data_port — swap to heartbeat port
+                let hb_target = SocketAddrV4::new(*target.ip(), port);
+                let _ = uc_socket.send_to(&buf, hb_target).await;
+            }
         }
 
         sequence = sequence.wrapping_add(1);

@@ -72,6 +72,11 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         .unwrap_or("Unknown")
         .to_string();
 
+    let multicast_group = properties
+        .get_property_val_str("mcast")
+        .unwrap_or(midi_protocol::DEFAULT_PRIMARY_GROUP)
+        .to_string();
+
     // Pick first IPv4 address
     let ip = info
         .get_addresses()
@@ -95,6 +100,9 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         midi_active: false,
         heartbeat_ok: true,
         last_heartbeat_ms: now_ms,
+        multicast_group: multicast_group.clone(),
+        data_port: info.get_port(),
+        heartbeat_port: info.get_port().saturating_add(1),
     };
 
     info!(

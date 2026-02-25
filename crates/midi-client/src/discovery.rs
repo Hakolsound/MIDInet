@@ -4,10 +4,18 @@
 /// (role, multicast group, device name, addresses), and updates shared
 /// client state. When the first primary host is discovered, its device
 /// identity is populated so the virtual-device init loop can proceed.
+///
+/// Also provides an HTTP-based discovery fallback (`run_http_discovery`)
+/// that polls the admin panel API for host information when mDNS is
+/// unavailable (e.g. multicast doesn't traverse the network).
 
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
+use serde::Deserialize;
 use tracing::{debug, error, info, warn};
 
 use midi_protocol::MDNS_SERVICE_TYPE;
@@ -218,6 +226,155 @@ async fn handle_service_resolved(
             // control channel after the receiver connects. For now, setting
             // the name is enough for the virtual device to be created with
             // the correct name visible to DAWs/media servers.
+        }
+    }
+}
+
+// ── HTTP-based host discovery (fallback when mDNS unavailable) ──────────
+
+/// Host info as returned by the admin panel's `GET /api/hosts` endpoint.
+#[derive(Debug, Deserialize)]
+struct HttpHostInfo {
+    id: u8,
+    name: String,
+    role: String,
+    ip: String,
+    device_name: String,
+    #[serde(default)]
+    multicast_group: String,
+    #[serde(default)]
+    data_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct HostsResponse {
+    hosts: Vec<HttpHostInfo>,
+}
+
+/// Poll the admin panel API for host information. This is a fallback for
+/// networks where multicast/mDNS doesn't work. Runs indefinitely, polling
+/// every 10 seconds.
+pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/hosts", admin_url.trim_end_matches('/'));
+
+    // Wait a few seconds before first poll to let mDNS have a chance
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+
+    loop {
+        interval.tick().await;
+
+        let resp = match http.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "HTTP host discovery: failed to reach admin API");
+                continue;
+            }
+        };
+
+        let body: HostsResponse = match resp.json().await {
+            Ok(b) => b,
+            Err(e) => {
+                debug!(error = %e, "HTTP host discovery: failed to parse response");
+                continue;
+            }
+        };
+
+        if body.hosts.is_empty() {
+            continue;
+        }
+
+        for host in &body.hosts {
+            let ip_addr: IpAddr = match host.ip.parse() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            let mut addresses = HashSet::new();
+            addresses.insert(ip_addr);
+
+            let discovered = DiscoveredHost {
+                id: host.id,
+                name: host.name.clone(),
+                role: host.role.clone(),
+                addresses,
+                multicast_group: if host.multicast_group.is_empty() {
+                    midi_protocol::DEFAULT_PRIMARY_GROUP.to_string()
+                } else {
+                    host.multicast_group.clone()
+                },
+                data_port: if host.data_port == 0 {
+                    midi_protocol::DEFAULT_DATA_PORT
+                } else {
+                    host.data_port
+                },
+                control_group: None,
+                device_name: host.device_name.clone(),
+                protocol_version: None,
+                admin_url: Some(admin_url.clone()),
+            };
+
+            // Upsert into discovered hosts
+            {
+                let mut hosts = state.discovered_hosts.write().await;
+                if let Some(existing) = hosts.iter_mut().find(|h| h.id == host.id) {
+                    *existing = discovered;
+                } else {
+                    info!(
+                        host_id = host.id,
+                        name = %host.name,
+                        role = %host.role,
+                        ip = %host.ip,
+                        device = %host.device_name,
+                        "Discovered MIDInet host via HTTP"
+                    );
+                    hosts.push(discovered);
+                }
+            }
+
+            // Set active host if none selected yet
+            {
+                let mut active = state.active_host_id.write().await;
+                match *active {
+                    None => {
+                        *active = Some(host.id);
+                        info!(
+                            host_id = host.id,
+                            role = %host.role,
+                            "Selected as active host (HTTP discovery)"
+                        );
+                    }
+                    Some(current) if current != host.id && host.role == "primary" => {
+                        info!(
+                            previous = current,
+                            new = host.id,
+                            "Primary host discovered via HTTP, switching active host"
+                        );
+                        *active = Some(host.id);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Populate device identity
+            let active_id = state.active_host_id.read().await.unwrap_or(1);
+            if host.id == active_id {
+                let mut identity = state.identity.write().await;
+                if !identity.is_valid() || identity.name != host.device_name {
+                    info!(
+                        device = %host.device_name,
+                        host_id = host.id,
+                        "Updating device identity from HTTP-discovered host"
+                    );
+                    identity.name = host.device_name.clone();
+                }
+            }
         }
     }
 }

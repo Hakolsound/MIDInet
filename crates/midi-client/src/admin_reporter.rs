@@ -19,15 +19,21 @@ pub async fn run(state: Arc<ClientState>) {
         .build()
         .unwrap_or_default();
 
-    // Wait for admin_url to become available from mDNS discovery
-    let admin_url = loop {
-        {
-            let hosts = state.discovered_hosts.read().await;
-            if let Some(url) = hosts.iter().find_map(|h| h.admin_url.as_ref()) {
-                break url.clone();
+    // Use admin_url from config if available (for unicast/HTTP-only networks),
+    // otherwise wait for mDNS discovery to provide one
+    let admin_url = if let Some(ref url) = state.config.network.admin_url {
+        info!(url = %url, "Using admin URL from config");
+        url.clone()
+    } else {
+        loop {
+            {
+                let hosts = state.discovered_hosts.read().await;
+                if let Some(url) = hosts.iter().find_map(|h| h.admin_url.as_ref()) {
+                    break url.clone();
+                }
             }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
     };
 
     info!(url = %admin_url, "Discovered admin panel, registering client");

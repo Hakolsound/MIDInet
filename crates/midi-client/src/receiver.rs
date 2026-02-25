@@ -63,6 +63,16 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                 pulse.tick();
                 if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
                     state.health.counters.packets_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    // Duplicate detection: skip if we already processed this sequence
+                    // (can happen when both multicast and unicast deliver the same packet)
+                    if let Some(last_seq) = last_sequence {
+                        if packet.sequence == last_seq {
+                            debug!(seq = packet.sequence, "Duplicate packet skipped");
+                            continue;
+                        }
+                    }
+
                     // Check for sequence gaps (packet loss detection)
                     if let Some(last_seq) = last_sequence {
                         let expected = last_seq.wrapping_add(1);
