@@ -22,6 +22,7 @@ mod ffi {
     pub type DWORD = u32;
     pub type BOOL = i32;
     pub type HANDLE = *mut c_void;
+    pub type GUID = [u8; 16];
 
     // Port creation flags (teVirtualMIDI SDK 1.3+)
     pub const TE_VM_FLAGS_PARSE_RX: DWORD = 1;
@@ -29,12 +30,14 @@ mod ffi {
 
     #[link(name = "teVirtualMIDI")]
     extern "system" {
-        pub fn virtualMIDICreatePortEx2(
+        pub fn virtualMIDICreatePortEx3(
             port_name: LPCWSTR,
             callback: *const c_void,
             callback_instance: *mut c_void,
             max_sysex_length: DWORD,
             flags: DWORD,
+            manufacturer: *const GUID,
+            product: *const GUID,
         ) -> HANDLE;
 
         pub fn virtualMIDIClosePort(port: HANDLE);
@@ -96,12 +99,14 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                 .collect();
 
             let handle = unsafe {
-                ffi::virtualMIDICreatePortEx2(
+                ffi::virtualMIDICreatePortEx3(
                     wide_name.as_ptr(),
                     std::ptr::null(),     // no callback — we poll with GetData
                     std::ptr::null_mut(),
                     65535,                // max sysex length
                     ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
+                    std::ptr::null(),     // manufacturer GUID (default)
+                    std::ptr::null(),     // product GUID (default)
                 )
             };
 
@@ -115,7 +120,7 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
             }
 
             *self.port.lock().unwrap() = Some(handle);
-            info!(name = %self.name, "Created Windows virtual MIDI device (teVirtualMIDI)");
+            info!(name = %self.name, "Created Windows virtual MIDI device (teVirtualMIDI Ex3)");
         }
 
         #[cfg(not(target_os = "windows"))]
