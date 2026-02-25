@@ -30,6 +30,8 @@ coremidi = "0.7"
 windows = { version = "0.58", features = [
     "Foundation",
     "Foundation_Collections",
+    "Devices_Enumeration",
+    "Devices_Midi",
     "Win32_System_Com",
 ] }
 windows-core = "0.58"

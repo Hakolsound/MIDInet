@@ -18,7 +18,7 @@ mod bindings {
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
-use bindings::Microsoft::Windows::Devices::Midi2 as midi2;
+use bindings::Windows::Devices::Midi2 as midi2;
 
 use crate::virtual_device::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;

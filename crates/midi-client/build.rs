@@ -18,7 +18,15 @@ fn main() {
                 "--out", &out_path,
                 "--filter", "Microsoft.Windows.Devices.Midi2",
             ]) {
-                Ok(_) => println!("cargo:warning=Generated MIDI Services bindings from winmd"),
+                Ok(_) => {
+                    // Post-process: convert #![allow(...)] inner attribute to #[allow(...)]
+                    // outer attribute so the generated code works inside include!()
+                    if let Ok(content) = std::fs::read_to_string(&out_path) {
+                        let fixed = content.replace("#![allow(", "#[allow(");
+                        std::fs::write(&out_path, fixed).expect("Failed to write fixed bindings");
+                    }
+                    println!("cargo:warning=Generated MIDI Services bindings from winmd");
+                }
                 Err(e) => {
                     // Non-fatal: if bindgen fails, the MIDI Services backend
                     // won't compile but teVirtualMIDI still works.
