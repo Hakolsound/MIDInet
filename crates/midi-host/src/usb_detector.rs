@@ -49,22 +49,37 @@ pub fn read_device_identity(device: &str) -> DeviceIdentity {
     let mut identity = DeviceIdentity::default();
 
     if let Some(card) = card_num {
-        // Read long name from /proc/asound/cardN/longname (e.g., "Akai APC40 mkII at usb-...")
-        let longname_path = format!("/proc/asound/card{}/longname", card);
-        if let Ok(longname) = std::fs::read_to_string(&longname_path) {
-            let longname = longname.trim();
-            // Strip " at usb-..." suffix to get clean device name
-            let clean = if let Some(pos) = longname.find(" at ") {
-                &longname[..pos]
-            } else {
-                longname
-            };
-            if !clean.is_empty() {
-                identity.name = clean.to_string();
-                info!(name = %identity.name, "Identified MIDI device from ALSA");
+        // Parse full device name from /proc/asound/cards.
+        // Format per card is two lines:
+        //   " 3 [mkII           ]: USB-Audio - APC40 mkII"
+        //   "                      Akai APC40 mkII at usb-0000:01:00.0-1.1, full speed"
+        // The second line has the full name (strip " at usb-..." suffix).
+        if let Ok(cards_content) = std::fs::read_to_string("/proc/asound/cards") {
+            let card_prefix = format!("{:2} [", card);
+            let mut found_card = false;
+            for line in cards_content.lines() {
+                if found_card {
+                    // This is the description line — trim and strip USB path suffix
+                    let desc = line.trim();
+                    let clean = if let Some(pos) = desc.find(" at ") {
+                        &desc[..pos]
+                    } else {
+                        desc
+                    };
+                    if !clean.is_empty() {
+                        identity.name = clean.to_string();
+                        info!(name = %identity.name, "Identified MIDI device from ALSA");
+                    }
+                    break;
+                }
+                if line.trim_start().starts_with(&card_prefix) {
+                    found_card = true;
+                }
             }
-        } else {
-            // Fallback: read short card id
+        }
+
+        // Fallback: read short card id if we still have default name
+        if identity.name == "Unknown MIDI Device" {
             let id_path = format!("/proc/asound/card{}/id", card);
             if let Ok(id) = std::fs::read_to_string(&id_path) {
                 let id = id.trim();
