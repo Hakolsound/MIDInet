@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────
-# MIDInet — Windows Client Installer (PowerShell)
+# MIDInet - Windows Client Installer (PowerShell)
 # Clones from GitHub, builds natively, and installs as a startup task.
 #
-# Usage (one-liner — run in PowerShell):
+# Usage (one-liner - run in PowerShell):
 #   powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
 #
 # Or clone first:
@@ -10,7 +10,7 @@
 #   cd MIDInet; .\scripts\client-install-windows.ps1
 #
 # Environment variables:
-#   $env:MIDINET_BRANCH  — git branch (default: main)
+#   $env:MIDINET_BRANCH  - git branch (default: main)
 # ──────────────────────────────────────────────────────────────
 
 $Branch = if ($env:MIDINET_BRANCH) { $env:MIDINET_BRANCH } else { "main" }
@@ -152,7 +152,7 @@ try {
 }
 
 # ── 4. Build ─────────────────────────────────────────────────
-Write-Step 4 $TotalSteps "Building midi-client (release mode — this may take a while)..."
+Write-Step 4 $TotalSteps "Building midi-client (release mode - this may take a while)..."
 Set-Location $SrcDir
 cargo build --release -p midi-client -p midi-cli -p midi-tray
 if ($LASTEXITCODE -ne 0) {
@@ -201,7 +201,7 @@ try {
         Copy-Item "$SrcDir\config\client.toml" "$ConfigDir\client.toml"
         Write-Ok "Default config installed to $ConfigDir\client.toml"
     } else {
-        Write-Warn "Config already exists — not overwriting"
+        Write-Warn "Config already exists - not overwriting"
     }
 } catch {
     Write-Err "Failed to set up config: $_"
@@ -233,7 +233,7 @@ try {
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description "MIDInet client daemon — receives MIDI over network and creates virtual devices" `
+        -Description "MIDInet client daemon - receives MIDI over network and creates virtual devices" `
         | Out-Null
 
     # Start it now
