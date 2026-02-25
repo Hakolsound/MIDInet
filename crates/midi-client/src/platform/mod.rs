@@ -5,4 +5,8 @@ pub mod linux;
 pub mod macos;
 
 #[cfg(target_os = "windows")]
+pub mod te_virtual_midi;
+#[cfg(target_os = "windows")]
+pub mod midi_services;
+#[cfg(target_os = "windows")]
 pub mod windows;

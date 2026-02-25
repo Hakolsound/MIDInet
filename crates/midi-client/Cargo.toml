@@ -25,3 +25,14 @@ alsa = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coremidi = "0.7"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Win32_System_Com",
+] }
+windows-core = "0.58"
+
+[build-dependencies]
+windows-bindgen = "0.58"
