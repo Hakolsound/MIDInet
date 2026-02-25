@@ -205,6 +205,10 @@ pub struct MidiServicesDevice {
     feedback_buffer: Arc<Mutex<Vec<Vec<u8>>>>,
     #[cfg(target_os = "windows")]
     _message_token: Option<windows::Foundation::EventRegistrationToken>,
+    /// COM bootstrapper that installs Detours hooks for WinRT class activation.
+    /// Must be kept alive for the entire lifetime of the MIDI session.
+    #[cfg(target_os = "windows")]
+    _initializer: Option<windows::core::IUnknown>,
     #[cfg(not(target_os = "windows"))]
     _phantom: (),
 }
@@ -228,6 +232,8 @@ impl MidiServicesDevice {
             feedback_buffer: Arc::new(Mutex::new(Vec::new())),
             #[cfg(target_os = "windows")]
             _message_token: None,
+            #[cfg(target_os = "windows")]
+            _initializer: None,
             #[cfg(not(target_os = "windows"))]
             _phantom: (),
         }
@@ -263,13 +269,50 @@ impl VirtualMidiDevice for MidiServicesDevice {
         {
             use windows_core::HSTRING;
 
-            // Create MIDI session
+            // ── Step 1: Initialize WinRT runtime (MTA) ──
+            // Required before any WinRT class activation. MTA is compatible with tokio's
+            // multi-threaded runtime. Returns S_FALSE if already initialized — that's fine.
+            info!(name = %self.name, "Initializing WinRT runtime for MIDI Services...");
+            unsafe {
+                windows::Win32::System::WinRT::RoInitialize(
+                    windows::Win32::System::WinRT::RO_INIT_MULTITHREADED,
+                ).map_err(|e| anyhow::anyhow!(
+                    "Failed to initialize WinRT: {} (0x{:08X})",
+                    e, e.code().0 as u32
+                ))?;
+            }
+
+            // ── Step 2: Bootstrap the MIDI Services SDK ──
+            // The SDK uses side-loaded WinRT components that aren't in the standard
+            // Windows Runtime activation catalog. The bootstrapper COM object
+            // (WindowsMidiServicesClientInitialization.dll) installs Microsoft Detours
+            // hooks that intercept RoActivateInstance/RoGetActivationFactory for all
+            // Microsoft.Windows.Devices.Midi2.* types and redirect them to the SDK's
+            // implementation DLL. Without this, MidiSession::Create() fails with
+            // "Class not registered" (0x80040154).
+            const CLSID_MIDI_CLIENT_INITIALIZER: windows::core::GUID =
+                windows::core::GUID::from_u128(0xc3263827_c3b0_bdbd_2500_ce63a3f3f2c3);
+
+            info!(name = %self.name, "Creating MIDI SDK bootstrapper (Detours activation)...");
+            let initializer: windows::core::IUnknown = unsafe {
+                windows::Win32::System::Com::CoCreateInstance(
+                    &CLSID_MIDI_CLIENT_INITIALIZER,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_INPROC_SERVER,
+                )
+            }.map_err(|e| anyhow::anyhow!(
+                "Failed to create MIDI SDK bootstrapper: {} (0x{:08X}). \
+                 Install Windows MIDI Services SDK via: winget install Microsoft.WindowsMIDIServicesSDK",
+                e, e.code().0 as u32
+            ))?;
+            info!(name = %self.name, "MIDI SDK bootstrapper active — WinRT activation hooks installed");
+
+            // ── Step 3: Create MIDI session ──
             let session_name = HSTRING::from(format!("MIDInet-{}", &self.name));
             let session = midi2::MidiSession::Create(&session_name)
                 .map_err(|e| anyhow::anyhow!(
-                    "Failed to create MIDI Services session: {}. \
-                     Install via: winget install Microsoft.WindowsMIDIServicesSDK",
-                    e
+                    "Failed to create MIDI Services session: {} (0x{:08X})",
+                    e, e.code().0 as u32
                 ))?;
 
             info!(name = %self.name, "Windows MIDI Services session created");
@@ -390,6 +433,7 @@ impl VirtualMidiDevice for MidiServicesDevice {
             self.connection = Some(connection);
             self._virtual_device = Some(virtual_device);
             self._message_token = Some(token);
+            self._initializer = Some(initializer);
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -447,6 +491,8 @@ impl VirtualMidiDevice for MidiServicesDevice {
             if let Some(session) = self.session.take() {
                 let _ = session.Close();
             }
+            // Release the bootstrapper LAST — dropping it removes the Detours hooks
+            self._initializer = None;
 
             info!(name = %self.name, "Closed Windows MIDI Services virtual endpoint");
         }
@@ -469,5 +515,7 @@ impl Drop for MidiServicesDevice {
         if let Some(session) = self.session.take() {
             let _ = session.Close();
         }
+        // Release bootstrapper last — removes Detours hooks
+        self._initializer = None;
     }
 }
