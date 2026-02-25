@@ -139,8 +139,6 @@ pub struct HealthCollector {
     pub memory_mb: AtomicU64, // f32 bits
     /// Total task restart count
     pub restart_count: AtomicU32,
-    /// EWMA-smoothed one-way latency in microseconds
-    pub latency_us: AtomicU64,
 }
 
 impl HealthCollector {
@@ -155,7 +153,6 @@ impl HealthCollector {
             packet_loss: AtomicU64::new(0),
             memory_mb: AtomicU64::new(0),
             restart_count: AtomicU32::new(0),
-            latency_us: AtomicU64::new(0),
         }
     }
 
@@ -183,19 +180,6 @@ impl HealthCollector {
             .store(f32::to_bits(rate_out) as u64, Ordering::Relaxed);
         self.packet_loss
             .store(f32::to_bits(loss) as u64, Ordering::Relaxed);
-    }
-
-    /// Update the EWMA-smoothed one-way latency from a raw sample.
-    /// Called on every received packet with a valid timestamp.
-    pub fn update_latency(&self, sample_us: u64) {
-        let current = self.latency_us.load(Ordering::Relaxed);
-        let ewma = if current == 0 {
-            sample_us
-        } else {
-            // EWMA with alpha ~0.1 (integer math, no floats on hot path)
-            (sample_us / 10) + (current * 9 / 10)
-        };
-        self.latency_us.store(ewma, Ordering::Relaxed);
     }
 
     /// Build a complete health snapshot by reading shared client state.

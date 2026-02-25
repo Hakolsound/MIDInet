@@ -22,5 +22,4 @@ sysinfo = "0.32"
 reqwest = { workspace = true }
 rosc = { workspace = true }
 socket2 = "0.5"
-tokio-util = { version = "0.7", features = ["rt"] }
 mdns-sd = { workspace = true }

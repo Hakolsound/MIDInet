@@ -64,15 +64,6 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                 if let Some(packet) = MidiDataPacket::deserialize(&buf[..len]) {
                     state.health.counters.packets_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                    // Test traffic (host_id=254): count for metrics but don't
-                    // forward to the virtual device.  Echo the admin's timestamp
-                    // back so the admin can compute round-trip latency.
-                    if packet.host_id == 254 {
-                        let _ = state.echo_tx.try_send(packet.timestamp_us);
-                        debug!(seq = packet.sequence, "Test packet received (not forwarded to device)");
-                        continue;
-                    }
-
                     // Duplicate detection: skip if we already processed this sequence
                     // (can happen when both multicast and unicast deliver the same packet)
                     if let Some(last_seq) = last_sequence {

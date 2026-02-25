@@ -36,9 +36,6 @@ pub async fn run(state: Arc<ClientState>) {
         }
     };
 
-    // Store the admin URL so the echo task can use it for RTT measurement
-    *state.admin_url.write().await = Some(admin_url.clone());
-
     info!(url = %admin_url, "Discovered admin panel, registering client");
 
     // Build registration body
@@ -73,7 +70,7 @@ pub async fn run(state: Arc<ClientState>) {
 
         let snapshot = state.health.snapshot(&state).await;
         let body = json!({
-            "latency_ms": 0.0,  // RTT-based latency is computed admin-side via echo
+            "latency_ms": 0.0,
             "packet_loss_percent": snapshot.packet_loss_percent,
             "midi_rate_in": snapshot.midi_rate_in,
             "midi_rate_out": snapshot.midi_rate_out,
@@ -93,42 +90,6 @@ pub async fn run(state: Arc<ClientState>) {
             Err(e) => {
                 debug!(error = %e, "Failed to send heartbeat to admin panel");
             }
-        }
-    }
-}
-
-/// Echo task: receives test-packet timestamps from the receiver and
-/// POSTs them back to the admin panel so it can compute round-trip latency.
-/// Rate-limited to 1 echo per second to avoid flooding.
-pub async fn run_echo(
-    state: Arc<ClientState>,
-    mut rx: tokio::sync::mpsc::Receiver<u64>,
-) {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .unwrap_or_default();
-
-    let mut last_echo = std::time::Instant::now();
-
-    while let Some(timestamp_us) = rx.recv().await {
-        // Rate limit: max 1 echo per second
-        if last_echo.elapsed() < Duration::from_secs(1) {
-            continue;
-        }
-        last_echo = std::time::Instant::now();
-
-        let url = state.admin_url.read().await.clone();
-        if let Some(url) = url {
-            let body = json!({
-                "client_id": state.client_id,
-                "timestamp_us": timestamp_us,
-            });
-            let _ = http
-                .post(format!("{}/api/test/echo", url))
-                .json(&body)
-                .send()
-                .await;
         }
     }
 }

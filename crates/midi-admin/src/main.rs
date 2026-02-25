@@ -7,7 +7,6 @@ pub mod metrics_store;
 pub mod midi_sniffer;
 pub mod osc_listener;
 pub mod state;
-pub mod test_generator;
 pub mod websocket;
 
 use clap::Parser;

@@ -3,13 +3,12 @@
 /// All fields are thread-safe for use with axum's State extractor.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
-use tokio_util::sync::CancellationToken;
 
 use crate::alerting::AlertManager;
 use crate::metrics_store::MetricsStore;
@@ -236,44 +235,6 @@ fn default_velocity_threshold() -> u8 { 100 }
 fn default_osc_trigger_port() -> u16 { 8000 }
 fn default_osc_address() -> String { "/midinet/failover/switch".to_string() }
 
-// ── Test generator state ──
-
-/// State for the MIDI load test generator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestState {
-    pub running: bool,
-    pub profile: String,
-    pub started_at: Option<u64>,
-    pub packets_sent: u64,
-    pub duration_secs: u32,
-    /// Snapshot of per-client metrics captured during test
-    pub client_snapshots: HashMap<u32, ClientTestSnapshot>,
-}
-
-impl Default for TestState {
-    fn default() -> Self {
-        Self {
-            running: false,
-            profile: String::new(),
-            started_at: None,
-            packets_sent: 0,
-            duration_secs: 0,
-            client_snapshots: HashMap::new(),
-        }
-    }
-}
-
-/// Per-client metrics snapshot during a test run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientTestSnapshot {
-    pub hostname: String,
-    pub latency_min_ms: f32,
-    pub latency_max_ms: f32,
-    pub latency_avg_ms: f32,
-    pub latency_samples: u32,
-    pub packet_loss_percent: f32,
-}
-
 /// Top-level shared state for the admin panel
 #[derive(Clone)]
 pub struct AppState {
@@ -327,15 +288,6 @@ pub struct AppStateInner {
     pub designated_primary: RwLock<Option<u8>>,
     /// Designated focus client ID (user-selected focus holder)
     pub designated_focus: RwLock<Option<u32>>,
-    // ── Test generator ──
-    /// MIDI load test state (results, counters)
-    pub test_state: RwLock<TestState>,
-    /// Cancellation token for the running test task
-    pub test_cancel: RwLock<Option<CancellationToken>>,
-    /// Atomic counter for test packets sent (incremented by generator, read by API)
-    pub test_packets_sent: AtomicU64,
-    /// When false, test generator pauses sending (UI controls via tab focus + toggle)
-    pub test_fire_enabled: AtomicBool,
 }
 
 impl AppState {
@@ -372,10 +324,6 @@ impl AppState {
                 identify_requests: RwLock::new(HashMap::new()),
                 designated_primary: RwLock::new(None),
                 designated_focus: RwLock::new(None),
-                test_state: RwLock::new(TestState::default()),
-                test_cancel: RwLock::new(None),
-                test_packets_sent: AtomicU64::new(0),
-                test_fire_enabled: AtomicBool::new(false),
             }),
         }
     }
