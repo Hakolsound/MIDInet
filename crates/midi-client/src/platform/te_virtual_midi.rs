@@ -450,25 +450,31 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
             let midi_out_final = unsafe { ffi::midiOutGetNumDevs() };
 
             if !midi_input_ok {
-                error!(
+                // Close the port — it's useless without MIDI Input
+                unsafe { (lib.close_port)(final_handle) };
+
+                warn!(
                     dll = %lib.dll_name,
                     dll_path = %lib.dll_path,
                     flags = final_label,
                     midi_in = midi_in_final,
                     midi_out = midi_out_final,
-                    "CRITICAL: No MIDI Input device registered despite port creation succeeding. \
-                     The teVirtualMIDI kernel driver is loaded but not registering devices. \
-                     FIX: Install loopMIDI from https://www.tobias-erichsen.de/software/loopmidi.html \
-                     then reboot. loopMIDI reinstalls the kernel driver properly."
+                    "teVirtualMIDI: No MIDI Input device registered despite port creation succeeding. \
+                     The kernel driver is loaded but not registering devices. \
+                     Will attempt fallback to Windows MIDI Services if available."
                 );
+
+                return Err(anyhow::anyhow!(
+                    "teVirtualMIDI port created but no MIDI Input registered — \
+                     kernel driver not functioning correctly"
+                ));
             }
 
             info!(
                 flags = final_label,
                 midi_in = midi_in_final,
                 midi_out = midi_out_final,
-                input_created = midi_input_ok,
-                "Virtual MIDI port creation complete"
+                "Virtual MIDI port creation complete with MIDI Input"
             );
 
             *self.port.lock().unwrap() = Some(final_handle);
