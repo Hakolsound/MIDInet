@@ -233,6 +233,7 @@ async fn run_inner(
                                     if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
                                         error!("Failed to send feedback MIDI: {}", e);
                                     } else {
+                                        state.health.counters.midi_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                         debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
                                     }
                                 } else {
