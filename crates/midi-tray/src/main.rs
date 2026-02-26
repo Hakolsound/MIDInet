@@ -67,9 +67,9 @@ fn show_resolume_block_dialog() {
     use std::os::windows::ffi::OsStrExt;
 
     let text: Vec<u16> = OsStr::new(
-        "Cannot quit \u{2014} Resolume Arena is running.\n\n\
-         Quitting MIDInet will crash your show.\n\n\
-         Close Resolume Arena first, then quit MIDInet.",
+        "Resolume Arena is currently using MIDInet.\n\n\
+         To safely quit, please close Resolume Arena first,\n\
+         then select Quit again from the tray menu.",
     )
     .encode_wide()
     .chain(Some(0))
@@ -97,9 +97,9 @@ fn confirm_quit() -> bool {
     use std::os::windows::ffi::OsStrExt;
 
     let text: Vec<u16> = OsStr::new(
-        "This will stop the MIDI client and disconnect virtual devices.\n\n\
-         Running applications that use the MIDI device may lose MIDI connectivity.\n\n\
-         Are you sure you want to quit?",
+        "Quitting will disconnect the virtual MIDI device.\n\n\
+         Any application using this device will lose its MIDI connection.\n\n\
+         Would you like to continue?",
     )
     .encode_wide()
     .chain(Some(0))
@@ -469,6 +469,10 @@ fn main() {
                 ID_RESTART_CLIENT => {
                     #[cfg(target_os = "windows")]
                     {
+                        if process_manager::is_resolume_running() {
+                            show_resolume_block_dialog();
+                            continue;
+                        }
                         info!("Restart client requested via menu");
                         proc_mgr.graceful_shutdown(Duration::from_secs(5));
                         if let Err(e) = proc_mgr.spawn() {
