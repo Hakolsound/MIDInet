@@ -110,6 +110,10 @@ pub async fn run(
                                 feedback_count += 1;
                                 feedback_bytes += packet.midi_data.len() as u64;
 
+                                // Increment traffic counter for Network card bar
+                                state.inner.traffic_counters.midi_packets_out
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                                 // Log feedback traffic
                                 let desc = describe_feedback_midi(&packet.midi_data);
                                 let now_s = epoch_secs();
