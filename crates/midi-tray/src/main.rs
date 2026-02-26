@@ -163,7 +163,7 @@ fn main() {
                 .collect();
             unsafe {
                 windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                    0,
+                    std::ptr::null_mut(),
                     text.as_ptr(),
                     cap.as_ptr(),
                     0x00000010 | 0x00040000, // MB_ICONERROR | MB_TOPMOST
@@ -174,26 +174,31 @@ fn main() {
 
     // ── Single-instance guard (Windows) ──
     // Prevents duplicate tray instances from fighting over the same client.
-    // Uses a named event (CreateEventW) — if ERROR_ALREADY_EXISTS, another instance owns it.
+    // Opens a lock file with share_mode(0) = exclusive access. If another
+    // instance already holds it, the open fails and we exit.
     #[cfg(target_os = "windows")]
-    {
-        let name: Vec<u16> = "Global\\MIDInetTray\0".encode_utf16().collect();
-        let handle = unsafe {
-            windows_sys::Win32::System::Threading::CreateEventW(
-                std::ptr::null(),
-                1, // bManualReset
-                0, // bInitialState
-                name.as_ptr(),
-            )
-        };
-        if handle.is_null()
-            || unsafe { windows_sys::Win32::Foundation::GetLastError() } == 183
-        // ERROR_ALREADY_EXISTS
+    let _instance_lock = {
+        use std::os::windows::fs::OpenOptionsExt;
+        let lock_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("logs")))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&lock_dir);
+        let lock_path = lock_dir.join(".tray.lock");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .share_mode(0) // exclusive — no other process can open
+            .open(&lock_path)
         {
-            std::process::exit(0); // duplicate — exit before creating any resources
+            Ok(file) => file,
+            Err(_) => {
+                // Another instance holds the lock
+                std::process::exit(0);
+            }
         }
-        // handle is intentionally leaked — OS releases on process exit
-    }
+    };
 
     // ── File-based logging ──
     // On Windows with windows_subsystem="windows", stderr is /dev/null.
