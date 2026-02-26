@@ -605,16 +605,14 @@ function trafficColor(lastSeen) {
 
 function NetworkCard() {
   const { state, dispatch } = useContext(AppContext);
-  const [showAll, setShowAll] = useState(false);
   const t = state.status.traffic || {};
   const ls = state.trafficLastSeen;
-  const allChs = [
+  const chs = [
     { k: 'midi_in', l: 'MIDI Broadcast', v: t.midi_in_per_sec || 0 },
-    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0, allOnly: true },
+    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0 },
     { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0 },
     { k: 'api', l: 'API', v: t.api_per_sec || 0 },
   ];
-  const chs = showAll ? allChs : allChs.filter(c => !c.allOnly);
   const mx = Math.max(...chs.map(c => c.v), 1);
   return html`<div class="card">
     <div class="card-header">
@@ -642,7 +640,7 @@ function NetworkCard() {
         })}
       `}
       ${state.hosts.length === 0 && html`<div style="font-size:12px;color:var(--text-3);margin-bottom:12px">No hosts discovered</div>`}
-      <div class="ctrl-section-label" style="margin-top:12px">Traffic<button class="traffic-all-btn ${showAll ? 'active' : ''}" onClick=${() => setShowAll(!showAll)}>All</button></div>
+      <div class="ctrl-section-label" style="margin-top:12px">Traffic</div>
       ${chs.map(c => {
         const clr = trafficColor(ls[c.k]);
         return html`<div class="traffic-row" key=${c.k}>
