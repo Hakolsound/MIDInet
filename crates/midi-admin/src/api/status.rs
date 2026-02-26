@@ -136,7 +136,16 @@ pub async fn client_heartbeat(
         if !body.connection_state.is_empty() {
             client.connection_state = body.connection_state;
         }
-        Json(json!({ "success": true }))
+
+        // Include focus command based on designated_focus
+        let designated = *state.inner.designated_focus.read().await;
+        let focus_cmd = match designated {
+            Some(fid) if fid == id => Some("claim"),
+            Some(_) => Some("release"),
+            None => None,
+        };
+
+        Json(json!({ "success": true, "focus_command": focus_cmd }))
     } else {
         Json(json!({ "success": false, "error": "Client not registered" }))
     }

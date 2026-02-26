@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::ClientState;
+use crate::{ClientState, FocusCommand};
 
 /// Run the admin reporter. Waits for a discovered host with an admin_url,
 /// then registers and sends periodic heartbeats.
@@ -102,6 +102,17 @@ pub async fn run(state: Arc<ClientState>) {
                             .json(&register_body)
                             .send()
                             .await;
+                    }
+
+                    // Process focus commands from admin panel
+                    match resp_body.get("focus_command").and_then(|v| v.as_str()) {
+                        Some("claim") => {
+                            let _ = state.focus_tx.send(FocusCommand::Claim).await;
+                        }
+                        Some("release") => {
+                            let _ = state.focus_tx.send(FocusCommand::Release).await;
+                        }
+                        _ => {}
                     }
                 }
             }
