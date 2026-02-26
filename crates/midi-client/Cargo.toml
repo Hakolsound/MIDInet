@@ -20,3 +20,6 @@ axum = { version = "0.7", features = ["ws"] }
 sysinfo = "0.32"
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-service = "0.8"

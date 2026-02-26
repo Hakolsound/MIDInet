@@ -138,7 +138,7 @@ if ($nssm) {
         sc.exe create MIDInetBridge binPath= "`"$InstallDir\midi-bridge.exe`" --service" start= auto DisplayName= "MIDInet MIDI Bridge"
         sc.exe description MIDInetBridge "Owns the virtual MIDI device - survives client restarts"
 
-        sc.exe create MIDInetClient binPath= "$InstallDir\midi-client.exe --config $InstallDir\client.toml" start= auto depend= MIDInetBridge DisplayName= "MIDInet Client"
+        sc.exe create MIDInetClient binPath= "`"$InstallDir\midi-client.exe`" --service --config `"$InstallDir\client.toml`"" start= auto depend= MIDInetBridge DisplayName= "MIDInet Client"
         sc.exe description MIDInetClient "MIDI-over-network client daemon"
 
         Write-Host "  Services registered via sc.exe."
