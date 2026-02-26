@@ -185,17 +185,20 @@ impl Drop for ProcessManager {
 }
 
 /// Find the midi-client binary. Looks in the same directory as the tray exe first.
+/// Checks both `midi-client` and `midinet-client` names (install script uses the latter).
 pub fn find_client_binary() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let names = &["midi-client.exe", "midinet-client.exe"];
+    #[cfg(not(target_os = "windows"))]
+    let names = &["midi-client", "midinet-client"];
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            #[cfg(target_os = "windows")]
-            let name = "midi-client.exe";
-            #[cfg(not(target_os = "windows"))]
-            let name = "midi-client";
-
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate);
+            for name in names {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
             }
         }
     }
@@ -203,13 +206,15 @@ pub fn find_client_binary() -> Option<PathBuf> {
     // Fall back: check if it's on PATH
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where").arg("midi-client.exe").output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                if let Some(first_line) = path.lines().next() {
-                    let p = PathBuf::from(first_line.trim());
-                    if p.exists() {
-                        return Some(p);
+        for name in names {
+            if let Ok(output) = Command::new("where").arg(name).output() {
+                if output.status.success() {
+                    let path = String::from_utf8_lossy(&output.stdout);
+                    if let Some(first_line) = path.lines().next() {
+                        let p = PathBuf::from(first_line.trim());
+                        if p.exists() {
+                            return Some(p);
+                        }
                     }
                 }
             }
@@ -217,12 +222,14 @@ pub fn find_client_binary() -> Option<PathBuf> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg("midi-client").output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout);
-                let p = PathBuf::from(path.trim());
-                if p.exists() {
-                    return Some(p);
+        for name in names {
+            if let Ok(output) = Command::new("which").arg(name).output() {
+                if output.status.success() {
+                    let path = String::from_utf8_lossy(&output.stdout);
+                    let p = PathBuf::from(path.trim());
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
             }
         }
