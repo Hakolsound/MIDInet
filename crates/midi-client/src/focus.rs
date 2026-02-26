@@ -151,10 +151,16 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
         if last_status_log.elapsed() >= status_log_interval {
             last_status_log = Instant::now();
             let active = state.active_host_id.read().await;
+            // Include MIDI Services callback count to diagnose whether the WinRT event fires
+            #[cfg(target_os = "windows")]
+            let ms_callbacks = crate::platform::midi_services::callback_invocation_count();
+            #[cfg(not(target_os = "windows"))]
+            let ms_callbacks = 0u64;
             info!(
                 focused = is_focused(),
                 active_host = ?*active,
                 feedback_sent = feedback_sent_count,
+                ms_callbacks = ms_callbacks,
                 "Focus status"
             );
         }
