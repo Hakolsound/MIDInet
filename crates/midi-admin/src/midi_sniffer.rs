@@ -301,6 +301,12 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                             ip: addr.ip().to_string(),
                             since: now_s,
                         });
+                    } else if action == 2 {
+                        // Release = client dropped focus
+                        let mut fs = state.inner.focus_state.write().await;
+                        if fs.holder.as_ref().map_or(false, |h| h.client_id == client_id) {
+                            fs.holder = None;
+                        }
                     }
 
                     let _ = state.inner.traffic_log_tx.send(

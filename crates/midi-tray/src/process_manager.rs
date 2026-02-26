@@ -34,6 +34,35 @@ impl ProcessManager {
         }
     }
 
+    /// Kill any existing midi-client processes before spawning our own.
+    /// This prevents conflicts when an old scheduled task or manual instance is running.
+    pub fn kill_existing_clients(&self) {
+        // First try graceful shutdown via the health API
+        if let Ok(mut stream) = std::net::TcpStream::connect(
+            format!("127.0.0.1:{}", midi_protocol::health::DEFAULT_HEALTH_PORT),
+        ) {
+            use std::io::Write;
+            let request = "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(request.as_bytes());
+            info!("Sent shutdown to existing client on health port");
+            // Give it a moment to exit
+            std::thread::sleep(Duration::from_secs(2));
+        }
+
+        // Force-kill any remaining midi-client / midinet-client processes
+        #[cfg(target_os = "windows")]
+        {
+            for name in &["midi-client.exe", "midinet-client.exe"] {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/IM", name])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+            // Brief pause for handles to release
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
     /// Spawn the client process (hidden on Windows, normal on other platforms).
     pub fn spawn(&mut self) -> Result<(), std::io::Error> {
         let mut cmd = Command::new(&self.client_path);

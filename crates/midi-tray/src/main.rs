@@ -112,11 +112,22 @@ fn main() {
         use crate::process_manager::{find_client_binary, ProcessManager};
         match find_client_binary() {
             Some(client_path) => {
+                // Look for config: alongside binary first, then in %LOCALAPPDATA%\MIDInet\config\
                 let config_path = client_path
                     .parent()
                     .map(|d| d.join("config").join("client.toml"))
-                    .filter(|p| p.exists());
+                    .filter(|p| p.exists())
+                    .or_else(|| {
+                        std::env::var("LOCALAPPDATA").ok().map(|appdata| {
+                            std::path::PathBuf::from(appdata)
+                                .join("MIDInet")
+                                .join("config")
+                                .join("client.toml")
+                        }).filter(|p| p.exists())
+                    });
                 let mut mgr = ProcessManager::new(client_path, config_path);
+                // Kill any existing client instances (old scheduled task, manual runs, etc.)
+                mgr.kill_existing_clients();
                 if let Err(e) = mgr.spawn() {
                     error!("Failed to spawn midi-client: {}", e);
                 }

@@ -342,43 +342,17 @@ try {
     Write-Err "Failed to set up config: $_"
 }
 
-# ── 9. Scheduled Task (midi-client daemon) ────────────────────
-Write-Step 9 $TotalSteps "Installing startup task..."
+# ── 9. Remove legacy scheduled task (tray now manages client) ─
+Write-Step 9 $TotalSteps "Configuring startup..."
 
-try {
-    # Remove existing task if present
+# Remove the old standalone client task — the tray spawns the client now
+$oldTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($oldTask) {
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-
-    # Execute the binary directly (no powershell.exe wrapper)
-    $action = New-ScheduledTaskAction `
-        -Execute "$BinDir\midinet-client.exe" `
-        -Argument "--config `"$ConfigDir\client.toml`"" `
-        -WorkingDirectory $InstallDir
-
-    $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
-
-    $settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries `
-        -DontStopOnIdleEnd `
-        -RestartCount 3 `
-        -RestartInterval (New-TimeSpan -Minutes 1) `
-        -ExecutionTimeLimit (New-TimeSpan -Days 365)
-
-    Register-ScheduledTask `
-        -TaskName $TaskName `
-        -Action $action `
-        -Trigger $trigger `
-        -Settings $settings `
-        -Description "MIDInet client daemon - receives MIDI over network and creates virtual devices" `
-        | Out-Null
-
-    # Start it now
-    Start-ScheduledTask -TaskName $TaskName
-    Write-Ok "Scheduled task '$TaskName' installed and started"
-} catch {
-    Write-Err "Failed to register scheduled task: $_"
-    Write-Warn "You can start the client manually: midinet-client --config `"$ConfigDir\client.toml`""
+    Write-Ok "Removed legacy scheduled task '$TaskName' (tray manages client now)"
+} else {
+    Write-Ok "No legacy scheduled task to remove"
 }
 
 # ── 10. Tray Auto-Start ──────────────────────────────────────
