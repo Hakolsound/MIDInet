@@ -592,8 +592,8 @@ function NetworkCard() {
   const ls = state.trafficLastSeen;
   const mx = Math.max(t.midi_in_per_sec || 0, t.midi_out_per_sec || 0, t.osc_per_sec || 0, t.api_per_sec || 0, 1);
   const chs = [
-    { k: 'midi_in', l: 'MIDI In', v: t.midi_in_per_sec || 0 },
-    { k: 'midi_out', l: 'MIDI Out', v: t.midi_out_per_sec || 0 },
+    { k: 'midi_in', l: 'MIDI Broadcast', v: t.midi_in_per_sec || 0 },
+    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0 },
     { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0 },
     { k: 'api', l: 'API', v: t.api_per_sec || 0 },
   ];
