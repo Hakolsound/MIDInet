@@ -4,15 +4,15 @@
 /// of the midi-client process. When the client connects via IPC, MIDI data
 /// flows bidirectionally through the bridge. When the client disconnects
 /// (restart, crash, update), the bridge silences the device but keeps it
-/// alive — apps like Resolume Arena never see the device disappear.
+/// alive - apps like Resolume Arena never see the device disappear.
 ///
 /// Architecture:
-///   1. Bridge starts, creates IPC listener (Unix domain socket)
-///   2. Client connects, sends DeviceIdentity → bridge creates virtual device
-///   3. Client sends MIDI → bridge forwards to virtual device → apps receive it
-///   4. Apps send feedback MIDI → bridge receives it → forwards to client
-///   5. Client disconnects → bridge sends All Notes Off, waits for reconnect
-///   6. Client reconnects → bridge resumes forwarding (no device recreation)
+///   1. Bridge starts, creates IPC listener (Unix domain socket / Windows named pipe)
+///   2. Client connects, sends DeviceIdentity -> bridge creates virtual device
+///   3. Client sends MIDI -> bridge forwards to virtual device -> apps receive it
+///   4. Apps send feedback MIDI -> bridge receives it -> forwards to client
+///   5. Client disconnects -> bridge sends All Notes Off, waits for reconnect
+///   6. Client reconnects -> bridge resumes forwarding (no device recreation)
 
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,9 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use midi_device::VirtualMidiDevice;
-use midi_protocol::bridge_ipc::{
-    self, AckPayload, FrameType, BRIDGE_SOCKET_PATH, HEADER_SIZE,
-};
+use midi_protocol::bridge_ipc::{self, AckPayload, FrameType, BRIDGE_SOCKET_PATH, HEADER_SIZE};
 use midi_protocol::identity::DeviceIdentity;
 use tracing::{debug, error, info, warn};
 
@@ -52,26 +50,38 @@ fn main() -> anyhow::Result<()> {
         client_connected: AtomicBool::new(false),
     });
 
-    // Clean up stale socket file
     #[cfg(unix)]
-    let _ = std::fs::remove_file(BRIDGE_SOCKET_PATH);
+    run_unix(&state)?;
 
-    // Create IPC listener
-    #[cfg(unix)]
+    #[cfg(windows)]
+    run_windows(&state)?;
+
+    // Cleanup
+    info!("Bridge shutting down, closing device...");
+    if let Ok(mut dev) = state.device.lock() {
+        if let Some(ref mut d) = *dev {
+            let _ = d.silence_and_detach();
+        }
+    }
+
+    info!("Bridge stopped");
+    Ok(())
+}
+
+// ── Unix: Unix domain socket ──
+
+#[cfg(unix)]
+fn run_unix(state: &Arc<BridgeState>) -> anyhow::Result<()> {
+    let _ = std::fs::remove_file(BRIDGE_SOCKET_PATH);
     let listener = std::os::unix::net::UnixListener::bind(BRIDGE_SOCKET_PATH)?;
     info!(path = BRIDGE_SOCKET_PATH, "Bridge listening");
-
-    // Set a timeout so we can respond to signals
-    #[cfg(unix)]
     listener.set_nonblocking(false)?;
 
-    // Accept loop — blocks until a client connects or signal arrives.
-    // systemd sends SIGTERM → accept() returns EINTR → loop exits.
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
                 info!("Client connected");
-                handle_client(&state, stream);
+                handle_client(state, stream);
                 info!("Waiting for next client connection...");
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
@@ -85,26 +95,167 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Cleanup
-    info!("Bridge shutting down, closing device...");
-    if let Ok(mut dev) = state.device.lock() {
-        if let Some(ref mut d) = *dev {
-            let _ = d.silence_and_detach();
-        }
-    }
-    #[cfg(unix)]
     let _ = std::fs::remove_file(BRIDGE_SOCKET_PATH);
-
-    info!("Bridge stopped");
     Ok(())
 }
+
+// ── Windows: Named pipe ──
+
+#[cfg(windows)]
+fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
+        PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+
+    let pipe_name = HSTRING::from(BRIDGE_SOCKET_PATH);
+
+    info!(path = BRIDGE_SOCKET_PATH, "Bridge listening on named pipe");
+
+    loop {
+        // Create a new named pipe instance for each client
+        let pipe_handle = unsafe {
+            CreateNamedPipeW(
+                &pipe_name,
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES.0,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        };
+
+        let pipe_handle = match pipe_handle {
+            Ok(h) => h,
+            Err(e) => {
+                error!(error = %e, "Failed to create named pipe");
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        };
+
+        // Wait for client to connect (blocking)
+        let connect_result = unsafe { ConnectNamedPipe(pipe_handle, None) };
+        if let Err(e) = connect_result {
+            // ERROR_PIPE_CONNECTED (535) means client connected between Create and Connect
+            let win_err = e.code().0 as u32;
+            if win_err != 0x80070217 {
+                // Not ERROR_PIPE_CONNECTED
+                error!(error = %e, "ConnectNamedPipe failed");
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(pipe_handle);
+                };
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+        }
+
+        info!("Client connected via named pipe");
+
+        let stream = PipeStream {
+            handle: pipe_handle,
+        };
+        handle_client(state, stream);
+
+        unsafe {
+            let _ = DisconnectNamedPipe(pipe_handle);
+            let _ = windows::Win32::Foundation::CloseHandle(pipe_handle);
+        };
+
+        info!("Waiting for next client connection...");
+    }
+}
+
+/// Wrapper around a Windows named pipe handle that implements Read + Write.
+#[cfg(windows)]
+struct PipeStream {
+    handle: windows::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for PipeStream {}
+
+#[cfg(windows)]
+impl IoRead for PipeStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut bytes_read: u32 = 0;
+        unsafe {
+            windows::Win32::Storage::FileSystem::ReadFile(
+                self.handle,
+                Some(buf),
+                Some(&mut bytes_read),
+                None,
+            )
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+        }
+        Ok(bytes_read as usize)
+    }
+}
+
+#[cfg(windows)]
+impl IoWrite for PipeStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut bytes_written: u32 = 0;
+        unsafe {
+            windows::Win32::Storage::FileSystem::WriteFile(
+                self.handle,
+                Some(buf),
+                Some(&mut bytes_written),
+                None,
+            )
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+        }
+        Ok(bytes_written as usize)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        unsafe {
+            windows::Win32::Storage::FileSystem::FlushFileBuffers(self.handle)
+                .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl PipeStream {
+    fn try_clone(&self) -> std::io::Result<Self> {
+        let process =
+            unsafe { windows::Win32::System::Threading::GetCurrentProcess() };
+        let mut new_handle = windows::Win32::Foundation::HANDLE::default();
+        unsafe {
+            windows::Win32::Foundation::DuplicateHandle(
+                process,
+                self.handle,
+                process,
+                &mut new_handle,
+                0,
+                false,
+                windows::Win32::Foundation::DUPLICATE_SAME_ACCESS,
+            )
+            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+        }
+        Ok(PipeStream {
+            handle: new_handle,
+        })
+    }
+}
+
+// ── Client handler (platform-agnostic) ──
 
 /// Handle a connected client session.
 ///
 /// Runs synchronously (only one client at a time).
-/// Spawns a feedback thread for device→client direction.
-#[cfg(unix)]
-fn handle_client(state: &Arc<BridgeState>, mut stream: std::os::unix::net::UnixStream) {
+/// Spawns a feedback thread for device->client direction.
+fn handle_client<S: IoRead + IoWrite + Send + 'static>(
+    state: &Arc<BridgeState>,
+    mut stream: S,
+) where
+    S: TryClone,
+{
     state.client_connected.store(true, Ordering::SeqCst);
 
     // Read the Identity frame
@@ -136,11 +287,11 @@ fn handle_client(state: &Arc<BridgeState>, mut stream: std::os::unix::net::UnixS
 
     info!(name = %identity.name, created, "Client handshake complete");
 
-    // Spawn feedback thread: reads from virtual device → writes to client
+    // Spawn feedback thread: reads from virtual device -> writes to client
     let feedback_running = Arc::new(AtomicBool::new(true));
     let feedback_flag = Arc::clone(&feedback_running);
     let feedback_state = Arc::clone(state);
-    let mut feedback_stream = match stream.try_clone() {
+    let mut feedback_stream = match stream.try_clone_stream() {
         Ok(s) => s,
         Err(e) => {
             error!(error = %e, "Failed to clone stream for feedback");
@@ -173,12 +324,10 @@ fn handle_client(state: &Arc<BridgeState>, mut stream: std::os::unix::net::UnixS
         })
         .ok();
 
-    // Main loop: read frames from client → forward to virtual device
+    // Main loop: read frames from client -> forward to virtual device
     let mut header = [0u8; HEADER_SIZE];
     let mut payload_buf = vec![0u8; 4096];
     let mut last_heartbeat = Instant::now();
-
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
 
     loop {
         match stream.read_exact(&mut header) {
@@ -250,7 +399,7 @@ fn handle_client(state: &Arc<BridgeState>, mut stream: std::os::unix::net::UnixS
         }
     }
 
-    // Client disconnected — silence the device but keep it alive
+    // Client disconnected - silence the device but keep it alive
     info!("Client session ended, silencing device (keeping alive for reconnect)");
     feedback_running.store(false, Ordering::SeqCst);
     if let Some(t) = feedback_thread {
@@ -269,6 +418,25 @@ fn handle_client(state: &Arc<BridgeState>, mut stream: std::os::unix::net::UnixS
     }
 
     state.client_connected.store(false, Ordering::SeqCst);
+}
+
+/// Trait for cloning stream handles (UnixStream::try_clone / PipeStream::try_clone).
+trait TryClone: Sized {
+    fn try_clone_stream(&self) -> std::io::Result<Self>;
+}
+
+#[cfg(unix)]
+impl TryClone for std::os::unix::net::UnixStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+}
+
+#[cfg(windows)]
+impl TryClone for PipeStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
 }
 
 /// Read and parse the Identity frame from the client.
