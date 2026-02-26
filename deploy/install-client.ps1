@@ -1,4 +1,4 @@
-# MIDInet client installation / update script for Windows
+﻿# MIDInet client installation / update script for Windows
 #
 # Run as Administrator:
 #   powershell -ExecutionPolicy Bypass -File deploy\install-client.ps1
@@ -106,7 +106,7 @@ if ($nssm) {
         # Install bridge service
         & $nssmExe install MIDInetBridge "$InstallDir\midi-bridge.exe"
         & $nssmExe set MIDInetBridge DisplayName "MIDInet MIDI Bridge"
-        & $nssmExe set MIDInetBridge Description "Owns the virtual MIDI device — survives client restarts"
+        & $nssmExe set MIDInetBridge Description "Owns the virtual MIDI device - survives client restarts"
         & $nssmExe set MIDInetBridge Start SERVICE_AUTO_START
         & $nssmExe set MIDInetBridge AppStdout "$InstallDir\bridge.log"
         & $nssmExe set MIDInetBridge AppStderr "$InstallDir\bridge.log"
@@ -132,11 +132,11 @@ if ($nssm) {
     }
 } else {
     # Fallback: use sc.exe (basic, no log rotation)
-    Write-Host "  NSSM not found — using sc.exe (install NSSM for better log management)."
+    Write-Host "  NSSM not found - using sc.exe (install NSSM for better log management)."
 
     if ($firstInstall) {
         sc.exe create MIDInetBridge binPath= "$InstallDir\midi-bridge.exe" start= auto DisplayName= "MIDInet MIDI Bridge"
-        sc.exe description MIDInetBridge "Owns the virtual MIDI device — survives client restarts"
+        sc.exe description MIDInetBridge "Owns the virtual MIDI device - survives client restarts"
 
         sc.exe create MIDInetClient binPath= "$InstallDir\midi-client.exe --config $InstallDir\client.toml" start= auto depend= MIDInetBridge DisplayName= "MIDInet Client"
         sc.exe description MIDInetClient "MIDI-over-network client daemon"
