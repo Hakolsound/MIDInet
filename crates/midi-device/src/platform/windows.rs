@@ -11,7 +11,7 @@
 
 use crate::platform::midi_services::MidiServicesDevice;
 use crate::platform::te_virtual_midi::TeVirtualMidiDevice;
-use crate::virtual_device::VirtualMidiDevice;
+use crate::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 use tracing::{error, info, warn};
 

@@ -30,7 +30,7 @@ use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::pipeline::PipelineConfig;
 
 use crate::health::{task_pulse, HealthCollector, TaskPulse};
-use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
+use crate::virtual_device::{create_device, VirtualMidiDevice};
 
 #[derive(Parser, Debug)]
 #[command(name = "midi-client", about = "MIDInet client daemon")]
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let client_id: u32 = rand_client_id();
-    let virtual_device = create_virtual_device();
+    let virtual_device = create_device();
     let health = Arc::new(HealthCollector::new());
 
     // Create task pulse pairs

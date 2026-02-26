@@ -1,6 +1,12 @@
-/// Virtual MIDI device abstraction.
-/// Creates a platform-specific virtual MIDI port that mimics the identity
-/// of the physical controller connected to the host.
+/// Virtual MIDI device abstraction and platform-specific implementations.
+///
+/// This crate provides the `VirtualMidiDevice` trait and implementations for
+/// macOS (CoreMIDI), Linux (ALSA), and Windows (teVirtualMIDI / MIDI Services).
+///
+/// Extracted into a shared crate so both `midi-client` and `midi-bridge` can
+/// create and manage virtual MIDI devices.
+
+pub mod platform;
 
 use midi_protocol::identity::DeviceIdentity;
 
@@ -52,17 +58,17 @@ pub trait VirtualMidiDevice: Send + Sync {
 pub fn create_virtual_device() -> Box<dyn VirtualMidiDevice> {
     #[cfg(target_os = "linux")]
     {
-        Box::new(crate::platform::linux::AlsaVirtualDevice::new())
+        Box::new(platform::linux::AlsaVirtualDevice::new())
     }
 
     #[cfg(target_os = "macos")]
     {
-        Box::new(crate::platform::macos::CoreMidiVirtualDevice::new())
+        Box::new(platform::macos::CoreMidiVirtualDevice::new())
     }
 
     #[cfg(target_os = "windows")]
     {
-        Box::new(crate::platform::windows::WindowsVirtualDevice::new())
+        Box::new(platform::windows::WindowsVirtualDevice::new())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

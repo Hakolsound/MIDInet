@@ -1,0 +1,38 @@
+[Unit]
+Description=MIDInet MIDI Bridge (virtual device owner)
+After=network.target sound.target
+Before=midinet-client.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=midi
+Group=midi
+ExecStart=/usr/local/bin/midi-bridge
+Restart=always
+RestartSec=1
+
+Environment=RUST_LOG=info
+
+# Real-time scheduling (same as host — bridge is on the MIDI hot path)
+Nice=-20
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=80
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+
+# Security hardening
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=false
+PrivateTmp=false
+
+# Bridge needs access to /tmp for the Unix domain socket
+ReadWritePaths=/tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midinet-bridge
+
+[Install]
+WantedBy=multi-user.target

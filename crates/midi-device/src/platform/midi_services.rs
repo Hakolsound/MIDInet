@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
 use bindings::Windows::Devices::Midi2 as midi2;
 
-use crate::virtual_device::VirtualMidiDevice;
+use crate::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 use tracing::{debug, info, trace, warn};
 

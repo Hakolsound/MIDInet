@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::virtual_device::VirtualMidiDevice;
+use crate::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 use tracing::{debug, error, info, warn};
 

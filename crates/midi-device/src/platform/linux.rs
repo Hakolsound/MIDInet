@@ -19,7 +19,7 @@ use alsa::seq::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::virtual_device::VirtualMidiDevice;
+use crate::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 
 pub struct AlsaVirtualDevice {

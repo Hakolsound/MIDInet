@@ -26,9 +26,9 @@ fi
 
 # 0b. Build if requested
 if [ "$BUILD" = "true" ]; then
-    echo "[0b/6] Building release binaries (host, admin, cli only)..."
+    echo "[0b/7] Building release binaries..."
     sudo -u "$(logname 2>/dev/null || echo pi)" \
-        cargo build --release -p midi-host -p midi-admin -p midi-cli
+        cargo build --release -p midi-host -p midi-admin -p midi-cli -p midi-bridge
     BINARY_DIR="target/release"
 fi
 
@@ -55,21 +55,26 @@ else
 fi
 
 # 4. Install binaries
-echo "[4/6] Installing binaries..."
-install -m 755 "${BINARY_DIR}/midi-host"  /usr/local/bin/midi-host
-install -m 755 "${BINARY_DIR}/midi-admin" /usr/local/bin/midi-admin
-install -m 755 "${BINARY_DIR}/midi-cli"   /usr/local/bin/midi-cli
+echo "[4/7] Installing binaries..."
+install -m 755 "${BINARY_DIR}/midi-host"   /usr/local/bin/midi-host
+install -m 755 "${BINARY_DIR}/midi-admin"  /usr/local/bin/midi-admin
+install -m 755 "${BINARY_DIR}/midi-cli"    /usr/local/bin/midi-cli
+install -m 755 "${BINARY_DIR}/midi-bridge" /usr/local/bin/midi-bridge
 
 # 5. Install systemd service files
-echo "[5/6] Installing systemd services..."
-install -m 644 deploy/midinet-host.service  /etc/systemd/system/midinet-host.service
-install -m 644 deploy/midinet-admin.service /etc/systemd/system/midinet-admin.service
+echo "[5/7] Installing systemd services..."
+install -m 644 deploy/midinet-host.service   /etc/systemd/system/midinet-host.service
+install -m 644 deploy/midinet-admin.service  /etc/systemd/system/midinet-admin.service
+install -m 644 deploy/midinet-bridge.service /etc/systemd/system/midinet-bridge.service
 systemctl daemon-reload
 
 # 6. Enable and start services
-echo "[6/6] Enabling and starting services..."
+echo "[6/7] Enabling and starting services..."
 systemctl enable --now midinet-host.service
 systemctl enable --now midinet-admin.service
+
+# 7. Bridge is client-side only — install but don't auto-start on host
+echo "[7/7] Bridge service installed (start on client machines with: systemctl enable --now midinet-bridge)"
 
 echo ""
 echo "=== Installation complete ==="

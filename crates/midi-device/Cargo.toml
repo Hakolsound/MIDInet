@@ -1,0 +1,31 @@
+[package]
+name = "midi-device"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+midi-protocol = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coremidi = "0.7"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Devices_Enumeration",
+    "Devices_Midi",
+    "Data_Json",
+    "Storage_Streams",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+] }
+windows-core = "0.58"
+
+[build-dependencies]
+windows-bindgen = "0.58"

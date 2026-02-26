@@ -1807,6 +1807,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "midi-bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "midi-device",
+ "midi-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "midi-cli"
 version = "0.1.0"
 dependencies = [
@@ -1825,12 +1839,11 @@ dependencies = [
 name = "midi-client"
 version = "0.1.0"
 dependencies = [
- "alsa",
  "anyhow",
  "axum",
  "clap",
- "coremidi",
  "mdns-sd",
+ "midi-device",
  "midi-protocol",
  "reqwest",
  "serde",
@@ -1842,6 +1855,17 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "midi-device"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "anyhow",
+ "coremidi",
+ "midi-protocol",
+ "tracing",
  "windows 0.58.0",
  "windows-bindgen",
  "windows-core 0.58.0",
