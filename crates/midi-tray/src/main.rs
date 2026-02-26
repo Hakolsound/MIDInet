@@ -582,8 +582,8 @@ fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
     };
 
     format!(
-        "MIDInet: {} | {:.0} msg/s | {:.1}% loss",
-        state, snapshot.midi_rate_in, snapshot.packet_loss_percent
+        "MIDInet: {} | {:.0} in {:.0} out msg/s | {:.1}% loss",
+        state, snapshot.midi_rate_in, snapshot.midi_rate_out, snapshot.packet_loss_percent
     )
 }
 
