@@ -117,7 +117,11 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                     "active_label": if input_red.active_input == 0 { "primary" } else { "secondary" },
                     "primary_health": input_red.primary_health,
                     "secondary_health": input_red.secondary_health,
+                    "primary_device": input_red.primary_device,
+                    "secondary_device": input_red.secondary_device,
                     "switch_count": input_red.switch_count,
+                    "auto_switch_enabled": input_red.auto_switch_enabled,
+                    "last_switch": input_red.last_switch,
                 },
                 "settings": {
                     "midi_device_status": midi_device_status.status,

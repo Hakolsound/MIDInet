@@ -221,11 +221,33 @@ pub async fn run(state: AppState) {
         let scanned = scan_midi_devices();
         if !scanned.is_empty() {
             let mut devices = state.inner.devices.write().await;
-            *devices = scanned;
+            *devices = scanned.clone();
         } else {
             let mut devices = state.inner.devices.write().await;
             if !devices.is_empty() {
                 devices.clear();
+            }
+        }
+
+        // --- Update input redundancy health from live device scan ---
+        {
+            let mut ir = state.inner.input_redundancy.write().await;
+            // Update primary health
+            if !ir.primary_device.is_empty() {
+                let connected = scanned.iter().any(|d| d.name == ir.primary_device || d.id == ir.primary_device);
+                ir.primary_health = if connected { "active" } else { "disconnected" }.to_string();
+            }
+            // Update secondary health
+            if !ir.secondary_device.is_empty() {
+                let connected = scanned.iter().any(|d| d.name == ir.secondary_device || d.id == ir.secondary_device);
+                ir.secondary_health = if connected { "active" } else { "disconnected" }.to_string();
+            }
+            // Also update the main device status
+            let active_device = state.inner.active_device.read().await;
+            if let Some(ref dev_id) = *active_device {
+                let connected = scanned.iter().any(|d| d.id == *dev_id || d.name == *dev_id);
+                let mut status = state.inner.midi_device_status.write().await;
+                status.status = if connected { "connected" } else { "disconnected" }.to_string();
             }
         }
 

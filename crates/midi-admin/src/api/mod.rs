@@ -137,6 +137,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         // Input redundancy
         .route("/api/input-redundancy", get(input::get_input_redundancy))
         .route("/api/input-redundancy/switch", post(input::trigger_input_switch))
+        .route("/api/input-redundancy/auto", post(input::set_auto_switch))
         // Fleet management
         .route("/api/clients/register", post(status::register_client))
         .route("/api/clients/:id/heartbeat", post(status::client_heartbeat))

@@ -64,7 +64,7 @@ const INIT = {
     midi: { messages_per_sec: 0, active_notes: 0, bytes_per_sec: 0 },
     failover: { active_host: 'primary', standby_healthy: false, auto_enabled: true },
     traffic: { midi_in_per_sec: 0, midi_out_per_sec: 0, osc_per_sec: 0, api_per_sec: 0, ws_connections: 0 },
-    input_redundancy: { enabled: false, active_input: 0, active_label: 'primary', primary_health: 'unknown', secondary_health: 'unknown', switch_count: 0 },
+    input_redundancy: { enabled: false, active_input: 0, active_label: 'primary', primary_health: 'unknown', secondary_health: 'unknown', primary_device: '', secondary_device: '', switch_count: 0, auto_switch_enabled: true, last_switch: null },
     host_count: 0, client_count: 0, active_alerts: 0,
     settings: { midi_device_status: 'disconnected', osc_port: 8000, osc_status: 'stopped', active_preset: null },
   },
@@ -468,49 +468,82 @@ function OverviewPage() {
 }
 
 function ControllersCard() {
-  const { state } = useContext(AppContext);
-  const s = state.status;
-  const dev = s.settings?.midi_device_status || 'disconnected';
-  const midi = s.midi || {};
-  const ir = s.input_redundancy || {};
-  const hMap = { active: 'ok', disconnected: 'error', error: 'error', unknown: 'idle' };
-  const primaryName = ir.primary_device || 'Primary';
-  const secondaryName = ir.secondary_device || 'Secondary';
+  const { state, dispatch } = useContext(AppContext);
+  const midi = state.status.midi || {};
+  const ir = state.status.input_redundancy || {};
+  const hMap = { active: 'ok', disconnected: 'error', error: 'error', reconnecting: 'warn', unknown: 'idle' };
+
+  // Determine which device is Active vs Backup based on active_input
+  const activeIdx = ir.active_input || 0;
+  const activeName = activeIdx === 0 ? (ir.primary_device || 'Primary') : (ir.secondary_device || 'Secondary');
+  const activeHealth = activeIdx === 0 ? ir.primary_health : ir.secondary_health;
+  const backupName = activeIdx === 0 ? (ir.secondary_device || 'Secondary') : (ir.primary_device || 'Primary');
+  const backupHealth = activeIdx === 0 ? ir.secondary_health : ir.primary_health;
+
+  const doSwitch = async () => {
+    const r = await apiFetch('/api/input-redundancy/switch', { method: 'POST' });
+    if (!r.success) dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Switch failed') });
+  };
+  const toggleAuto = async () => {
+    await apiFetch('/api/input-redundancy/auto', {
+      method: 'POST', body: JSON.stringify({ enabled: !ir.auto_switch_enabled })
+    });
+  };
+
+  // Source badge for last switch event
+  const ls = ir.last_switch;
+  const sourceBadge = (trigger) => {
+    if (!trigger) return '';
+    const map = { health: 'auto', activity_timeout: 'auto', api: 'manual', osc: 'osc', midi: 'midi' };
+    const label = map[trigger] || trigger;
+    return label.toUpperCase();
+  };
+  const sourceClass = (trigger) => {
+    if (!trigger) return '';
+    if (trigger === 'health' || trigger === 'activity_timeout') return 'source-auto';
+    if (trigger === 'api') return 'source-manual';
+    if (trigger === 'osc') return 'source-osc';
+    return 'source-manual';
+  };
+
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.usb()}</span>
       Controllers
+      ${ir.enabled && html`<label class="auto-toggle" title=${ir.auto_switch_enabled ? 'Auto-switch enabled' : 'Auto-switch disabled'}>
+        <input type="checkbox" checked=${ir.auto_switch_enabled} onChange=${toggleAuto} />
+        <span class="auto-toggle-label">Auto</span>
+      </label>`}
     </div>
     <div class="card-body">
-      <div class="ctrl-device">
-        <span class="status-dot" data-status=${dev === 'connected' ? 'ok' : dev === 'switching' ? 'warn' : 'disconnected'} />
-        <span class="ctrl-device-name">${primaryName}</span>
-        <span class="ctrl-device-rate">${dev === 'connected' ? fmtRate(midi.messages_per_sec || 0) + '/s' : 'Disconnected'}</span>
-      </div>
-      <div class="ctrl-section-label">Input Redundancy${ir.enabled === false ? ' (Disabled)' : ''}</div>
       <div class="input-red">
-        <div class="input-red-item ${ir.active_input === 0 ? 'active' : ''}">
+        <div class="input-red-item active">
           <div class="input-red-icon">${ICO.usb()}</div>
           <div class="input-red-info">
-            <div class="input-red-label">${primaryName}</div>
+            <div class="input-red-label">Active</div>
+            <div class="input-red-device">${activeName}</div>
             <div class="input-red-status">
-              <span class="status-dot" data-status=${hMap[ir.primary_health] || 'idle'} />${ir.primary_health || 'unknown'}
-              ${ir.active_input === 0 && html`<span style="color:var(--accent);font-weight:600;margin-left:4px">ACTIVE</span>`}
+              <span class="status-dot" data-status=${hMap[activeHealth] || 'idle'} />${activeHealth || 'unknown'}
+              <span class="mono" style="margin-left:auto">${activeHealth === 'active' ? fmtRate(midi.messages_per_sec || 0) + '/s' : ''}</span>
             </div>
           </div>
         </div>
-        <div class="input-red-item ${ir.active_input === 1 ? 'active' : ''}">
+        <div class="input-red-item">
           <div class="input-red-icon">${ICO.usb()}</div>
           <div class="input-red-info">
-            <div class="input-red-label">${secondaryName}</div>
+            <div class="input-red-label">Backup</div>
+            <div class="input-red-device">${backupName}</div>
             <div class="input-red-status">
-              <span class="status-dot" data-status=${hMap[ir.secondary_health] || 'idle'} />${ir.secondary_health || 'unknown'}
-              ${ir.active_input === 1 && html`<span style="color:var(--accent);font-weight:600;margin-left:4px">ACTIVE</span>`}
+              <span class="status-dot" data-status=${hMap[backupHealth] || 'idle'} />${backupHealth || 'unknown'}
             </div>
           </div>
         </div>
       </div>
-      ${ir.switch_count > 0 && html`<div class="mono mt-sm" style="font-size:10px;color:var(--text-3)">${ir.switch_count} switch${ir.switch_count !== 1 ? 'es' : ''}</div>`}
+      ${ir.enabled && html`<button class="switch-btn" onClick=${doSwitch}>SWITCH</button>`}
+      ${ls && html`<div class="switch-event">
+        <span class="switch-source ${sourceClass(ls.trigger)}">${sourceBadge(ls.trigger)}</span>
+        <span class="mono" style="font-size:10px;color:var(--text-3)">${ir.switch_count} switch${ir.switch_count !== 1 ? 'es' : ''}</span>
+      </div>`}
     </div>
   </div>`;
 }

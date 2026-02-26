@@ -2,9 +2,11 @@
 ///
 /// GET  /api/input-redundancy          — Full input redundancy state
 /// POST /api/input-redundancy/switch   — Manual input controller switch
+/// POST /api/input-redundancy/auto     — Toggle auto-switch on failure
 
 use axum::extract::State;
 use axum::Json;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::state::{AppState, InputSwitchEvent};
@@ -92,5 +94,28 @@ pub async fn trigger_input_switch(State(state): State<AppState>) -> Json<Value> 
         "active_input": ir.active_input,
         "active_label": if ir.active_input == 0 { "primary" } else { "secondary" },
         "switch_count": ir.switch_count,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct AutoSwitchRequest {
+    pub enabled: bool,
+}
+
+/// POST /api/input-redundancy/auto
+/// Enable or disable automatic input switching on controller failure.
+pub async fn set_auto_switch(
+    State(state): State<AppState>,
+    Json(req): Json<AutoSwitchRequest>,
+) -> Json<Value> {
+    let mut ir = state.inner.input_redundancy.write().await;
+    ir.auto_switch_enabled = req.enabled;
+
+    tracing::info!(enabled = req.enabled, "Auto-switch {}",
+        if req.enabled { "enabled" } else { "disabled" });
+
+    Json(json!({
+        "success": true,
+        "auto_switch_enabled": ir.auto_switch_enabled,
     }))
 }

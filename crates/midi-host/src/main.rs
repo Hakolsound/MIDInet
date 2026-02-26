@@ -16,7 +16,7 @@ use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::net::SocketAddrV4;
-use std::sync::atomic::{AtomicU64, AtomicU8};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, RwLock};
@@ -385,11 +385,15 @@ async fn main() -> anyhow::Result<()> {
     // Create InputMux (handles dual-controller failover)
     let mux = Arc::new(input_mux::InputMux::new(primary_consumer, secondary_consumer));
 
+    // Auto-switch flag — shared between health monitor, OSC listener, and admin API
+    let auto_switch_enabled = Arc::new(AtomicBool::new(true));
+
     // Spawn health monitor (handles input failover decisions)
     let health_monitor_handle = {
         let mux = Arc::clone(&mux);
         let switch_count = Arc::clone(&input_switch_count);
         let shared_input_active = Arc::clone(&input_active);
+        let auto_switch = Arc::clone(&auto_switch_enabled);
         let activity_timeout = if config.midi.input_failover_timeout_s > 0 {
             Duration::from_secs(config.midi.input_failover_timeout_s)
         } else {
@@ -403,6 +407,7 @@ async fn main() -> anyhow::Result<()> {
                 shared_input_active,
                 dual_input,
                 activity_timeout,
+                auto_switch,
             ).await;
         })
     };
@@ -445,19 +450,21 @@ async fn main() -> anyhow::Result<()> {
         failover_role_tx,
     ));
 
-    // Spawn OSC listener (if OSC failover trigger is enabled)
-    let osc_handle = if config.failover.triggers.osc.enabled {
-        let state = Arc::clone(&state);
-        let failover_mgr = Arc::clone(&failover_mgr);
+    // Spawn OSC listener (always — handles both host failover and input switching)
+    let osc_handle = {
+        let osc_ctx = Arc::new(osc_listener::OscContext {
+            state: Arc::clone(&state),
+            failover_mgr: Arc::clone(&failover_mgr),
+            mux: if dual_input { Some(Arc::clone(&mux)) } else { None },
+            input_switch_count: Arc::clone(&input_switch_count),
+            shared_input_active: Arc::clone(&input_active),
+        });
         info!(port = config.osc.listen_port, "Spawning OSC listener");
         Some(tokio::spawn(async move {
-            if let Err(e) = osc_listener::run(state, failover_mgr).await {
+            if let Err(e) = osc_listener::run(osc_ctx).await {
                 error!("OSC listener error: {}", e);
             }
         }))
-    } else {
-        info!("OSC listener not spawned (OSC failover trigger disabled)");
-        None
     };
 
     // Create focus state for bidirectional MIDI feedback

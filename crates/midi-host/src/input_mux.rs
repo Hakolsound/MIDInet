@@ -142,6 +142,7 @@ pub async fn run_health_monitor(
     shared_input_active: Arc<AtomicU8>,
     dual_input_enabled: bool,
     activity_timeout: Duration,
+    auto_switch_enabled: Arc<AtomicBool>,
 ) {
     let activity_check_enabled = dual_input_enabled && !activity_timeout.is_zero();
     let activity_check_interval = if activity_check_enabled {
@@ -188,13 +189,21 @@ pub async fn run_health_monitor(
                             // Check if the other input is healthy enough to switch to
                             let other = 1 - index;
                             if input_health[other as usize] == InputHealthState::Active {
-                                warn!(
-                                    input = index,
-                                    error = %msg,
-                                    "Active input failed — switching to {}",
-                                    if active == INPUT_PRIMARY { "secondary" } else { "primary" }
-                                );
-                                do_switch(&mux, &input_switch_count, &shared_input_active);
+                                if auto_switch_enabled.load(Ordering::Relaxed) {
+                                    warn!(
+                                        input = index,
+                                        error = %msg,
+                                        "Active input failed — switching to {}",
+                                        if active == INPUT_PRIMARY { "secondary" } else { "primary" }
+                                    );
+                                    do_switch(&mux, &input_switch_count, &shared_input_active);
+                                } else {
+                                    warn!(
+                                        input = index,
+                                        error = %msg,
+                                        "Active input failed — auto-switch DISABLED, staying put"
+                                    );
+                                }
                             } else {
                                 warn!(
                                     input = index,
@@ -228,16 +237,24 @@ pub async fn run_health_monitor(
                     let active = mux.active_input();
                     let other = 1 - active;
 
-                    // Only switch if the other input is healthy
+                    // Only switch if the other input is healthy and auto-switch is enabled
                     if input_health[other as usize] == InputHealthState::Active {
-                        warn!(
-                            active_input = active,
-                            idle_secs = idle_duration.as_secs_f32(),
-                            timeout_secs = activity_timeout.as_secs_f32(),
-                            "Active input silent for too long — switching to {}",
-                            if active == INPUT_PRIMARY { "secondary" } else { "primary" }
-                        );
-                        do_switch(&mux, &input_switch_count, &shared_input_active);
+                        if auto_switch_enabled.load(Ordering::Relaxed) {
+                            warn!(
+                                active_input = active,
+                                idle_secs = idle_duration.as_secs_f32(),
+                                timeout_secs = activity_timeout.as_secs_f32(),
+                                "Active input silent for too long — switching to {}",
+                                if active == INPUT_PRIMARY { "secondary" } else { "primary" }
+                            );
+                            do_switch(&mux, &input_switch_count, &shared_input_active);
+                        } else {
+                            warn!(
+                                active_input = active,
+                                idle_secs = idle_duration.as_secs_f32(),
+                                "Active input silent — auto-switch DISABLED, staying put"
+                            );
+                        }
                     }
                 }
             }

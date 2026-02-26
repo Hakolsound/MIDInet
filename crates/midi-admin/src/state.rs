@@ -35,6 +35,8 @@ pub struct InputRedundancyState {
     pub switch_count: u64,
     /// Activity timeout in seconds (0 = disabled)
     pub activity_timeout_s: u64,
+    /// Whether automatic input switching on failure is enabled
+    pub auto_switch_enabled: bool,
     /// Last input switch event
     pub last_switch: Option<InputSwitchEvent>,
     /// Input switch history (most recent first)
@@ -52,6 +54,7 @@ impl Default for InputRedundancyState {
             secondary_device: String::new(),
             switch_count: 0,
             activity_timeout_s: 0,
+            auto_switch_enabled: true,
             last_switch: None,
             history: Vec::new(),
         }
