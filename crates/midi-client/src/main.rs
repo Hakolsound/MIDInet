@@ -531,6 +531,7 @@ mod windows_service_mode {
     use std::sync::OnceLock;
     use std::time::Duration;
 
+    use clap::Parser;
     use tokio_util::sync::CancellationToken;
     use tracing::{error, info};
     use windows_service::service::{
