@@ -1003,10 +1003,27 @@ a { color: var(--accent); text-decoration: none; }
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
-    width: 60px;
+    width: 90px;
     flex-shrink: 0;
     transition: color .8s var(--ease);
 }
+.traffic-all-btn {
+    margin-left: 8px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    vertical-align: middle;
+    transition: all .15s var(--ease);
+}
+.traffic-all-btn:hover { border-color: var(--text-2); color: var(--text-2); }
+.traffic-all-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .traffic-bar-wrap {
     flex: 1;
     height: 4px;

@@ -42,6 +42,19 @@ const fmtDur = (ms) => { const s = Math.floor(ms / 1000); if (s < 60) return `${
 const healthLv = (s) => s >= 80 ? 'ok' : s >= 50 ? 'warn' : 'crit';
 const cpuLv = (p) => p < 60 ? 'ok' : p < 85 ? 'warn' : 'crit';
 const tempLv = (c) => c < 55 ? 'ok' : c < 70 ? 'warn' : 'crit';
+const latLv = (ms) => ms < 5 ? 'ok' : ms < 15 ? 'warn' : 'crit';
+function estimateLatency(s, clients) {
+  let lat = 2; // base: USB polling + kernel + network stack
+  if (s.cpu_percent > 90) lat += 8; else if (s.cpu_percent > 75) lat += 3; else if (s.cpu_percent > 50) lat += 1;
+  if (s.cpu_temp_c > 85) lat += 8; else if (s.cpu_temp_c > 75) lat += 3; else if (s.cpu_temp_c > 65) lat += 1;
+  const rate = s.midi?.messages_per_sec || 0;
+  if (rate > 2000) lat += 3; else if (rate > 500) lat += 1;
+  if (clients && clients.length > 0) {
+    const avg = clients.reduce((sum, c) => sum + (c.latency_ms || 0), 0) / clients.length;
+    if (avg > 0) lat = Math.max(lat, avg);
+  }
+  return Math.round(lat);
+}
 let _tid = 0;
 const mkToast = (type, message) => ({ id: ++_tid, type, message, ts: Date.now() });
 const copyText = async (text, dispatch) => {
@@ -285,6 +298,8 @@ function Header() {
 function Footer() {
   const { state } = useContext(AppContext);
   const s = state.status;
+  const clients = s.clients || [];
+  const estLat = estimateLatency(s, clients);
   return html`<footer class="footer">
     <div class="footer-item"><span class="footer-label">CPU</span><span class="footer-val" data-lv=${cpuLv(s.cpu_percent)}>${Math.round(s.cpu_percent)}%</span></div>
     <span class="footer-sep" />
@@ -293,6 +308,8 @@ function Footer() {
     <div class="footer-item"><span class="footer-label">RAM</span><span class="footer-val">${s.memory_used_mb}MB</span></div>
     <span class="footer-sep" />
     <div class="footer-item"><span class="footer-label">MIDI</span><span class="footer-val" data-lv="data">${fmtRate(s.midi?.messages_per_sec || 0)}/s</span></div>
+    <span class="footer-sep" />
+    <div class="footer-item"><span class="footer-label">Latency</span><span class="footer-val" data-lv=${latLv(estLat)}>~${estLat}ms</span></div>
     <div class="footer-spacer" />
     <div class="footer-item"><span class="footer-label">Up</span><span class="footer-val">${fmtUp(s.uptime)}</span></div>
   </footer>`;
@@ -433,14 +450,14 @@ function SnifferDrawer() {
   }, [state.snifferOpen]);
   useEffect(() => { if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight; }, [state.snifferEntries.length]);
   const list = state.snifferFilter === 'all' ? state.snifferEntries : state.snifferEntries.filter(e => e.ch === state.snifferFilter);
-  const chColor = { midi: 'accent', osc: 'green', api: 'orange', ws: 'text-3' };
+  const chColor = { midi: 'accent', feedback: 'violet', osc: 'green', api: 'orange', ws: 'text-3' };
   return html`<div class="sniffer-backdrop ${state.snifferOpen ? 'open' : ''}" onClick=${() => dispatch({ type: 'SNIFFER_CLOSE' })}>
     <div class="sniffer-panel" onClick=${(e) => e.stopPropagation()}>
       <div class="sniffer-header">
         <span class="sniffer-title">Traffic Sniffer</span>
         <div class="flex items-center gap-sm">
           <select value=${state.snifferFilter} onChange=${(e) => dispatch({ type: 'SNIFFER_FILTER', f: e.target.value })}>
-            <option value="all">All</option><option value="midi">MIDI</option><option value="osc">OSC</option><option value="api">API</option><option value="ws">WS</option>
+            <option value="all">All</option><option value="midi">MIDI</option><option value="feedback">Feedback</option><option value="osc">OSC</option><option value="api">API</option><option value="ws">WS</option>
           </select>
           <button class="btn btn-sm btn-icon" onClick=${() => dispatch({ type: 'SNIFFER_CLOSE' })}>${ICO.x()}</button>
         </div>
@@ -588,15 +605,17 @@ function trafficColor(lastSeen) {
 
 function NetworkCard() {
   const { state, dispatch } = useContext(AppContext);
+  const [showAll, setShowAll] = useState(false);
   const t = state.status.traffic || {};
   const ls = state.trafficLastSeen;
-  const mx = Math.max(t.midi_in_per_sec || 0, t.midi_out_per_sec || 0, t.osc_per_sec || 0, t.api_per_sec || 0, 1);
-  const chs = [
+  const allChs = [
     { k: 'midi_in', l: 'MIDI Broadcast', v: t.midi_in_per_sec || 0 },
-    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0 },
+    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0, allOnly: true },
     { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0 },
     { k: 'api', l: 'API', v: t.api_per_sec || 0 },
   ];
+  const chs = showAll ? allChs : allChs.filter(c => !c.allOnly);
+  const mx = Math.max(...chs.map(c => c.v), 1);
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.wifi()}</span>
@@ -623,7 +642,7 @@ function NetworkCard() {
         })}
       `}
       ${state.hosts.length === 0 && html`<div style="font-size:12px;color:var(--text-3);margin-bottom:12px">No hosts discovered</div>`}
-      <div class="ctrl-section-label" style="margin-top:12px">Traffic</div>
+      <div class="ctrl-section-label" style="margin-top:12px">Traffic<button class="traffic-all-btn ${showAll ? 'active' : ''}" onClick=${() => setShowAll(!showAll)}>All</button></div>
       ${chs.map(c => {
         const clr = trafficColor(ls[c.k]);
         return html`<div class="traffic-row" key=${c.k}>
