@@ -17,7 +17,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use midi_protocol::packets::{FocusAction, FocusPacket};
+use midi_protocol::packets::{FocusAction, FocusPacket, MidiDataPacket};
 
 use crate::health::TaskPulse;
 use crate::ClientState;
@@ -85,14 +85,19 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
         send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
     }
 
-    let mut buf = [0u8; FocusPacket::SIZE];
+    let mut buf = [0u8; 512]; // Large enough for focus and MIDI data packets
     let mut last_feedback_check = Instant::now();
     let feedback_interval = Duration::from_millis(5); // Check for feedback every 5ms
+    let mut feedback_sequence: u16 = 0;
+
+    // Periodically re-claim focus to survive host auto-release (10s timeout)
+    let mut last_claim = Instant::now();
+    let claim_interval = Duration::from_secs(5);
 
     loop {
         // Listen for focus ack/release from the host
         match recv_socket.try_recv_from(&mut buf) {
-            Ok((len, _addr)) if len >= FocusPacket::SIZE => {
+            Ok((len, _addr)) if len >= 4 => {
                 if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
                     match packet.action {
                         FocusAction::Ack => {
@@ -127,6 +132,12 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
             _ => {}
         }
 
+        // Re-claim focus periodically to survive host auto-release timeout
+        if state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
+            last_claim = Instant::now();
+            send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+        }
+
         // If we have focus, periodically check for and send feedback from virtual device
         if is_focused() && last_feedback_check.elapsed() >= feedback_interval {
             last_feedback_check = Instant::now();
@@ -146,13 +157,28 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                             }
                         };
 
-                        // Send feedback to the active host via the data port
-                        // The host will forward it to the physical controller
+                        // Send feedback MIDI to the host via control multicast
                         let active_host = state.active_host_id.read().await;
                         if active_host.is_some() {
-                            // For now, send feedback on the control multicast group
-                            // In production, this would be unicast to the active host's IP
-                            debug!(bytes = send_data.len(), "Sending feedback MIDI");
+                            let packet = MidiDataPacket {
+                                sequence: feedback_sequence,
+                                timestamp_us: now_us(),
+                                host_id: 0, // client-originated
+                                midi_data: send_data.clone(),
+                                journal: None,
+                            };
+                            feedback_sequence = feedback_sequence.wrapping_add(1);
+
+                            let mut pkt_buf = Vec::new();
+                            packet.serialize(&mut pkt_buf);
+
+                            if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
+                                error!("Failed to send feedback MIDI: {}", e);
+                            } else {
+                                debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
+                            }
+                        } else {
+                            debug!("Feedback MIDI ready but no active host");
                         }
                     }
                     Ok(None) => break,
