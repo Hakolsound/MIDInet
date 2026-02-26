@@ -104,10 +104,14 @@ fn run_unix(state: &Arc<BridgeState>) -> anyhow::Result<()> {
 #[cfg(windows)]
 fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
     use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_ACCESS_DUPLEX,
+        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
         PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
+
+    // PIPE_ACCESS_DUPLEX = 0x3 (not exported by the windows crate)
+    const PIPE_ACCESS_DUPLEX: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAGS_AND_ATTRIBUTES(0x3);
 
     let pipe_name = HSTRING::from(BRIDGE_SOCKET_PATH);
 
@@ -120,7 +124,7 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
                 &pipe_name,
                 PIPE_ACCESS_DUPLEX,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                PIPE_UNLIMITED_INSTANCES.0,
+                PIPE_UNLIMITED_INSTANCES,
                 4096,
                 4096,
                 0,
@@ -140,10 +144,8 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
         // Wait for client to connect (blocking)
         let connect_result = unsafe { ConnectNamedPipe(pipe_handle, None) };
         if let Err(e) = connect_result {
-            // ERROR_PIPE_CONNECTED (535) means client connected between Create and Connect
-            let win_err = e.code().0 as u32;
-            if win_err != 0x80070217 {
-                // Not ERROR_PIPE_CONNECTED
+            // ERROR_PIPE_CONNECTED (535) means client raced between Create and Connect - benign
+            if e.code() != windows::core::HRESULT::from_win32(535) {
                 error!(error = %e, "ConnectNamedPipe failed");
                 unsafe {
                     let _ = windows::Win32::Foundation::CloseHandle(pipe_handle);
@@ -179,6 +181,11 @@ struct PipeStream {
 unsafe impl Send for PipeStream {}
 
 #[cfg(windows)]
+fn win_err(e: windows::core::Error) -> std::io::Error {
+    std::io::Error::from_raw_os_error(e.code().0 as i32)
+}
+
+#[cfg(windows)]
 impl IoRead for PipeStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut bytes_read: u32 = 0;
@@ -189,7 +196,7 @@ impl IoRead for PipeStream {
                 Some(&mut bytes_read),
                 None,
             )
-            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+            .map_err(win_err)?;
         }
         Ok(bytes_read as usize)
     }
@@ -206,7 +213,7 @@ impl IoWrite for PipeStream {
                 Some(&mut bytes_written),
                 None,
             )
-            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+            .map_err(win_err)?;
         }
         Ok(bytes_written as usize)
     }
@@ -214,7 +221,7 @@ impl IoWrite for PipeStream {
     fn flush(&mut self) -> std::io::Result<()> {
         unsafe {
             windows::Win32::Storage::FileSystem::FlushFileBuffers(self.handle)
-                .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+                .map_err(win_err)?;
         }
         Ok(())
     }
@@ -236,7 +243,7 @@ impl PipeStream {
                 false,
                 windows::Win32::Foundation::DUPLICATE_SAME_ACCESS,
             )
-            .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 as i32))?;
+            .map_err(win_err)?;
         }
         Ok(PipeStream {
             handle: new_handle,
