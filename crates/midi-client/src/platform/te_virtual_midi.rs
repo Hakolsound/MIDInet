@@ -310,9 +310,11 @@ pub struct TeVirtualMidiDevice {
     lib: Option<TeVirtualMidiLib>,
     #[cfg(target_os = "windows")]
     port: Mutex<Option<ffi::HANDLE>>,
-    /// Feedback MIDI from applications (populated by the callback)
+    /// Feedback MIDI from applications (populated by the callback).
+    /// Box'd so the pointer passed to the C callback remains stable
+    /// even when the struct is moved (e.g., into WindowsVirtualDevice's Backend enum).
     #[cfg(target_os = "windows")]
-    feedback_buffer: FeedbackBuffer,
+    feedback_buffer: Box<FeedbackBuffer>,
     /// When true, Drop skips port close — the kernel driver cleans up on process exit.
     #[cfg(target_os = "windows")]
     detached: bool,
@@ -334,7 +336,7 @@ impl TeVirtualMidiDevice {
             #[cfg(target_os = "windows")]
             port: Mutex::new(None),
             #[cfg(target_os = "windows")]
-            feedback_buffer: Arc::new(Mutex::new(Vec::new())),
+            feedback_buffer: Box::new(Arc::new(Mutex::new(Vec::new()))),
             #[cfg(target_os = "windows")]
             detached: false,
             #[cfg(not(target_os = "windows"))]
@@ -427,8 +429,9 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
             let mut final_label = "";
             let mut midi_input_ok = false;
 
-            // Pass feedback buffer pointer as callback instance data
-            let instance_ptr = &self.feedback_buffer as *const FeedbackBuffer as *mut std::ffi::c_void;
+            // Pass feedback buffer pointer as callback instance data.
+            // Deref the Box to get a pointer to the heap-allocated Arc (stable across struct moves).
+            let instance_ptr = &*self.feedback_buffer as *const FeedbackBuffer as *mut std::ffi::c_void;
 
             for attempt in &attempts {
                 if let Some((h, input_created)) = lib.try_create_port(
