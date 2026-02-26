@@ -7,7 +7,7 @@
 #
 # Uses Task Scheduler (not Windows services) to run in the user session.
 # This is required because virtual MIDI devices must be created in the
-# interactive session — Session 0 services can't register MIDI In devices.
+# interactive session -- Session 0 services can't register MIDI In devices.
 
 param(
     [switch]$NoBuild,
@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "`n=== MIDInet Client Install/Update ===" -ForegroundColor Cyan
 
-# ── Check admin ──
+# --Check admin --
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "ERROR: Run this script as Administrator." -ForegroundColor Red
@@ -32,7 +32,7 @@ $TaskNames = @("MIDInetBridge", "MIDInetClient")
 # Detect the current interactive user (for the logon trigger)
 $CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-# ── Detect mode ──
+# --Detect mode --
 $bridgeTask = Get-ScheduledTask -TaskName "MIDInetBridge" -ErrorAction SilentlyContinue
 $clientTask = Get-ScheduledTask -TaskName "MIDInetClient" -ErrorAction SilentlyContinue
 
@@ -51,7 +51,7 @@ if ($firstInstall) {
     Write-Host "Mode: Update" -ForegroundColor Yellow
 }
 
-# ── 1. Build ──
+# --1. Build --
 Write-Host "`n[1/5] Building..." -ForegroundColor White
 if (-not $NoBuild) {
     cargo build --release -p midi-client -p midi-bridge
@@ -72,7 +72,7 @@ foreach ($bin in @("midi-client.exe", "midi-bridge.exe")) {
     }
 }
 
-# ── 2. Remove legacy Windows services (if migrating) ──
+# --2. Remove legacy Windows services (if migrating) --
 if ($hasLegacyServices) {
     Write-Host "`n[2/5] Removing legacy Windows services..." -ForegroundColor White
     if ($null -ne $clientSvc) {
@@ -101,7 +101,7 @@ if ($hasLegacyServices) {
     Write-Host "`n[2/5] No legacy services to remove." -ForegroundColor DarkGray
 }
 
-# ── 3. Install directory + binaries ──
+# --3. Install directory + binaries --
 Write-Host "`n[3/5] Installing binaries..." -ForegroundColor White
 
 if (-not (Test-Path $InstallDir)) {
@@ -134,9 +134,9 @@ if (-not (Test-Path "$InstallDir\client.toml")) {
     }
 }
 
-# ── 4. Register scheduled tasks ──
+# --4. Register scheduled tasks --
 Write-Host "`n[4/5] Configuring scheduled tasks..." -ForegroundColor White
-Write-Host "  (Task Scheduler runs in user session — required for virtual MIDI devices)" -ForegroundColor DarkGray
+Write-Host "  (Task Scheduler runs in user session -- required for virtual MIDI devices)" -ForegroundColor DarkGray
 
 # Remove existing tasks if updating
 foreach ($name in $TaskNames) {
@@ -213,7 +213,7 @@ Register-ScheduledTask `
 
 Write-Host "  Registered MIDInetClient task."
 
-# ── 5. Start tasks now ──
+# --5. Start tasks now --
 Write-Host "`n[5/5] Starting tasks..." -ForegroundColor White
 
 Start-ScheduledTask -TaskName "MIDInetBridge"
