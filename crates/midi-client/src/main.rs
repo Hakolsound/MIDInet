@@ -39,6 +39,10 @@ struct Args {
     #[arg(short, long, default_value = "config/client.toml")]
     config: PathBuf,
 
+    /// Log to file instead of stdout (used by Task Scheduler mode)
+    #[arg(long)]
+    log_file: Option<PathBuf>,
+
     /// Run as a Windows service (used internally by SCM)
     #[arg(long, hide = true)]
     service: bool,
@@ -156,8 +160,8 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("Windows service error: {}", e));
     }
 
-    // Console mode
-    init_logging(None);
+    // Console / Task Scheduler mode
+    init_logging(args.log_file.as_deref());
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run_client(args.config, None))

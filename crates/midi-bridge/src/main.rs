@@ -42,17 +42,25 @@ struct BridgeState {
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
     // On Windows, check for --service flag to enter SCM mode
     #[cfg(windows)]
     {
-        if std::env::args().any(|a| a == "--service") {
+        if args.iter().any(|a| a == "--service") {
             return windows_service_mode::run()
                 .map_err(|e| anyhow::anyhow!("Windows service error: {}", e));
         }
     }
 
-    // Console mode
-    init_logging(None);
+    // Check for --log-file <path> (used by Task Scheduler mode where no console exists)
+    let log_file = args
+        .iter()
+        .position(|a| a == "--log-file")
+        .and_then(|pos| args.get(pos + 1))
+        .map(std::path::PathBuf::from);
+
+    init_logging(log_file.as_deref());
     run_bridge()
 }
 

@@ -1,9 +1,13 @@
-﻿# MIDInet client installation / update script for Windows
+# MIDInet client installation / update script for Windows
 #
 # Run as Administrator:
 #   powershell -ExecutionPolicy Bypass -File deploy\install-client.ps1
 #
 # Both first-time install and update are handled automatically.
+#
+# Uses Task Scheduler (not Windows services) to run in the user session.
+# This is required because virtual MIDI devices must be created in the
+# interactive session — Session 0 services can't register MIDI In devices.
 
 param(
     [switch]$NoBuild,
@@ -23,21 +27,32 @@ if (-not $isAdmin) {
 }
 
 $InstallDir = "C:\MIDInet"
-$ServiceNames = @("MIDInetBridge", "MIDInetClient")
+$TaskNames = @("MIDInetBridge", "MIDInetClient")
+
+# Detect the current interactive user (for the logon trigger)
+$CurrentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 # ── Detect mode ──
+$bridgeTask = Get-ScheduledTask -TaskName "MIDInetBridge" -ErrorAction SilentlyContinue
+$clientTask = Get-ScheduledTask -TaskName "MIDInetClient" -ErrorAction SilentlyContinue
+
+# Check for legacy Windows services from previous versions
 $bridgeSvc = Get-Service -Name "MIDInetBridge" -ErrorAction SilentlyContinue
 $clientSvc = Get-Service -Name "MIDInetClient" -ErrorAction SilentlyContinue
-$firstInstall = ($null -eq $bridgeSvc) -or ($null -eq $clientSvc)
+$hasLegacyServices = ($null -ne $bridgeSvc) -or ($null -ne $clientSvc)
+
+$firstInstall = ($null -eq $bridgeTask) -and ($null -eq $clientTask) -and (-not $hasLegacyServices)
 
 if ($firstInstall) {
     Write-Host "Mode: First-time install" -ForegroundColor Green
+} elseif ($hasLegacyServices) {
+    Write-Host "Mode: Migration (services -> scheduled tasks)" -ForegroundColor Yellow
 } else {
     Write-Host "Mode: Update" -ForegroundColor Yellow
 }
 
 # ── 1. Build ──
-Write-Host "`n[1/4] Building..." -ForegroundColor White
+Write-Host "`n[1/5] Building..." -ForegroundColor White
 if (-not $NoBuild) {
     cargo build --release -p midi-client -p midi-bridge
     if ($LASTEXITCODE -ne 0) {
@@ -57,20 +72,54 @@ foreach ($bin in @("midi-client.exe", "midi-bridge.exe")) {
     }
 }
 
-# ── 2. Install directory + binaries ──
-Write-Host "`n[2/4] Installing binaries..." -ForegroundColor White
+# ── 2. Remove legacy Windows services (if migrating) ──
+if ($hasLegacyServices) {
+    Write-Host "`n[2/5] Removing legacy Windows services..." -ForegroundColor White
+    if ($null -ne $clientSvc) {
+        Stop-Service -Name "MIDInetClient" -ErrorAction SilentlyContinue -Force
+        sc.exe delete MIDInetClient | Out-Null
+        Write-Host "  Removed MIDInetClient service."
+    }
+    if ($null -ne $bridgeSvc) {
+        Stop-Service -Name "MIDInetBridge" -ErrorAction SilentlyContinue -Force
+        sc.exe delete MIDInetBridge | Out-Null
+        Write-Host "  Removed MIDInetBridge service."
+    }
+    # Also try NSSM removal
+    $nssm = Get-Command nssm -ErrorAction SilentlyContinue
+    if (-not $nssm) {
+        foreach ($p in @("C:\nssm\nssm.exe", "C:\tools\nssm\nssm.exe", "$env:ProgramFiles\nssm\nssm.exe")) {
+            if (Test-Path $p) { $nssm = Get-Item $p; break }
+        }
+    }
+    if ($nssm) {
+        $nssmExe = if ($nssm -is [System.Management.Automation.ApplicationInfo]) { $nssm.Source } else { $nssm.FullName }
+        & $nssmExe remove MIDInetClient confirm 2>$null
+        & $nssmExe remove MIDInetBridge confirm 2>$null
+    }
+} else {
+    Write-Host "`n[2/5] No legacy services to remove." -ForegroundColor DarkGray
+}
+
+# ── 3. Install directory + binaries ──
+Write-Host "`n[3/5] Installing binaries..." -ForegroundColor White
 
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Write-Host "  Created $InstallDir"
 }
 
-# For updates: stop services before replacing binaries
+# For updates: stop running processes before replacing binaries
 if (-not $firstInstall) {
-    Write-Host "  Stopping services for update..."
-    Stop-Service -Name "MIDInetClient" -ErrorAction SilentlyContinue -Force
-    # Bridge keeps running during binary swap to keep the device alive!
-    # We stop it last and restart it first.
+    Write-Host "  Stopping running tasks for update..."
+    Stop-ScheduledTask -TaskName "MIDInetClient" -ErrorAction SilentlyContinue
+    Stop-ScheduledTask -TaskName "MIDInetBridge" -ErrorAction SilentlyContinue
+    # Give processes a moment to exit gracefully
+    Start-Sleep -Seconds 2
+    # Force-kill if still running
+    Get-Process -Name "midi-client" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process -Name "midi-bridge" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 1
 }
 
 Copy-Item "$BinaryDir\midi-bridge.exe" "$InstallDir\midi-bridge.exe" -Force
@@ -85,89 +134,105 @@ if (-not (Test-Path "$InstallDir\client.toml")) {
     }
 }
 
-# ── 3. Register Windows services ──
-Write-Host "`n[3/4] Configuring services..." -ForegroundColor White
+# ── 4. Register scheduled tasks ──
+Write-Host "`n[4/5] Configuring scheduled tasks..." -ForegroundColor White
+Write-Host "  (Task Scheduler runs in user session — required for virtual MIDI devices)" -ForegroundColor DarkGray
 
-# Check for NSSM (preferred) or fall back to sc.exe
-$nssm = Get-Command nssm -ErrorAction SilentlyContinue
-if (-not $nssm) {
-    # Try common install location
-    $nssmPaths = @("C:\nssm\nssm.exe", "C:\tools\nssm\nssm.exe", "$env:ProgramFiles\nssm\nssm.exe")
-    foreach ($p in $nssmPaths) {
-        if (Test-Path $p) { $nssm = Get-Item $p; break }
+# Remove existing tasks if updating
+foreach ($name in $TaskNames) {
+    $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+        Write-Host "  Removed existing task: $name"
     }
 }
 
-if ($nssm) {
-    Write-Host "  Using NSSM for service management."
-    $nssmExe = if ($nssm -is [System.Management.Automation.ApplicationInfo]) { $nssm.Source } else { $nssm.FullName }
+# Bridge task: runs at logon, auto-restarts on failure
+$bridgeAction = New-ScheduledTaskAction `
+    -Execute "$InstallDir\midi-bridge.exe" `
+    -Argument "--log-file `"$InstallDir\bridge.log`"" `
+    -WorkingDirectory $InstallDir
 
-    if ($firstInstall) {
-        # Install bridge service
-        & $nssmExe install MIDInetBridge "$InstallDir\midi-bridge.exe"
-        & $nssmExe set MIDInetBridge DisplayName "MIDInet MIDI Bridge"
-        & $nssmExe set MIDInetBridge Description "Owns the virtual MIDI device - survives client restarts"
-        & $nssmExe set MIDInetBridge Start SERVICE_AUTO_START
-        & $nssmExe set MIDInetBridge AppStdout "$InstallDir\bridge.log"
-        & $nssmExe set MIDInetBridge AppStderr "$InstallDir\bridge.log"
-        & $nssmExe set MIDInetBridge AppRotateFiles 1
-        & $nssmExe set MIDInetBridge AppRotateBytes 1048576
-        & $nssmExe set MIDInetBridge AppEnvironmentExtra "RUST_LOG=info"
+$bridgeTrigger = New-ScheduledTaskTrigger -AtLogon -User $CurrentUser
 
-        # Install client service (depends on bridge)
-        & $nssmExe install MIDInetClient "$InstallDir\midi-client.exe" "--config $InstallDir\client.toml"
-        & $nssmExe set MIDInetClient DisplayName "MIDInet Client"
-        & $nssmExe set MIDInetClient Description "MIDI-over-network client daemon"
-        & $nssmExe set MIDInetClient DependOnService MIDInetBridge
-        & $nssmExe set MIDInetClient Start SERVICE_AUTO_START
-        & $nssmExe set MIDInetClient AppStdout "$InstallDir\client.log"
-        & $nssmExe set MIDInetClient AppStderr "$InstallDir\client.log"
-        & $nssmExe set MIDInetClient AppRotateFiles 1
-        & $nssmExe set MIDInetClient AppRotateBytes 1048576
-        & $nssmExe set MIDInetClient AppEnvironmentExtra "RUST_LOG=info"
+$bridgeSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -DontStopOnIdleEnd `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 999
 
-        Write-Host "  Services registered."
-    } else {
-        Write-Host "  Services already registered."
-    }
-} else {
-    # Fallback: use sc.exe (basic, no log rotation)
-    Write-Host "  NSSM not found - using sc.exe (install NSSM for better log management)."
+$bridgePrincipal = New-ScheduledTaskPrincipal `
+    -UserId $CurrentUser `
+    -LogonType Interactive `
+    -RunLevel Highest
 
-    if ($firstInstall) {
-        sc.exe create MIDInetBridge binPath= "`"$InstallDir\midi-bridge.exe`" --service" start= auto DisplayName= "MIDInet MIDI Bridge"
-        sc.exe description MIDInetBridge "Owns the virtual MIDI device - survives client restarts"
+Register-ScheduledTask `
+    -TaskName "MIDInetBridge" `
+    -Action $bridgeAction `
+    -Trigger $bridgeTrigger `
+    -Settings $bridgeSettings `
+    -Principal $bridgePrincipal `
+    -Description "MIDInet MIDI Bridge - owns the virtual MIDI device (must run in user session)" `
+    | Out-Null
 
-        sc.exe create MIDInetClient binPath= "`"$InstallDir\midi-client.exe`" --service --config `"$InstallDir\client.toml`"" start= auto depend= MIDInetBridge DisplayName= "MIDInet Client"
-        sc.exe description MIDInetClient "MIDI-over-network client daemon"
+Write-Host "  Registered MIDInetBridge task."
 
-        Write-Host "  Services registered via sc.exe."
-    } else {
-        Write-Host "  Services already registered."
-    }
-}
+# Client task: runs at logon (3s after bridge), auto-restarts on failure
+$clientAction = New-ScheduledTaskAction `
+    -Execute "$InstallDir\midi-client.exe" `
+    -Argument "--config `"$InstallDir\client.toml`" --log-file `"$InstallDir\client.log`"" `
+    -WorkingDirectory $InstallDir
 
-# ── 4. Start / restart services ──
-Write-Host "`n[4/4] Starting services..." -ForegroundColor White
+$clientTrigger = New-ScheduledTaskTrigger -AtLogon -User $CurrentUser
+# Delay client start so bridge has time to create the named pipe
+$clientTrigger.Delay = "PT3S"
 
-if (-not $firstInstall) {
-    # Update: restart bridge briefly, then start client
-    Stop-Service -Name "MIDInetBridge" -ErrorAction SilentlyContinue -Force
-    Start-Sleep -Seconds 1
-}
+$clientSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -DontStopOnIdleEnd `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 999
 
-Start-Service -Name "MIDInetBridge"
+$clientPrincipal = New-ScheduledTaskPrincipal `
+    -UserId $CurrentUser `
+    -LogonType Interactive `
+    -RunLevel Highest
+
+Register-ScheduledTask `
+    -TaskName "MIDInetClient" `
+    -Action $clientAction `
+    -Trigger $clientTrigger `
+    -Settings $clientSettings `
+    -Principal $clientPrincipal `
+    -Description "MIDInet Client - MIDI-over-network client daemon" `
+    | Out-Null
+
+Write-Host "  Registered MIDInetClient task."
+
+# ── 5. Start tasks now ──
+Write-Host "`n[5/5] Starting tasks..." -ForegroundColor White
+
+Start-ScheduledTask -TaskName "MIDInetBridge"
 Write-Host "  Bridge started."
-Start-Sleep -Seconds 1
+Start-Sleep -Seconds 2
 
-Start-Service -Name "MIDInetClient"
+Start-ScheduledTask -TaskName "MIDInetClient"
 Write-Host "  Client started."
 
 Write-Host "`n=== Installation complete ===" -ForegroundColor Green
 
 # Show status
-Get-Service -Name $ServiceNames | Format-Table Name, Status, DisplayName -AutoSize
+Get-ScheduledTask -TaskName $TaskNames | Format-Table TaskName, State, Description -AutoSize
 
+Write-Host "Manage:"
+Write-Host "  Stop:    Stop-ScheduledTask -TaskName MIDInetClient; Stop-ScheduledTask -TaskName MIDInetBridge"
+Write-Host "  Start:   Start-ScheduledTask -TaskName MIDInetBridge; Start-ScheduledTask -TaskName MIDInetClient"
+Write-Host "  Status:  Get-ScheduledTask -TaskName MIDInetBridge,MIDInetClient | ft TaskName,State"
+Write-Host ""
 Write-Host "View logs:"
 Write-Host "  Bridge: Get-Content $InstallDir\bridge.log -Tail 50 -Wait"
 Write-Host "  Client: Get-Content $InstallDir\client.log -Tail 50 -Wait"
