@@ -63,7 +63,7 @@ pub async fn run(state: Arc<ClientState>) {
         }
     }
 
-    // Periodic heartbeat
+    // Periodic heartbeat (re-registers automatically if admin has lost track)
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         interval.tick().await;
@@ -84,8 +84,26 @@ pub async fn run(state: Arc<ClientState>) {
             .send()
             .await
         {
-            Ok(_) => {
-                debug!("Heartbeat sent to admin panel");
+            Ok(resp) => {
+                // Check if admin panel has lost our registration (e.g. after restart)
+                if let Ok(resp_body) = resp.json::<serde_json::Value>().await {
+                    if resp_body.get("success") == Some(&json!(false)) {
+                        info!("Admin panel lost registration, re-registering");
+                        let register_body = json!({
+                            "id": state.client_id,
+                            "ip": local_ipv4().unwrap_or_default(),
+                            "hostname": hostname,
+                            "os": std::env::consts::OS,
+                            "device_name": snapshot.device_name,
+                            "device_ready": snapshot.device_ready,
+                            "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
+                        });
+                        let _ = http.post(format!("{}/api/clients/register", admin_url))
+                            .json(&register_body)
+                            .send()
+                            .await;
+                    }
+                }
             }
             Err(e) => {
                 debug!(error = %e, "Failed to send heartbeat to admin panel");
