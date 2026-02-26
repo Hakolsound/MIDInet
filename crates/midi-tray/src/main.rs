@@ -82,7 +82,7 @@ fn show_resolume_block_dialog() {
     // MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            0,
+            std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
             0x00000000 | 0x00000010 | 0x00040000 | 0x00010000,
@@ -112,7 +112,7 @@ fn confirm_quit() -> bool {
     // MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2
     let result = unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            0,
+            std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
             0x00000004 | 0x00000030 | 0x00040000 | 0x00010000 | 0x00000100,
@@ -172,14 +172,21 @@ fn main() {
         }
     }));
 
-    // ── Single-instance mutex (Windows) ──
+    // ── Single-instance guard (Windows) ──
     // Prevents duplicate tray instances from fighting over the same client.
+    // Uses a named event (CreateEventW) — if ERROR_ALREADY_EXISTS, another instance owns it.
     #[cfg(target_os = "windows")]
     {
         let name: Vec<u16> = "Global\\MIDInetTray\0".encode_utf16().collect();
-        let handle =
-            unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-        if handle == 0
+        let handle = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                1, // bManualReset
+                0, // bInitialState
+                name.as_ptr(),
+            )
+        };
+        if handle.is_null()
             || unsafe { windows_sys::Win32::Foundation::GetLastError() } == 183
         // ERROR_ALREADY_EXISTS
         {
@@ -520,7 +527,7 @@ fn main() {
                     std::mem::zeroed();
                 while windows_sys::Win32::UI::WindowsAndMessaging::PeekMessageW(
                     &mut msg,
-                    0,
+                    std::ptr::null_mut(),
                     0,
                     0,
                     0x0001, // PM_REMOVE
