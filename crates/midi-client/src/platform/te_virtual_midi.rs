@@ -5,11 +5,15 @@
 ///
 /// Gracefully returns Err if no DLL is found (caller handles fallback).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::virtual_device::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
+
+/// Shared feedback buffer for receiving MIDI from applications via the teVirtualMIDI callback.
+/// The callback pushes data in; `receive()` pops data out.
+type FeedbackBuffer = Arc<Mutex<Vec<Vec<u8>>>>;
 
 #[cfg(target_os = "windows")]
 mod ffi {
@@ -77,16 +81,23 @@ mod ffi {
 
 /// teVirtualMIDI callback - invoked when other apps send MIDI to the virtual port.
 /// Must be extern "system" (stdcall on Windows).
+/// `instance` is a raw pointer to a `FeedbackBuffer` (Arc<Mutex<Vec<Vec<u8>>>>).
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn midi_data_callback(
     _port: ffi::HANDLE,
-    _data: *const u8,
-    _length: ffi::DWORD,
-    _instance: *mut std::ffi::c_void,
+    data: *const u8,
+    length: ffi::DWORD,
+    instance: *mut std::ffi::c_void,
 ) {
-    // Data from other apps (e.g., Resolume sending MIDI back).
-    // Currently unused but providing this callback may be required
-    // for the driver to register the MIDI Input device.
+    if instance.is_null() || data.is_null() || length == 0 {
+        return;
+    }
+    let buf_ptr = instance as *const FeedbackBuffer;
+    let buffer = &*buf_ptr;
+    let midi_data = std::slice::from_raw_parts(data, length as usize).to_vec();
+    if let Ok(mut fifo) = buffer.lock() {
+        fifo.push(midi_data);
+    }
 }
 
 // ── Runtime-loaded teVirtualMIDI library ──
@@ -200,6 +211,7 @@ impl TeVirtualMidiLib {
     }
 
     /// Try to create a port. Returns handle and whether MIDI Input was created.
+    /// `callback_instance` is passed as the user-data pointer to the callback.
     fn try_create_port(
         &self,
         wide_name: &[u16],
@@ -208,6 +220,7 @@ impl TeVirtualMidiLib {
         label: &str,
         midi_in_before: u32,
         midi_out_before: u32,
+        callback_instance: *mut std::ffi::c_void,
     ) -> Option<(ffi::HANDLE, bool)> {
         let callback_ptr = if use_callback {
             midi_data_callback as *const std::ffi::c_void
@@ -215,11 +228,17 @@ impl TeVirtualMidiLib {
             std::ptr::null()
         };
 
+        let instance_ptr = if use_callback {
+            callback_instance
+        } else {
+            std::ptr::null_mut()
+        };
+
         let h = unsafe {
             (self.create_port_ex2)(
                 wide_name.as_ptr(),
                 callback_ptr,
-                std::ptr::null_mut(),
+                instance_ptr,
                 65535,
                 flags,
             )
@@ -291,6 +310,9 @@ pub struct TeVirtualMidiDevice {
     lib: Option<TeVirtualMidiLib>,
     #[cfg(target_os = "windows")]
     port: Mutex<Option<ffi::HANDLE>>,
+    /// Feedback MIDI from applications (populated by the callback)
+    #[cfg(target_os = "windows")]
+    feedback_buffer: FeedbackBuffer,
     /// When true, Drop skips port close — the kernel driver cleans up on process exit.
     #[cfg(target_os = "windows")]
     detached: bool,
@@ -311,6 +333,8 @@ impl TeVirtualMidiDevice {
             lib: TeVirtualMidiLib::load(),
             #[cfg(target_os = "windows")]
             port: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            feedback_buffer: Arc::new(Mutex::new(Vec::new())),
             #[cfg(target_os = "windows")]
             detached: false,
             #[cfg(not(target_os = "windows"))]
@@ -403,6 +427,9 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
             let mut final_label = "";
             let mut midi_input_ok = false;
 
+            // Pass feedback buffer pointer as callback instance data
+            let instance_ptr = &self.feedback_buffer as *const FeedbackBuffer as *mut std::ffi::c_void;
+
             for attempt in &attempts {
                 if let Some((h, input_created)) = lib.try_create_port(
                     &wide_name,
@@ -411,6 +438,7 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
                     attempt.label,
                     midi_in_before,
                     midi_out_before,
+                    instance_ptr,
                 ) {
                     if input_created {
                         final_handle = h;
@@ -432,7 +460,7 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
                     (lib.create_port_ex2)(
                         wide_name.as_ptr(),
                         midi_data_callback as *const std::ffi::c_void,
-                        std::ptr::null_mut(),
+                        instance_ptr,
                         65535,
                         ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
                     )
@@ -516,18 +544,11 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
     fn receive(&self) -> anyhow::Result<Option<Vec<u8>>> {
         #[cfg(target_os = "windows")]
         {
-            if let Some(ref lib) = self.lib {
-                let guard = self.port.lock().unwrap();
-                if let Some(handle) = *guard {
-                    let mut buf = [0u8; 1024];
-                    let mut len: ffi::DWORD = buf.len() as ffi::DWORD;
-                    let ok = unsafe {
-                        (lib.get_data)(handle, buf.as_mut_ptr(), &mut len)
-                    };
-                    if ok != 0 && len > 0 {
-                        return Ok(Some(buf[..len as usize].to_vec()));
-                    }
-                }
+            let mut fifo = self.feedback_buffer.lock().unwrap();
+            if !fifo.is_empty() {
+                let data = fifo.remove(0);
+                debug!(bytes = data.len(), queued = fifo.len(), "Received feedback MIDI from virtual device");
+                return Ok(Some(data));
             }
         }
         Ok(None)
