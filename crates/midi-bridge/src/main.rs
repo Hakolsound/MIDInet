@@ -13,6 +13,9 @@
 ///   4. Apps send feedback MIDI -> bridge receives it -> forwards to client
 ///   5. Client disconnects -> bridge sends All Notes Off, waits for reconnect
 ///   6. Client reconnects -> bridge resumes forwarding (no device recreation)
+///
+/// On Windows, supports running as a native Windows service (pass `--service`).
+/// The Windows Service Control Manager (SCM) protocol is handled automatically.
 
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,14 +37,51 @@ struct BridgeState {
     client_connected: AtomicBool,
 }
 
-fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+/// Global shutdown flag for Windows service mode.
+#[cfg(windows)]
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+fn main() -> anyhow::Result<()> {
+    // On Windows, check for --service flag to enter SCM mode
+    #[cfg(windows)]
+    {
+        if std::env::args().any(|a| a == "--service") {
+            return windows_service_mode::run()
+                .map_err(|e| anyhow::anyhow!("Windows service error: {}", e));
+        }
+    }
+
+    // Console mode
+    init_logging(None);
+    run_bridge()
+}
+
+/// Initialize tracing subscriber.
+/// When `log_file` is `Some`, logs to a file (for Windows service mode where no console exists).
+fn init_logging(log_file: Option<&std::path::Path>) {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if let Some(path) = log_file {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("Failed to open log file");
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
+}
+
+/// Run the bridge main loop (platform-dispatched).
+fn run_bridge() -> anyhow::Result<()> {
     info!(socket = BRIDGE_SOCKET_PATH, "MIDInet bridge starting");
 
     let state = Arc::new(BridgeState {
@@ -118,6 +158,12 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
     info!(path = BRIDGE_SOCKET_PATH, "Bridge listening on named pipe");
 
     loop {
+        // Check shutdown before creating a new pipe instance
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            info!("Shutdown flag set, exiting pipe listener");
+            break;
+        }
+
         // Create a new named pipe instance for each client
         let pipe_handle = unsafe {
             CreateNamedPipeW(
@@ -141,6 +187,16 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
 
         // Wait for client to connect (blocking)
         let connect_result = unsafe { ConnectNamedPipe(pipe_handle, None) };
+
+        // Check if we were unblocked by a shutdown dummy connection
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            info!("Shutdown signal received during pipe accept");
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(pipe_handle);
+            };
+            break;
+        }
+
         if let Err(e) = connect_result {
             // ERROR_PIPE_CONNECTED (535) means client raced between Create and Connect - benign
             if e.code() != windows::core::HRESULT::from_win32(535) {
@@ -166,6 +222,38 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
         };
 
         info!("Waiting for next client connection...");
+    }
+
+    Ok(())
+}
+
+/// Signal the bridge to shut down by setting the flag and unblocking ConnectNamedPipe.
+#[cfg(windows)]
+fn trigger_shutdown() {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
+    };
+
+    SHUTDOWN.store(true, Ordering::SeqCst);
+
+    // Make a dummy connection to unblock the blocking ConnectNamedPipe call
+    let pipe_name = HSTRING::from(BRIDGE_SOCKET_PATH);
+    let result = unsafe {
+        CreateFileW(
+            &pipe_name,
+            0x80000000, // GENERIC_READ
+            FILE_SHARE_MODE(0),
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    };
+    if let Ok(handle) = result {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+        }
     }
 }
 
@@ -498,5 +586,141 @@ fn ensure_device(state: &BridgeState, identity: &DeviceIdentity) -> bool {
             error!(error = %e, "Failed to create virtual device in bridge");
             false
         }
+    }
+}
+
+// ── Windows service mode ──
+//
+// When launched with `--service`, the bridge registers with the Windows
+// Service Control Manager (SCM) and runs as a native Windows service.
+// This allows `sc.exe` to manage the service without needing NSSM.
+
+#[cfg(windows)]
+mod windows_service_mode {
+    use std::ffi::OsString;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    use tracing::{error, info};
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    };
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
+    use windows_service::{define_windows_service, service_dispatcher};
+
+    const SERVICE_NAME: &str = "MIDInetBridge";
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+    /// Shared status handle so the control handler can report StopPending.
+    static STATUS_HANDLE: OnceLock<ServiceStatusHandle> = OnceLock::new();
+
+    /// Entry point: register with the SCM dispatcher.
+    /// This call blocks until the service is stopped.
+    pub fn run() -> windows_service::Result<()> {
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+    }
+
+    // Macro-generated low-level entry point that SCM calls.
+    define_windows_service!(ffi_service_main, service_main);
+
+    fn service_main(_args: Vec<OsString>) {
+        if let Err(e) = run_service() {
+            eprintln!("MIDInet bridge service error: {e}");
+        }
+    }
+
+    fn run_service() -> anyhow::Result<()> {
+        // Register control handler (receives Stop/Shutdown from SCM)
+        let event_handler = move |control_event| -> ServiceControlHandlerResult {
+            match control_event {
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    // Report StopPending so SCM knows we're shutting down
+                    if let Some(h) = STATUS_HANDLE.get() {
+                        let _ = h.set_service_status(ServiceStatus {
+                            service_type: SERVICE_TYPE,
+                            current_state: ServiceState::StopPending,
+                            controls_accepted: ServiceControlAccept::empty(),
+                            exit_code: ServiceExitCode::Win32(0),
+                            checkpoint: 0,
+                            wait_hint: Duration::from_secs(15),
+                            process_id: None,
+                        });
+                    }
+                    super::trigger_shutdown();
+                    ServiceControlHandlerResult::NoError
+                }
+                _ => ServiceControlHandlerResult::NotImplemented,
+            }
+        };
+
+        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)
+            .map_err(|e| anyhow::anyhow!("Failed to register service control handler: {}", e))?;
+        let _ = STATUS_HANDLE.set(status_handle);
+
+        // Report StartPending
+        status_handle
+            .set_service_status(ServiceStatus {
+                service_type: SERVICE_TYPE,
+                current_state: ServiceState::StartPending,
+                controls_accepted: ServiceControlAccept::empty(),
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: Duration::from_secs(5),
+                process_id: None,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to report StartPending: {}", e))?;
+
+        // Initialize logging to file (no console in service mode)
+        let log_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("bridge.log")))
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\MIDInet\bridge.log"));
+        super::init_logging(Some(&log_path));
+
+        // Report Running
+        status_handle
+            .set_service_status(ServiceStatus {
+                service_type: SERVICE_TYPE,
+                current_state: ServiceState::Running,
+                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: Duration::default(),
+                process_id: None,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to report Running: {}", e))?;
+
+        info!("MIDInet bridge service running");
+
+        // Run bridge (blocks until shutdown signal)
+        let result = super::run_bridge();
+
+        if let Err(ref e) = result {
+            error!(error = %e, "Bridge exited with error");
+        }
+
+        // Report Stopped
+        let exit_code = if result.is_ok() {
+            ServiceExitCode::Win32(0)
+        } else {
+            ServiceExitCode::ServiceSpecific(1)
+        };
+
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code,
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+
+        info!("MIDInet bridge service stopped");
+        Ok(())
     }
 }
