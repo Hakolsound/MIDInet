@@ -11,6 +11,8 @@ use midi_protocol::health::{ClientHealthSnapshot, ConnectionState};
 pub const ID_CLAIM_FOCUS: &str = "claim_focus";
 pub const ID_RELEASE_FOCUS: &str = "release_focus";
 pub const ID_OPEN_DASHBOARD: &str = "open_dashboard";
+pub const ID_RESTART_CLIENT: &str = "restart_client";
+pub const ID_AUTO_START: &str = "auto_start";
 pub const ID_QUIT: &str = "quit";
 
 /// Build the initial tray context menu (before any daemon connection).
@@ -31,12 +33,36 @@ pub fn build_initial_menu() -> Menu {
         None::<Accelerator>,
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&MenuItem::with_id(
-        ID_QUIT,
-        "Quit Tray",
-        true,
-        None::<Accelerator>,
-    ));
+
+    // Windows-only: restart and auto-start
+    #[cfg(target_os = "windows")]
+    {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_RESTART_CLIENT,
+            "Restart Client",
+            true,
+            None::<Accelerator>,
+        ));
+        let auto_label = if crate::autostart::is_enabled() {
+            "Start with Windows  [ON]"
+        } else {
+            "Start with Windows  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
+
+    let quit_label = if cfg!(target_os = "windows") {
+        "Quit MIDInet"
+    } else {
+        "Quit Tray"
+    };
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
 
     menu
 }
@@ -128,7 +154,35 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot) -> Menu {
 
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    let _ = menu.append(&MenuItem::with_id(ID_QUIT, "Quit Tray", true, None::<Accelerator>));
+    // Windows-only: restart client and auto-start toggle
+    #[cfg(target_os = "windows")]
+    {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_RESTART_CLIENT,
+            "Restart Client",
+            true,
+            None::<Accelerator>,
+        ));
+        let auto_label = if crate::autostart::is_enabled() {
+            "Start with Windows  [ON]"
+        } else {
+            "Start with Windows  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
+
+    let quit_label = if cfg!(target_os = "windows") {
+        "Quit MIDInet"
+    } else {
+        "Quit Tray"
+    };
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
 
     menu
 }
@@ -151,7 +205,36 @@ pub fn build_disconnected_menu() -> Menu {
         None::<Accelerator>,
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&MenuItem::with_id(ID_QUIT, "Quit Tray", true, None::<Accelerator>));
+
+    // Windows-only: restart and auto-start
+    #[cfg(target_os = "windows")]
+    {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_RESTART_CLIENT,
+            "Restart Client",
+            true,
+            None::<Accelerator>,
+        ));
+        let auto_label = if crate::autostart::is_enabled() {
+            "Start with Windows  [ON]"
+        } else {
+            "Start with Windows  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
+
+    let quit_label = if cfg!(target_os = "windows") {
+        "Quit MIDInet"
+    } else {
+        "Quit Tray"
+    };
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
 
     menu
 }

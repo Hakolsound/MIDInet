@@ -1,18 +1,24 @@
-/// MIDInet system tray application.
-///
-/// Displays a color-coded icon (green/yellow/red/gray) reflecting the
-/// client daemon's health. Right-click for status details and actions.
-///
-/// Architecture:
-///   - Main thread: native GUI event loop (required by tray-icon)
-///   - Background thread: WebSocket client to ws://127.0.0.1:5009/ws
-///
-/// On macOS, the native NSApplication run loop must be pumped for the
-/// menu bar icon to render. We use CFRunLoopRunInMode instead of
-/// std::thread::sleep to drive the event loop.
+// Hide console window on Windows (tray is a GUI app)
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+// MIDInet system tray application.
+//
+// Displays a color-coded icon (green/yellow/red/gray) reflecting the
+// client daemon's health. Right-click for status details and actions.
+//
+// Architecture:
+//   - Main thread: native GUI event loop (required by tray-icon)
+//   - Background thread: WebSocket client to ws://127.0.0.1:5009/ws
+//   - On Windows: spawns midi-client.exe as a hidden child process
+//
+// On macOS, the native NSApplication run loop must be pumped for the
+// menu bar icon to render. We use CFRunLoopRunInMode instead of
+// std::thread::sleep to drive the event loop.
+
+mod autostart;
 mod icons;
 mod menu;
+mod process_manager;
 mod ws_client;
 
 #[cfg(not(target_os = "macos"))]
@@ -20,6 +26,8 @@ use std::time::Duration;
 
 use muda::MenuEvent;
 use tray_icon::TrayIconBuilder;
+#[cfg(target_os = "windows")]
+use tracing::error;
 use tracing::info;
 
 use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
@@ -27,7 +35,7 @@ use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
 use crate::icons::{color_for_snapshot, generate_icon, generate_icon_dim, IconColor};
 use crate::menu::{
     build_disconnected_menu, build_initial_menu, build_status_menu, ID_CLAIM_FOCUS,
-    ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS,
+    ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS, ID_RESTART_CLIENT, ID_AUTO_START,
 };
 use crate::ws_client::{send_command, spawn_ws_thread, WsEvent};
 
@@ -43,7 +51,38 @@ extern "C" {
     ) -> i32;
 }
 
+/// Show a native confirmation dialog on Windows. Returns true if user clicked Yes.
+#[cfg(target_os = "windows")]
+fn confirm_quit() -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let text: Vec<u16> = OsStr::new(
+        "This will stop the MIDI client and disconnect virtual devices.\n\nRunning applications that use the MIDI device may crash.\n\nAre you sure?",
+    )
+    .encode_wide()
+    .chain(Some(0))
+    .collect();
+    let caption: Vec<u16> = OsStr::new("Quit MIDInet")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    // MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND
+    let result = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x00000004 | 0x00000030 | 0x00040000 | 0x00010000,
+        )
+    };
+    result == 6 // IDYES
+}
+
 fn main() {
+    // Set up logging — on Windows with windows_subsystem="windows", stderr goes
+    // nowhere, but tracing is still useful for file-based logging or debuggers.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -67,6 +106,29 @@ fn main() {
         info!("macOS: NSApplication initialized with Accessory policy");
     }
 
+    // ── Windows: spawn midi-client as a hidden child process ──
+    #[cfg(target_os = "windows")]
+    let mut proc_mgr = {
+        use crate::process_manager::{find_client_binary, ProcessManager};
+        match find_client_binary() {
+            Some(client_path) => {
+                let config_path = client_path
+                    .parent()
+                    .map(|d| d.join("config").join("client.toml"))
+                    .filter(|p| p.exists());
+                let mut mgr = ProcessManager::new(client_path, config_path);
+                if let Err(e) = mgr.spawn() {
+                    error!("Failed to spawn midi-client: {}", e);
+                }
+                mgr
+            }
+            None => {
+                error!("midi-client not found. Place it in the same directory as midi-tray.");
+                ProcessManager::new(std::path::PathBuf::from("midi-client"), None)
+            }
+        }
+    };
+
     // Start the WebSocket background thread
     let ws_rx = spawn_ws_thread();
 
@@ -88,11 +150,17 @@ fn main() {
     // Blink state: green icon pulses between bright and dim (~1s cycle)
     let mut blink_tick: u32 = 0;
     let mut blink_on = true;
-    const BLINK_HALF_PERIOD: u32 = 30; // 30 ticks * 16ms ≈ 480ms per phase
+    const BLINK_HALF_PERIOD: u32 = 30; // 30 ticks * 16ms ~ 480ms per phase
+
+    // Process monitoring counter (check every ~500ms = 30 ticks at 16ms)
+    #[cfg(target_os = "windows")]
+    let mut proc_check_tick: u32 = 0;
+    #[cfg(target_os = "windows")]
+    let mut quit_requested = false;
 
     let menu_rx = MenuEvent::receiver();
 
-    info!("Tray running — right-click the icon for status");
+    info!("Tray running -- right-click the icon for status");
 
     loop {
         // ── Process WebSocket events (non-blocking) ──
@@ -163,6 +231,37 @@ fn main() {
             }
         }
 
+        // ── Windows: monitor child process ──
+        #[cfg(target_os = "windows")]
+        {
+            proc_check_tick += 1;
+            if proc_check_tick >= 30 {
+                proc_check_tick = 0;
+                proc_mgr.reset_backoff();
+
+                if let Some(exit_code) = proc_mgr.check() {
+                    if quit_requested {
+                        // Intentional quit -- exit the tray
+                        std::process::exit(0);
+                    }
+                    match exit_code {
+                        Some(0) => {
+                            // Client exited cleanly on its own
+                            info!("Client exited cleanly (code 0)");
+                        }
+                        _ => {
+                            // Crash or signal -- auto-restart with backoff
+                            if proc_mgr.should_restart() {
+                                if let Err(e) = proc_mgr.restart() {
+                                    error!("Failed to restart client: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Process menu events (non-blocking) ──
         while let Ok(event) = menu_rx.try_recv() {
             let id = event.id().0.as_str();
@@ -180,9 +279,45 @@ fn main() {
                         }
                     }
                 }
+                ID_RESTART_CLIENT => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        info!("Restart client requested via menu");
+                        proc_mgr.graceful_shutdown(Duration::from_secs(5));
+                        if let Err(e) = proc_mgr.spawn() {
+                            error!("Failed to restart client: {}", e);
+                        }
+                    }
+                }
+                ID_AUTO_START => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        match autostart::toggle() {
+                            Ok(enabled) => {
+                                info!(enabled, "Auto-start toggled");
+                            }
+                            Err(e) => {
+                                error!("Failed to toggle auto-start: {}", e);
+                            }
+                        }
+                    }
+                }
                 ID_QUIT => {
-                    info!("Quit requested");
-                    std::process::exit(0);
+                    #[cfg(target_os = "windows")]
+                    {
+                        if !confirm_quit() {
+                            continue;
+                        }
+                        quit_requested = true;
+                        info!("Shutting down client and exiting");
+                        proc_mgr.graceful_shutdown(Duration::from_secs(5));
+                        std::process::exit(0);
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        info!("Quit requested");
+                        std::process::exit(0);
+                    }
                 }
                 _ => {}
             }

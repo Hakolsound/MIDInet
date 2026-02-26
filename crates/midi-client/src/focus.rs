@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 use midi_protocol::packets::{FocusAction, FocusPacket, MidiDataPacket};
 
 use crate::health::TaskPulse;
-use crate::ClientState;
+use crate::{ClientState, FocusCommand};
 
 /// Whether this client currently holds focus
 static HAS_FOCUS: AtomicBool = AtomicBool::new(false);
@@ -40,7 +40,12 @@ fn now_us() -> u64 {
 /// Run the focus manager.
 /// Claims focus on startup if auto_claim is enabled, then monitors for acks.
 /// Also sends feedback from the virtual device to the active host.
+/// Accepts external focus commands from the tray/health API via the channel in ClientState.
 pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
+    // Take the focus command receiver (only the first invocation gets it)
+    let mut focus_rx = state.focus_rx.lock().unwrap().take()
+        .expect("focus_rx already taken -- focus task started twice?");
+
     let control_group: Ipv4Addr = state.config.network.control_group.parse()?;
     let control_port = state.config.network.control_port;
 
@@ -100,116 +105,130 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
     let mut feedback_sent_count: u64 = 0;
 
     loop {
-        // Listen for focus ack/release from the host
-        match recv_socket.try_recv_from(&mut buf) {
-            Ok((len, _addr)) if len >= 4 => {
-                if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
-                    match packet.action {
-                        FocusAction::Ack => {
-                            if packet.client_id == state.client_id {
-                                HAS_FOCUS.store(true, Ordering::SeqCst);
-                                info!(client_id = state.client_id, "Focus granted");
-                            } else {
-                                // Another client got focus
-                                HAS_FOCUS.store(false, Ordering::SeqCst);
-                                debug!(client_id = packet.client_id, "Focus granted to another client");
-                            }
-                        }
-                        FocusAction::Release => {
-                            if packet.client_id == state.client_id {
-                                HAS_FOCUS.store(false, Ordering::SeqCst);
-                                info!("Focus released");
-                            }
-                        }
-                        FocusAction::Claim => {
-                            // Another client is claiming — we might lose focus
-                            if packet.client_id != state.client_id && is_focused() {
-                                debug!(
-                                    other = packet.client_id,
-                                    "Another client claiming focus (last-writer-wins)"
-                                );
-                            }
-                        }
+        tokio::select! {
+            // External focus commands from tray / health API
+            Some(cmd) = focus_rx.recv() => {
+                match cmd {
+                    FocusCommand::Claim => {
+                        info!("Focus claim requested via API");
+                        send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+                    }
+                    FocusCommand::Release => {
+                        info!("Focus release requested via API");
+                        send_focus_release(&send_socket, dest, state.client_id, &mut sequence).await;
+                        HAS_FOCUS.store(false, Ordering::SeqCst);
                     }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            _ => {}
-        }
-
-        // Periodic status log for debugging
-        if last_status_log.elapsed() >= status_log_interval {
-            last_status_log = Instant::now();
-            let active = state.active_host_id.read().await;
-            info!(
-                focused = is_focused(),
-                active_host = ?*active,
-                feedback_sent = feedback_sent_count,
-                "Focus status"
-            );
-        }
-
-        // Re-claim focus periodically to survive host auto-release timeout
-        if state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
-            last_claim = Instant::now();
-            send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
-        }
-
-        // If we have focus, periodically check for and send feedback from virtual device
-        if is_focused() && last_feedback_check.elapsed() >= feedback_interval {
-            last_feedback_check = Instant::now();
-
-            let vdev = state.virtual_device.read().await;
-            let pipeline = state.pipeline_config.read().await;
-            loop {
-                match vdev.receive() {
-                    Ok(Some(midi_data)) => {
-                        // Apply pipeline processing to feedback MIDI before sending upstream
-                        let processed = pipeline.process(&midi_data);
-                        let send_data = match processed {
-                            Some(ref data) => data,
-                            None => {
-                                debug!(bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
-                                continue;
+            // Periodic tick for recv polling, re-claim, and feedback send
+            _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                // Listen for focus ack/release from the host
+                match recv_socket.try_recv_from(&mut buf) {
+                    Ok((len, _addr)) if len >= 4 => {
+                        if let Some(packet) = FocusPacket::deserialize(&buf[..len]) {
+                            match packet.action {
+                                FocusAction::Ack => {
+                                    if packet.client_id == state.client_id {
+                                        HAS_FOCUS.store(true, Ordering::SeqCst);
+                                        info!(client_id = state.client_id, "Focus granted");
+                                    } else {
+                                        HAS_FOCUS.store(false, Ordering::SeqCst);
+                                        debug!(client_id = packet.client_id, "Focus granted to another client");
+                                    }
+                                }
+                                FocusAction::Release => {
+                                    if packet.client_id == state.client_id {
+                                        HAS_FOCUS.store(false, Ordering::SeqCst);
+                                        info!("Focus released");
+                                    }
+                                }
+                                FocusAction::Claim => {
+                                    if packet.client_id != state.client_id && is_focused() {
+                                        debug!(
+                                            other = packet.client_id,
+                                            "Another client claiming focus (last-writer-wins)"
+                                        );
+                                    }
+                                }
                             }
-                        };
-
-                        // Send feedback MIDI to the host via control multicast
-                        let active_host = state.active_host_id.read().await;
-                        if active_host.is_some() {
-                            let packet = MidiDataPacket {
-                                sequence: feedback_sequence,
-                                timestamp_us: now_us(),
-                                host_id: 0, // client-originated
-                                midi_data: send_data.clone(),
-                                journal: None,
-                            };
-                            feedback_sequence = feedback_sequence.wrapping_add(1);
-                            feedback_sent_count += 1;
-
-                            let mut pkt_buf = Vec::new();
-                            packet.serialize(&mut pkt_buf);
-
-                            if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
-                                error!("Failed to send feedback MIDI: {}", e);
-                            } else {
-                                debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
-                            }
-                        } else {
-                            debug!("Feedback MIDI ready but no active host");
                         }
                     }
-                    Ok(None) => break,
-                    Err(e) => {
-                        warn!("Error receiving feedback from virtual device: {}", e);
-                        break;
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    _ => {}
+                }
+
+                // Periodic status log for debugging
+                if last_status_log.elapsed() >= status_log_interval {
+                    last_status_log = Instant::now();
+                    let active = state.active_host_id.read().await;
+                    info!(
+                        focused = is_focused(),
+                        active_host = ?*active,
+                        feedback_sent = feedback_sent_count,
+                        "Focus status"
+                    );
+                }
+
+                // Re-claim focus periodically to survive host auto-release timeout
+                if state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
+                    last_claim = Instant::now();
+                    send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+                }
+
+                // If we have focus, periodically check for and send feedback from virtual device
+                if is_focused() && last_feedback_check.elapsed() >= feedback_interval {
+                    last_feedback_check = Instant::now();
+
+                    let vdev = state.virtual_device.read().await;
+                    let pipeline = state.pipeline_config.read().await;
+                    loop {
+                        match vdev.receive() {
+                            Ok(Some(midi_data)) => {
+                                let processed = pipeline.process(&midi_data);
+                                let send_data = match processed {
+                                    Some(ref data) => data,
+                                    None => {
+                                        debug!(bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
+                                        continue;
+                                    }
+                                };
+
+                                let active_host = state.active_host_id.read().await;
+                                if active_host.is_some() {
+                                    let packet = MidiDataPacket {
+                                        sequence: feedback_sequence,
+                                        timestamp_us: now_us(),
+                                        host_id: 0,
+                                        midi_data: send_data.clone(),
+                                        journal: None,
+                                    };
+                                    feedback_sequence = feedback_sequence.wrapping_add(1);
+                                    feedback_sent_count += 1;
+
+                                    let mut pkt_buf = Vec::new();
+                                    packet.serialize(&mut pkt_buf);
+
+                                    if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
+                                        error!("Failed to send feedback MIDI: {}", e);
+                                    } else {
+                                        debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
+                                    }
+                                } else {
+                                    debug!("Feedback MIDI ready but no active host");
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                warn!("Error receiving feedback from virtual device: {}", e);
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
 
         pulse.tick();
-        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
@@ -233,6 +252,31 @@ async fn send_focus_claim(
         error!("Failed to send focus claim: {}", e);
     } else {
         info!(client_id = client_id, seq = *sequence, "Focus claim sent");
+    }
+
+    *sequence = sequence.wrapping_add(1);
+}
+
+async fn send_focus_release(
+    socket: &UdpSocket,
+    dest: SocketAddrV4,
+    client_id: u32,
+    sequence: &mut u16,
+) {
+    let packet = FocusPacket {
+        action: FocusAction::Release,
+        client_id,
+        sequence: *sequence,
+        timestamp_us: now_us(),
+    };
+
+    let mut buf = [0u8; FocusPacket::SIZE];
+    packet.serialize(&mut buf);
+
+    if let Err(e) = socket.send_to(&buf, dest).await {
+        error!("Failed to send focus release: {}", e);
+    } else {
+        info!(client_id = client_id, seq = *sequence, "Focus release sent");
     }
 
     *sequence = sequence.wrapping_add(1);

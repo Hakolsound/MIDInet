@@ -22,7 +22,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -119,6 +119,13 @@ pub struct DiscoveredHost {
     pub admin_url: Option<String>,
 }
 
+/// Commands the tray or health API can send to the focus task.
+#[derive(Debug)]
+pub enum FocusCommand {
+    Claim,
+    Release,
+}
+
 /// Client shared state
 pub struct ClientState {
     pub config: ClientConfig,
@@ -140,6 +147,12 @@ pub struct ClientState {
     pub health: Arc<HealthCollector>,
     /// Set to true after a failover to request journal reconciliation
     pub needs_reconciliation: AtomicBool,
+    /// Channel to send focus commands (claim/release) to the focus task
+    pub focus_tx: mpsc::Sender<FocusCommand>,
+    /// Receiver end — taken once by the focus task on startup
+    pub focus_rx: std::sync::Mutex<Option<mpsc::Receiver<FocusCommand>>>,
+    /// Cancellation token for graceful shutdown (set by Ctrl+C or /shutdown API)
+    pub cancel: CancellationToken,
 }
 
 #[tokio::main]
@@ -179,6 +192,10 @@ async fn main() -> anyhow::Result<()> {
     let client_id: u32 = rand_client_id();
     let virtual_device = create_virtual_device();
     let health = Arc::new(HealthCollector::new());
+    let cancel = CancellationToken::new();
+
+    // Focus command channel (tray/API → focus task)
+    let (focus_tx, focus_rx) = mpsc::channel::<FocusCommand>(8);
 
     // Create task pulse pairs
     let (discovery_pulse, discovery_monitor) = task_pulse("discovery");
@@ -203,11 +220,12 @@ async fn main() -> anyhow::Result<()> {
         pipeline_config: RwLock::new(PipelineConfig::default()),
         health: Arc::clone(&health),
         needs_reconciliation: AtomicBool::new(false),
+        focus_tx,
+        focus_rx: std::sync::Mutex::new(Some(focus_rx)),
+        cancel: cancel.clone(),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
-
-    let cancel = CancellationToken::new();
 
     // Spawn supervised tasks — auto-restart on error/panic with backoff.
     // The virtual MIDI device is unaffected since it lives at process level.
@@ -322,9 +340,15 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Client daemon running, discovering hosts...");
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
-    info!("Shutting down...");
+    // Wait for shutdown signal (Ctrl+C or /shutdown API)
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Ctrl+C received, shutting down...");
+        }
+        _ = cancel.cancelled() => {
+            info!("Shutdown requested via API, shutting down...");
+        }
+    }
 
     // Signal all tasks to stop
     cancel.cancel();

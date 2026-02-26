@@ -93,6 +93,7 @@ pub fn send_command(cmd: &midi_protocol::health::TrayCommand) {
     let endpoint = match cmd {
         midi_protocol::health::TrayCommand::ClaimFocus => "/focus/claim",
         midi_protocol::health::TrayCommand::ReleaseFocus => "/focus/release",
+        midi_protocol::health::TrayCommand::Shutdown => "/shutdown",
     };
 
     // Simple synchronous HTTP POST (fire-and-forget from the GUI thread)

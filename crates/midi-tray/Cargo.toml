@@ -34,3 +34,5 @@ objc2-app-kit = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 notify-rust = "4"
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+winreg = "0.52"

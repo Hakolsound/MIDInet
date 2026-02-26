@@ -98,4 +98,6 @@ pub enum TrayCommand {
     ClaimFocus,
     /// Request the client to release focus
     ReleaseFocus,
+    /// Request the client to shut down gracefully
+    Shutdown,
 }
