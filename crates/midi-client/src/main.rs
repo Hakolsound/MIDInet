@@ -30,7 +30,7 @@ use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::pipeline::PipelineConfig;
 
 use crate::health::{task_pulse, HealthCollector, TaskPulse};
-use crate::virtual_device::{create_device, VirtualMidiDevice};
+use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
 
 #[derive(Parser, Debug)]
 #[command(name = "midi-client", about = "MIDInet client daemon")]
@@ -38,14 +38,6 @@ struct Args {
     /// Path to configuration file
     #[arg(short, long, default_value = "config/client.toml")]
     config: PathBuf,
-
-    /// Log to file instead of stdout (used by Task Scheduler mode)
-    #[arg(long)]
-    log_file: Option<PathBuf>,
-
-    /// Run as a Windows service (used internally by SCM)
-    #[arg(long, hide = true)]
-    service: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -150,58 +142,20 @@ pub struct ClientState {
     pub needs_reconciliation: AtomicBool,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let args = Args::parse();
 
-    // On Windows with --service, enter SCM mode (before creating tokio runtime)
-    #[cfg(windows)]
-    if args.service {
-        return windows_service_mode::run()
-            .map_err(|e| anyhow::anyhow!("Windows service error: {}", e));
-    }
-
-    // Console / Task Scheduler mode
-    init_logging(args.log_file.as_deref());
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_client(args.config, None))
-}
-
-/// Initialize tracing subscriber.
-/// When `log_file` is `Some`, logs to a file (for Windows service mode where no console exists).
-fn init_logging(log_file: Option<&std::path::Path>) {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-
-    if let Some(path) = log_file {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .expect("Failed to open log file");
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
-    }
-}
-
-/// Run the client.
-///
-/// `external_cancel` is `Some` in Windows service mode (triggered by SCM stop).
-/// In console mode it's `None` and we listen for Ctrl+C instead.
-async fn run_client(
-    config_path: PathBuf,
-    external_cancel: Option<CancellationToken>,
-) -> anyhow::Result<()> {
     // Load config (optional — mDNS discovery is primary)
-    let config = if config_path.exists() {
-        let config_str = tokio::fs::read_to_string(&config_path).await?;
+    let config = if args.config.exists() {
+        let config_str = tokio::fs::read_to_string(&args.config).await?;
         toml::from_str(&config_str)?
     } else {
         info!("No config file found, using defaults + mDNS discovery");
@@ -223,7 +177,7 @@ async fn run_client(
     };
 
     let client_id: u32 = rand_client_id();
-    let virtual_device = create_device();
+    let virtual_device = create_virtual_device();
     let health = Arc::new(HealthCollector::new());
 
     // Create task pulse pairs
@@ -253,7 +207,7 @@ async fn run_client(
 
     info!(client_id = client_id, "MIDInet client starting");
 
-    let cancel = external_cancel.unwrap_or_default();
+    let cancel = CancellationToken::new();
 
     // Spawn supervised tasks — auto-restart on error/panic with backoff.
     // The virtual MIDI device is unaffected since it lives at process level.
@@ -368,18 +322,9 @@ async fn run_client(
 
     info!("Client daemon running, discovering hosts...");
 
-    // Wait for shutdown signal (Ctrl+C in console mode, SCM stop in service mode)
-    tokio::select! {
-        _ = cancel.cancelled() => {
-            info!("Shutdown signal received");
-        }
-        result = tokio::signal::ctrl_c() => {
-            if let Err(e) = result {
-                error!(error = %e, "Failed to listen for Ctrl+C");
-            }
-            info!("Shutting down...");
-        }
-    }
+    // Wait for shutdown signal
+    tokio::signal::ctrl_c().await?;
+    info!("Shutting down...");
 
     // Signal all tasks to stop
     cancel.cancel();
@@ -525,154 +470,4 @@ where
             }
         }
     })
-}
-
-// ── Windows service mode ──
-
-#[cfg(windows)]
-mod windows_service_mode {
-    use std::ffi::OsString;
-    use std::sync::OnceLock;
-    use std::time::Duration;
-
-    use clap::Parser;
-    use tokio_util::sync::CancellationToken;
-    use tracing::{error, info};
-    use windows_service::service::{
-        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-        ServiceType,
-    };
-    use windows_service::service_control_handler::{
-        self, ServiceControlHandlerResult, ServiceStatusHandle,
-    };
-    use windows_service::{define_windows_service, service_dispatcher};
-
-    const SERVICE_NAME: &str = "MIDInetClient";
-    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
-
-    /// Shared status handle so the control handler can report StopPending.
-    static STATUS_HANDLE: OnceLock<ServiceStatusHandle> = OnceLock::new();
-
-    /// Shared cancellation token so the control handler can trigger shutdown.
-    static SERVICE_CANCEL: OnceLock<CancellationToken> = OnceLock::new();
-
-    /// Entry point: register with the SCM dispatcher.
-    /// This call blocks until the service is stopped.
-    pub fn run() -> windows_service::Result<()> {
-        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
-    }
-
-    // Macro-generated low-level entry point that SCM calls.
-    define_windows_service!(ffi_service_main, service_main);
-
-    fn service_main(_args: Vec<OsString>) {
-        if let Err(e) = run_service() {
-            eprintln!("MIDInet client service error: {e}");
-        }
-    }
-
-    fn run_service() -> anyhow::Result<()> {
-        // Set up cancellation token for shutdown signaling
-        let cancel = CancellationToken::new();
-        let _ = SERVICE_CANCEL.set(cancel.clone());
-
-        // Register control handler (receives Stop/Shutdown from SCM)
-        let event_handler = move |control_event| -> ServiceControlHandlerResult {
-            match control_event {
-                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                ServiceControl::Stop | ServiceControl::Shutdown => {
-                    // Report StopPending so SCM knows we're shutting down
-                    if let Some(h) = STATUS_HANDLE.get() {
-                        let _ = h.set_service_status(ServiceStatus {
-                            service_type: SERVICE_TYPE,
-                            current_state: ServiceState::StopPending,
-                            controls_accepted: ServiceControlAccept::empty(),
-                            exit_code: ServiceExitCode::Win32(0),
-                            checkpoint: 0,
-                            wait_hint: Duration::from_secs(15),
-                            process_id: None,
-                        });
-                    }
-                    // Signal the tokio runtime to shut down
-                    if let Some(c) = SERVICE_CANCEL.get() {
-                        c.cancel();
-                    }
-                    ServiceControlHandlerResult::NoError
-                }
-                _ => ServiceControlHandlerResult::NotImplemented,
-            }
-        };
-
-        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)
-            .map_err(|e| anyhow::anyhow!("Failed to register service control handler: {}", e))?;
-        let _ = STATUS_HANDLE.set(status_handle);
-
-        // Report StartPending
-        status_handle
-            .set_service_status(ServiceStatus {
-                service_type: SERVICE_TYPE,
-                current_state: ServiceState::StartPending,
-                controls_accepted: ServiceControlAccept::empty(),
-                exit_code: ServiceExitCode::Win32(0),
-                checkpoint: 0,
-                wait_hint: Duration::from_secs(10),
-                process_id: None,
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to report StartPending: {}", e))?;
-
-        // Initialize logging to file (no console in service mode)
-        let log_path = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("client.log")))
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\MIDInet\client.log"));
-        super::init_logging(Some(&log_path));
-
-        // Report Running
-        status_handle
-            .set_service_status(ServiceStatus {
-                service_type: SERVICE_TYPE,
-                current_state: ServiceState::Running,
-                controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-                exit_code: ServiceExitCode::Win32(0),
-                checkpoint: 0,
-                wait_hint: Duration::default(),
-                process_id: None,
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to report Running: {}", e))?;
-
-        info!("MIDInet client service running");
-
-        // Re-parse args to get config path (std::env::args() is process-wide)
-        let args = super::Args::parse();
-
-        // Create tokio runtime and run the client
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| anyhow::anyhow!("Failed to create tokio runtime: {}", e))?;
-
-        let result = rt.block_on(super::run_client(args.config, Some(cancel)));
-
-        if let Err(ref e) = result {
-            error!(error = %e, "Client exited with error");
-        }
-
-        // Report Stopped
-        let exit_code = if result.is_ok() {
-            ServiceExitCode::Win32(0)
-        } else {
-            ServiceExitCode::ServiceSpecific(1)
-        };
-
-        let _ = status_handle.set_service_status(ServiceStatus {
-            service_type: SERVICE_TYPE,
-            current_state: ServiceState::Stopped,
-            controls_accepted: ServiceControlAccept::empty(),
-            exit_code,
-            checkpoint: 0,
-            wait_hint: Duration::default(),
-            process_id: None,
-        });
-
-        info!("MIDInet client service stopped");
-        Ok(())
-    }
 }

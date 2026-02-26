@@ -22,27 +22,14 @@ mod bindings {
 }
 
 #[cfg(target_os = "windows")]
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
 use bindings::Windows::Devices::Midi2 as midi2;
 
-use crate::VirtualMidiDevice;
+use crate::virtual_device::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
-use tracing::{debug, info, trace, warn};
-
-/// Global counter for MIDI Services MessageReceived callback invocations.
-/// Readable from focus status logs to confirm whether the callback fires at all.
-#[cfg(target_os = "windows")]
-static MS_CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// Get the total number of MIDI Services callback invocations (for diagnostics).
-#[cfg(target_os = "windows")]
-pub fn callback_invocation_count() -> u64 {
-    MS_CALLBACK_COUNT.load(Ordering::Relaxed)
-}
+use tracing::{debug, info, warn};
 
 // ── MIDI 1.0 → UMP Conversion ──
 
@@ -398,17 +385,6 @@ impl VirtualMidiDevice for MidiServicesDevice {
                     e, e.code().0 as u32
                 ))?;
 
-            // Ensure the virtual device does NOT suppress handled messages.
-            // When the device is added as a message processing plugin, it handles
-            // protocol negotiation. If SuppressHandledMessages is true (default in
-            // some SDK versions), it may also suppress data messages, preventing
-            // them from reaching the connection's MessageReceived event.
-            if let Err(e) = virtual_device.SetSuppressHandledMessages(false) {
-                warn!(name = %self.name, error = %e, "Failed to set SuppressHandledMessages(false)");
-            } else {
-                info!(name = %self.name, "SuppressHandledMessages set to false");
-            }
-
             // Connect to the DEVICE-side endpoint (not the client-side).
             // The device-side is what we send/receive through; the client-side
             // is what other apps (DAWs, Resolume) see and connect to.
@@ -433,54 +409,25 @@ impl VirtualMidiDevice for MidiServicesDevice {
 
             // Register callback for incoming MIDI messages (feedback from apps)
             let feedback_buf = Arc::clone(&self.feedback_buffer);
-            let dev_name = self.name.clone();
             let token = connection.MessageReceived(
                 &windows::Foundation::TypedEventHandler::new(
                     move |_sender, args: &Option<midi2::MidiMessageReceivedEventArgs>| {
-                        MS_CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-
                         if let Some(args) = args {
                             let mut w0 = 0u32;
                             let mut w1 = 0u32;
                             let mut w2 = 0u32;
                             let mut w3 = 0u32;
-                            match args.FillWords(&mut w0, &mut w1, &mut w2, &mut w3) {
-                                Ok(word_count) => {
-                                    let msg_type = (w0 >> 28) & 0x0F;
-                                    trace!(
-                                        device = %dev_name,
-                                        word_count = word_count,
-                                        msg_type = msg_type,
-                                        w0 = format!("{:#010X}", w0),
-                                        "MIDI Services MessageReceived"
-                                    );
-                                    let midi_bytes = ump_to_midi1(word_count, w0, w1);
-                                    if !midi_bytes.is_empty() {
-                                        if let Ok(mut buf) = feedback_buf.lock() {
-                                            if buf.len() < 4096 {
-                                                buf.push(midi_bytes);
-                                            } else {
-                                                buf.remove(0);
-                                                buf.push(ump_to_midi1(word_count, w0, w1));
-                                            }
+                            if let Ok(word_count) = args.FillWords(&mut w0, &mut w1, &mut w2, &mut w3) {
+                                let midi_bytes = ump_to_midi1(word_count, w0, w1);
+                                if !midi_bytes.is_empty() {
+                                    if let Ok(mut buf) = feedback_buf.lock() {
+                                        if buf.len() < 4096 {
+                                            buf.push(midi_bytes);
+                                        } else {
+                                            buf.remove(0);
+                                            buf.push(ump_to_midi1(word_count, w0, w1));
                                         }
-                                    } else {
-                                        debug!(
-                                            device = %dev_name,
-                                            word_count = word_count,
-                                            msg_type = msg_type,
-                                            w0 = format!("{:#010X}", w0),
-                                            w1 = format!("{:#010X}", w1),
-                                            "MessageReceived: UMP not convertible to MIDI 1.0"
-                                        );
                                     }
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        device = %dev_name,
-                                        error = %e,
-                                        "MessageReceived: FillWords failed"
-                                    );
                                 }
                             }
                         }
@@ -495,27 +442,6 @@ impl VirtualMidiDevice for MidiServicesDevice {
 
             if !opened {
                 warn!(name = %self.name, "Connection.Open() returned false — endpoint may not be fully ready");
-            }
-
-            // Check if the virtual device is visible to legacy WinMM apps (Resolume, etc.).
-            // Windows MIDI Services should expose virtual endpoints via the WinMM compat layer,
-            // but if it doesn't, apps using the old MIDI API won't see or send to this device.
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            {
-                #[link(name = "winmm")]
-                extern "system" {
-                    fn midiInGetNumDevs() -> u32;
-                    fn midiOutGetNumDevs() -> u32;
-                }
-                let midi_in = unsafe { midiInGetNumDevs() };
-                let midi_out = unsafe { midiOutGetNumDevs() };
-                info!(
-                    name = %self.name,
-                    midi_in_devices = midi_in,
-                    midi_out_devices = midi_out,
-                    "WinMM device count after MIDI Services endpoint creation \
-                     (if Resolume can't see this device, check that WinMM compat layer is active)"
-                );
             }
 
             info!(

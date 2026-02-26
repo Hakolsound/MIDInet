@@ -1,4 +1,3 @@
-pub mod bridge_ipc;
 pub mod health;
 pub mod identity;
 pub mod journal;

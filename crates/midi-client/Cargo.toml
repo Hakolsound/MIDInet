@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 midi-protocol = { workspace = true }
-midi-device = { workspace = true }
 tokio = { workspace = true }
 socket2 = { workspace = true }
 mdns-sd = { workspace = true }
@@ -21,5 +20,24 @@ sysinfo = "0.32"
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coremidi = "0.7"
+
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-service = "0.8"
+windows = { version = "0.58", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Devices_Enumeration",
+    "Devices_Midi",
+    "Data_Json",
+    "Storage_Streams",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+] }
+windows-core = "0.58"
+
+[build-dependencies]
+windows-bindgen = "0.58"

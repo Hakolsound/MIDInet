@@ -2,14 +2,12 @@
 resolver = "2"
 members = [
     "crates/midi-protocol",
-    "crates/midi-device",
     "crates/midi-host",
     "crates/midi-client",
     "crates/midi-admin",
     "crates/midi-cli",
     "crates/midi-loadtest",
     "crates/midi-tray",
-    "crates/midi-bridge",
 ]
 
 [workspace.package]
@@ -52,7 +50,6 @@ reqwest = { version = "0.12", features = ["json"], default-features = false }
 
 # Internal crates
 midi-protocol = { path = "crates/midi-protocol" }
-midi-device = { path = "crates/midi-device" }
 
 [profile.release]
 opt-level = 3

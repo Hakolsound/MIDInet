@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use coremidi::{Client, Destinations, PacketBuffer, Sources, VirtualDestination, VirtualSource};
 use tracing::{debug, info};
 
-use crate::VirtualMidiDevice;
+use crate::virtual_device::VirtualMidiDevice;
 use midi_protocol::identity::DeviceIdentity;
 
 pub struct CoreMidiVirtualDevice {
