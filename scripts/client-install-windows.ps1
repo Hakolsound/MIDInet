@@ -346,8 +346,15 @@ try {
 Write-Step 9 $TotalSteps "Installing startup task..."
 
 try {
-    # Remove existing task if present
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    # Stop and remove existing task if present
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+    }
 
     # Execute the binary directly (no powershell.exe wrapper)
     $action = New-ScheduledTaskAction `
