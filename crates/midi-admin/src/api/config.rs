@@ -47,12 +47,18 @@ pub struct NetworkConfig {
     pub multicast_group: String,
     #[serde(default = "default_data_port")]
     pub data_port: u16,
+    #[serde(default = "default_control_group")]
+    pub control_group: String,
+    #[serde(default = "default_control_port")]
+    pub control_port: u16,
     #[serde(default = "default_interface")]
     pub interface: String,
 }
 
 fn default_multicast_group() -> String { "239.69.83.1".to_string() }
 fn default_data_port() -> u16 { 5004 }
+fn default_control_group() -> String { "239.69.83.100".to_string() }
+fn default_control_port() -> u16 { 5006 }
 fn default_interface() -> String { "eth0".to_string() }
 
 /// Persisted OSC monitor configuration.

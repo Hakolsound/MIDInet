@@ -212,7 +212,7 @@ fn describe_midi(data: &[u8]) -> String {
 }
 
 /// Try to resolve a network interface name (e.g. "eth0") to its IPv4 address.
-fn resolve_interface_ip(name: &str) -> Option<Ipv4Addr> {
+pub fn resolve_interface_ip(name: &str) -> Option<Ipv4Addr> {
     // Try parsing as IP first
     if let Ok(ip) = name.parse::<Ipv4Addr>() {
         return Some(ip);
