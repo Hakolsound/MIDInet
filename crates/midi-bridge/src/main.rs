@@ -132,14 +132,12 @@ fn run_windows(state: &Arc<BridgeState>) -> anyhow::Result<()> {
             )
         };
 
-        let pipe_handle = match pipe_handle {
-            Ok(h) => h,
-            Err(e) => {
-                error!(error = %e, "Failed to create named pipe");
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-        };
+        if pipe_handle.is_invalid() {
+            let e = std::io::Error::last_os_error();
+            error!(error = %e, "Failed to create named pipe");
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
 
         // Wait for client to connect (blocking)
         let connect_result = unsafe { ConnectNamedPipe(pipe_handle, None) };
