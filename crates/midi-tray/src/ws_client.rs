@@ -1,12 +1,13 @@
 /// WebSocket client that connects to the daemon's local health endpoint.
 ///
 /// Runs on a background thread (sync tungstenite, not async) because the
-/// main thread is occupied by the native GUI event loop.
+/// main thread is occupied by the native GUI event loop. All TCP operations
+/// use explicit timeouts to prevent thread hangs.
 
+use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use tungstenite::connect;
 use tungstenite::Message;
 use tracing::{debug, info, warn};
 
@@ -34,13 +35,32 @@ pub fn spawn_ws_thread() -> mpsc::Receiver<WsEvent> {
 
 fn ws_loop(tx: mpsc::Sender<WsEvent>) {
     let url = format!("ws://127.0.0.1:{}/ws", DEFAULT_HEALTH_PORT);
+    let addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_HEALTH_PORT)
+        .parse()
+        .unwrap();
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(8);
 
     loop {
         info!(url = %url, "Connecting to daemon health endpoint");
 
-        match connect(&url) {
+        // Connect with explicit timeout (prevents indefinite block if port is in limbo)
+        let tcp = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+            Ok(stream) => stream,
+            Err(e) => {
+                debug!("Cannot connect to daemon: {}", e);
+                let _ = tx.send(WsEvent::Disconnected);
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
+            }
+        };
+
+        // Set read timeout so socket.read() doesn't block forever if daemon freezes
+        let _ = tcp.set_read_timeout(Some(Duration::from_secs(10)));
+
+        // Upgrade TCP to WebSocket
+        match tungstenite::client::client(&url, tcp) {
             Ok((mut socket, _response)) => {
                 let _ = tx.send(WsEvent::Connected);
                 backoff = Duration::from_secs(1); // reset on success
@@ -77,7 +97,7 @@ fn ws_loop(tx: mpsc::Sender<WsEvent>) {
                 let _ = tx.send(WsEvent::Disconnected);
             }
             Err(e) => {
-                debug!("Cannot connect to daemon: {}", e);
+                debug!("WebSocket handshake failed: {}", e);
                 let _ = tx.send(WsEvent::Disconnected);
             }
         }
@@ -100,9 +120,12 @@ pub fn send_command(cmd: &midi_protocol::health::TrayCommand) {
     std::thread::spawn({
         let endpoint = endpoint.to_string();
         move || {
-            let endpoint = &endpoint;
-            // Use a minimal TCP connection instead of pulling in reqwest
-            if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", DEFAULT_HEALTH_PORT)) {
+            let addr: SocketAddr = format!("127.0.0.1:{}", DEFAULT_HEALTH_PORT)
+                .parse()
+                .unwrap();
+
+            if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                 use std::io::Write;
                 let request = format!(
                     "POST {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",

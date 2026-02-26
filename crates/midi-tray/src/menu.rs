@@ -1,6 +1,7 @@
 /// Context menu for the system tray.
 ///
 /// Displays connection status, metrics, and actions (focus, dashboard, quit).
+/// Menus are only rebuilt when the underlying state changes (see `MenuState`).
 
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuItem, PredefinedMenuItem};
@@ -14,6 +15,38 @@ pub const ID_OPEN_DASHBOARD: &str = "open_dashboard";
 pub const ID_RESTART_CLIENT: &str = "restart_client";
 pub const ID_AUTO_START: &str = "auto_start";
 pub const ID_QUIT: &str = "quit";
+
+/// Snapshot of menu-driving state for diffing. Menu is only rebuilt when this changes.
+#[derive(PartialEq, Eq)]
+pub struct MenuState {
+    pub connection_state: ConnectionState,
+    pub active_host_role: Option<String>,
+    pub midi_rate_in: u32,
+    pub midi_rate_out: u32,
+    pub packet_loss_tenth: u32,
+    pub has_focus: bool,
+    pub hosts_discovered: u8,
+    pub uptime_mins: u64,
+    pub has_dashboard: bool,
+    pub auto_start: bool,
+}
+
+impl MenuState {
+    pub fn from_snapshot(snapshot: &ClientHealthSnapshot, auto_start: bool) -> Self {
+        Self {
+            connection_state: snapshot.connection_state,
+            active_host_role: snapshot.active_host.as_ref().map(|h| h.role.clone()),
+            midi_rate_in: snapshot.midi_rate_in as u32,
+            midi_rate_out: snapshot.midi_rate_out as u32,
+            packet_loss_tenth: (snapshot.packet_loss_percent * 10.0) as u32,
+            has_focus: snapshot.has_focus,
+            hosts_discovered: snapshot.hosts_discovered,
+            uptime_mins: snapshot.uptime_secs / 60,
+            has_dashboard: snapshot.admin_url.is_some(),
+            auto_start,
+        }
+    }
+}
 
 /// Build the initial tray context menu (before any daemon connection).
 pub fn build_initial_menu() -> Menu {
@@ -68,7 +101,7 @@ pub fn build_initial_menu() -> Menu {
 }
 
 /// Build an updated menu reflecting the current health snapshot.
-pub fn build_status_menu(snapshot: &ClientHealthSnapshot) -> Menu {
+pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_start: bool) -> Menu {
     let menu = Menu::new();
 
     // ── Status line ──
@@ -163,7 +196,7 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot) -> Menu {
             true,
             None::<Accelerator>,
         ));
-        let auto_label = if crate::autostart::is_enabled() {
+        let auto_label = if auto_start {
             "Start with Windows  [ON]"
         } else {
             "Start with Windows  [OFF]"

@@ -1,3 +1,6 @@
+// Most of this module is Windows-only but must compile on all platforms.
+#![allow(dead_code)]
+
 /// Child process lifecycle manager for midi-client on Windows.
 ///
 /// Spawns midi-client.exe with CREATE_NO_WINDOW flag (no console window),
@@ -14,6 +17,16 @@ use tracing::{error, info, warn};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Result of checking the child process state.
+pub enum ProcessStatus {
+    /// Child is running normally
+    Running,
+    /// Child exited with the given code (None = signal/unknown)
+    Exited(Option<i32>),
+    /// No child process has been spawned or tracked
+    NotStarted,
+}
 
 pub struct ProcessManager {
     child: Option<Child>,
@@ -37,10 +50,17 @@ impl ProcessManager {
     /// Kill any existing midi-client processes before spawning our own.
     /// This prevents conflicts when an old scheduled task or manual instance is running.
     pub fn kill_existing_clients(&self) {
-        // First try graceful shutdown via the health API
-        if let Ok(mut stream) = std::net::TcpStream::connect(
-            format!("127.0.0.1:{}", midi_protocol::health::DEFAULT_HEALTH_PORT),
-        ) {
+        // First try graceful shutdown via the health API (with connect timeout)
+        let addr: std::net::SocketAddr = format!(
+            "127.0.0.1:{}",
+            midi_protocol::health::DEFAULT_HEALTH_PORT
+        )
+        .parse()
+        .unwrap();
+
+        if let Ok(mut stream) =
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        {
             use std::io::Write;
             let request = "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(request.as_bytes());
@@ -52,9 +72,17 @@ impl ProcessManager {
         // Force-kill any remaining midi-client / midinet-client processes
         #[cfg(target_os = "windows")]
         {
+            let username = std::env::var("USERNAME").unwrap_or_default();
             for name in &["midi-client.exe", "midinet-client.exe"] {
+                let mut args = vec!["/F", "/IM", *name];
+                // Only filter by username if we know it (avoids killing other RDP users)
+                let filter;
+                if !username.is_empty() {
+                    filter = format!("USERNAME eq {}", username);
+                    args.extend(["/FI", &filter]);
+                }
                 let _ = Command::new("taskkill")
-                    .args(["/F", "/IM", name])
+                    .args(&args)
                     .creation_flags(CREATE_NO_WINDOW)
                     .output();
             }
@@ -79,8 +107,7 @@ impl ProcessManager {
     }
 
     /// Check if the child is still running.
-    /// Returns `Some(exit_code)` if it exited, `None` if still running.
-    pub fn check(&mut self) -> Option<Option<i32>> {
+    pub fn check(&mut self) -> ProcessStatus {
         if let Some(ref mut child) = self.child {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -88,17 +115,17 @@ impl ProcessManager {
                     info!(exit_code = ?code, "midi-client exited");
                     self.child = None;
                     self.last_exit = Some(Instant::now());
-                    Some(code)
+                    ProcessStatus::Exited(code)
                 }
-                Ok(None) => None,
+                Ok(None) => ProcessStatus::Running,
                 Err(e) => {
                     error!("Error checking client process: {}", e);
                     self.child = None;
-                    Some(None)
+                    ProcessStatus::Exited(None)
                 }
             }
         } else {
-            Some(None)
+            ProcessStatus::NotStarted
         }
     }
 
@@ -128,18 +155,21 @@ impl ProcessManager {
         }
     }
 
-    pub fn is_running(&self) -> bool {
-        self.child.is_some()
-    }
-
     /// Send a graceful shutdown command via HTTP to the client's health server,
     /// then wait for the process to exit within the given timeout.
     /// Returns `true` if the process exited gracefully, `false` if force-killed.
     pub fn graceful_shutdown(&mut self, timeout: Duration) -> bool {
-        // Send POST /shutdown to the health server
-        if let Ok(mut stream) = std::net::TcpStream::connect(
-            format!("127.0.0.1:{}", midi_protocol::health::DEFAULT_HEALTH_PORT),
-        ) {
+        // Send POST /shutdown to the health server (with connect timeout)
+        let addr: std::net::SocketAddr = format!(
+            "127.0.0.1:{}",
+            midi_protocol::health::DEFAULT_HEALTH_PORT
+        )
+        .parse()
+        .unwrap();
+
+        if let Ok(mut stream) =
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        {
             use std::io::Write;
             let request = "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(request.as_bytes());
@@ -182,6 +212,20 @@ impl Drop for ProcessManager {
             self.graceful_shutdown(Duration::from_secs(5));
         }
     }
+}
+
+/// Check if Resolume Arena is running. Returns true if Arena.exe is found.
+#[cfg(target_os = "windows")]
+pub fn is_resolume_running() -> bool {
+    Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Arena.exe", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|out| {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.contains("Arena.exe")
+        })
+        .unwrap_or(false)
 }
 
 /// Find the midi-client binary. Looks in the same directory as the tray exe first.

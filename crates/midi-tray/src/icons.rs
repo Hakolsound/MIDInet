@@ -1,7 +1,7 @@
-/// Programmatic tray icon generation.
+/// Programmatic tray icon generation with caching.
 ///
-/// Generates RGBA pixel data for colored status circles. No bundled image
-/// files needed — icons are computed at startup and on state change.
+/// Generates RGBA pixel data for colored status circles. Icons are pre-computed
+/// at startup and stored in an `IconCache` — no runtime pixel computation needed.
 
 use image::{Rgba, RgbaImage};
 use tray_icon::Icon;
@@ -22,18 +22,52 @@ pub enum IconColor {
     Gray,
 }
 
-/// Generate a tray icon with the given status color (full brightness).
-pub fn generate_icon(color: IconColor) -> Icon {
-    generate_icon_with_alpha(color, 255)
+/// Pre-computed icon cache — all variants generated once at startup.
+pub struct IconCache {
+    green: CachedIcon,
+    green_dim: CachedIcon,
+    yellow: CachedIcon,
+    red: CachedIcon,
+    gray: CachedIcon,
 }
 
-/// Generate a dimmed tray icon for the "off" phase of blinking.
-pub fn generate_icon_dim(color: IconColor) -> Icon {
-    generate_icon_with_alpha(color, 80)
+struct CachedIcon {
+    rgba: Vec<u8>,
 }
 
-/// Generate a tray icon with the given status color and base alpha.
-fn generate_icon_with_alpha(color: IconColor, base_alpha: u8) -> Icon {
+impl CachedIcon {
+    fn to_icon(&self) -> Icon {
+        Icon::from_rgba(self.rgba.clone(), ICON_SIZE, ICON_SIZE)
+            .expect("cached icon data is always valid")
+    }
+}
+
+impl IconCache {
+    /// Pre-generate all icon variants. Call once at startup.
+    pub fn new() -> Self {
+        Self {
+            green: CachedIcon { rgba: render_circle(IconColor::Green, 255) },
+            green_dim: CachedIcon { rgba: render_circle(IconColor::Green, 80) },
+            yellow: CachedIcon { rgba: render_circle(IconColor::Yellow, 255) },
+            red: CachedIcon { rgba: render_circle(IconColor::Red, 255) },
+            gray: CachedIcon { rgba: render_circle(IconColor::Gray, 255) },
+        }
+    }
+
+    /// Get an icon for the given color and dim state.
+    pub fn get(&self, color: IconColor, dim: bool) -> Icon {
+        match (color, dim) {
+            (IconColor::Green, true) => self.green_dim.to_icon(),
+            (IconColor::Green, false) => self.green.to_icon(),
+            (IconColor::Yellow, _) => self.yellow.to_icon(),
+            (IconColor::Red, _) => self.red.to_icon(),
+            (IconColor::Gray, _) => self.gray.to_icon(),
+        }
+    }
+}
+
+/// Render a colored circle to RGBA pixel data.
+fn render_circle(color: IconColor, base_alpha: u8) -> Vec<u8> {
     let (r, g, b) = match color {
         IconColor::Green => (0x2E, 0xCC, 0x71),  // emerald green
         IconColor::Yellow => (0xF3, 0x9C, 0x12), // warm amber
@@ -52,19 +86,15 @@ fn generate_icon_with_alpha(color: IconColor, base_alpha: u8) -> Icon {
             let dist = (dx * dx + dy * dy).sqrt();
 
             if dist <= radius - 1.0 {
-                // Fully inside the circle
                 img.put_pixel(x, y, Rgba([r, g, b, base_alpha]));
             } else if dist <= radius + 1.0 {
-                // Anti-aliased edge
                 let edge_alpha = ((radius + 1.0 - dist) / 2.0 * base_alpha as f32) as u8;
                 img.put_pixel(x, y, Rgba([r, g, b, edge_alpha]));
             }
-            // else: transparent (default)
         }
     }
 
-    let rgba = img.into_raw();
-    Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).expect("failed to create tray icon")
+    img.into_raw()
 }
 
 /// Determine the icon color from a health snapshot.

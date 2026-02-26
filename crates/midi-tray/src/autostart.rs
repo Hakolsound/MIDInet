@@ -76,6 +76,7 @@ pub fn is_enabled() -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn toggle() -> Result<bool, String> {
     Ok(false)
 }

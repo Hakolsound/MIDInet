@@ -14,6 +14,9 @@
 // On macOS, the native NSApplication run loop must be pumped for the
 // menu bar icon to render. We use CFRunLoopRunInMode instead of
 // std::thread::sleep to drive the event loop.
+//
+// On Windows, the Win32 message queue must be pumped with PeekMessageW
+// for the tray icon context menu to work.
 
 mod autostart;
 mod icons;
@@ -21,8 +24,7 @@ mod menu;
 mod process_manager;
 mod ws_client;
 
-#[cfg(not(target_os = "macos"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use muda::MenuEvent;
 use tray_icon::TrayIconBuilder;
@@ -32,11 +34,13 @@ use tracing::info;
 
 use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
 
-use crate::icons::{color_for_snapshot, generate_icon, generate_icon_dim, IconColor};
+use crate::icons::{color_for_snapshot, IconCache, IconColor};
 use crate::menu::{
-    build_disconnected_menu, build_initial_menu, build_status_menu, ID_CLAIM_FOCUS,
-    ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS, ID_RESTART_CLIENT, ID_AUTO_START,
+    build_disconnected_menu, build_initial_menu, build_status_menu, MenuState, ID_AUTO_START,
+    ID_CLAIM_FOCUS, ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS, ID_RESTART_CLIENT,
 };
+#[cfg(target_os = "windows")]
+use crate::process_manager::ProcessStatus;
 use crate::ws_client::{send_command, spawn_ws_thread, WsEvent};
 
 // ── macOS: raw FFI for CoreFoundation run loop ──
@@ -51,14 +55,51 @@ extern "C" {
     ) -> i32;
 }
 
-/// Show a native confirmation dialog on Windows. Returns true if user clicked Yes.
+// ── Windows: atomic flag for system shutdown/logoff signals ──
+#[cfg(target_os = "windows")]
+static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Show a native "Cannot Quit" dialog when Resolume Arena is detected.
+#[cfg(target_os = "windows")]
+fn show_resolume_block_dialog() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let text: Vec<u16> = OsStr::new(
+        "Cannot quit \u{2014} Resolume Arena is running.\n\n\
+         Quitting MIDInet will crash your show.\n\n\
+         Close Resolume Arena first, then quit MIDInet.",
+    )
+    .encode_wide()
+    .chain(Some(0))
+    .collect();
+    let caption: Vec<u16> = OsStr::new("MIDInet")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    // MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            0,
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x00000000 | 0x00000010 | 0x00040000 | 0x00010000,
+        );
+    }
+}
+
+/// Show a strict confirmation dialog on Windows. Returns true if user clicked Yes.
 #[cfg(target_os = "windows")]
 fn confirm_quit() -> bool {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
     let text: Vec<u16> = OsStr::new(
-        "This will stop the MIDI client and disconnect virtual devices.\n\nRunning applications that use the MIDI device may crash.\n\nAre you sure?",
+        "This will stop the MIDI client and disconnect virtual devices.\n\n\
+         Running applications that use the MIDI device may lose MIDI connectivity.\n\n\
+         Are you sure you want to quit?",
     )
     .encode_wide()
     .chain(Some(0))
@@ -68,33 +109,127 @@ fn confirm_quit() -> bool {
         .chain(Some(0))
         .collect();
 
-    // MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND
+    // MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2
     let result = unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
-            std::ptr::null_mut(),
+            0,
             text.as_ptr(),
             caption.as_ptr(),
-            0x00000004 | 0x00000030 | 0x00040000 | 0x00010000,
+            0x00000004 | 0x00000030 | 0x00040000 | 0x00010000 | 0x00000100,
         )
     };
     result == 6 // IDYES
 }
 
 fn main() {
-    // Set up logging — on Windows with windows_subsystem="windows", stderr goes
-    // nowhere, but tracing is still useful for file-based logging or debuggers.
+    // ── Panic hook: log + show dialog on crash ──
+    // Must be first — catches panics in all subsequent initialization.
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+            })
+            .unwrap_or("unknown panic");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        let msg = format!("MIDInet tray panicked at {}: {}", location, payload);
+
+        // Write to panic log file next to the executable
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let log_dir = dir.join("logs");
+                let _ = std::fs::create_dir_all(&log_dir);
+                let path = log_dir.join("tray-panic.log");
+                let _ = std::fs::write(&path, &msg);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::ffi::OsStr;
+            use std::os::windows::ffi::OsStrExt;
+            let text: Vec<u16> = OsStr::new(&msg).encode_wide().chain(Some(0)).collect();
+            let cap: Vec<u16> = OsStr::new("MIDInet Crash")
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+                    0,
+                    text.as_ptr(),
+                    cap.as_ptr(),
+                    0x00000010 | 0x00040000, // MB_ICONERROR | MB_TOPMOST
+                );
+            }
+        }
+    }));
+
+    // ── Single-instance mutex (Windows) ──
+    // Prevents duplicate tray instances from fighting over the same client.
+    #[cfg(target_os = "windows")]
+    {
+        let name: Vec<u16> = "Global\\MIDInetTray\0".encode_utf16().collect();
+        let handle =
+            unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle == 0
+            || unsafe { windows_sys::Win32::Foundation::GetLastError() } == 183
+        // ERROR_ALREADY_EXISTS
+        {
+            std::process::exit(0); // duplicate — exit before creating any resources
+        }
+        // handle is intentionally leaked — OS releases on process exit
+    }
+
+    // ── File-based logging ──
+    // On Windows with windows_subsystem="windows", stderr is /dev/null.
+    // Write to a rotating daily log file next to the executable.
+    let log_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("logs")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "tray.log");
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(non_blocking)
+        .with_ansi(false)
         .init();
 
     info!("MIDInet tray starting");
 
+    // ── Windows: console ctrl handler for graceful shutdown on logoff/shutdown ──
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
+            // CTRL_CLOSE_EVENT=2, CTRL_LOGOFF_EVENT=5, CTRL_SHUTDOWN_EVENT=6
+            if ctrl_type == 2 || ctrl_type == 5 || ctrl_type == 6 {
+                SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                return 1; // handled
+            }
+            0
+        }
+
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ctrl_handler), 1);
+        }
+    }
+
     // ── macOS: initialize NSApplication with Accessory policy ──
     // This ensures the app appears as a menu bar item only (no dock icon).
-    // Must be done before creating the tray icon.
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;
@@ -118,15 +253,17 @@ fn main() {
                     .map(|d| d.join("config").join("client.toml"))
                     .filter(|p| p.exists())
                     .or_else(|| {
-                        std::env::var("LOCALAPPDATA").ok().map(|appdata| {
-                            std::path::PathBuf::from(appdata)
-                                .join("MIDInet")
-                                .join("config")
-                                .join("client.toml")
-                        }).filter(|p| p.exists())
+                        std::env::var("LOCALAPPDATA")
+                            .ok()
+                            .map(|appdata| {
+                                std::path::PathBuf::from(appdata)
+                                    .join("MIDInet")
+                                    .join("config")
+                                    .join("client.toml")
+                            })
+                            .filter(|p| p.exists())
                     });
                 let mut mgr = ProcessManager::new(client_path, config_path);
-                // Kill any existing client instances (old scheduled task, manual runs, etc.)
                 mgr.kill_existing_clients();
                 if let Err(e) = mgr.spawn() {
                     error!("Failed to spawn midi-client: {}", e);
@@ -143,8 +280,11 @@ fn main() {
     // Start the WebSocket background thread
     let ws_rx = spawn_ws_thread();
 
+    // Pre-generate all icon variants (no runtime pixel computation)
+    let icon_cache = IconCache::new();
+
     // Build initial tray icon (gray = daemon not yet connected)
-    let initial_icon = generate_icon(IconColor::Gray);
+    let initial_icon = icon_cache.get(IconColor::Gray, false);
     let initial_menu = build_initial_menu();
 
     let tray = TrayIconBuilder::new()
@@ -158,46 +298,72 @@ fn main() {
     let mut last_snapshot: Option<ClientHealthSnapshot> = None;
     let mut daemon_connected = false;
 
-    // Blink state: green icon pulses between bright and dim (~1s cycle)
-    let mut blink_tick: u32 = 0;
+    // Blink state: green icon pulses between bright and dim (~480ms per phase)
+    // Uses wall-clock timing so blink works regardless of loop sleep duration.
     let mut blink_on = true;
-    const BLINK_HALF_PERIOD: u32 = 30; // 30 ticks * 16ms ~ 480ms per phase
+    let mut last_blink_toggle = Instant::now();
+    const BLINK_INTERVAL: Duration = Duration::from_millis(480);
 
-    // Process monitoring counter (check every ~500ms = 30 ticks at 16ms)
+    // Process monitoring counter (check every ~500ms)
     #[cfg(target_os = "windows")]
-    let mut proc_check_tick: u32 = 0;
-    #[cfg(target_os = "windows")]
-    let mut quit_requested = false;
+    let mut last_proc_check = Instant::now();
+
+    // Menu diffing state — only rebuild when snapshot fields change
+    let mut last_menu_state: Option<MenuState> = None;
+    #[allow(unused_mut)]
+    let mut auto_start_cached: bool = autostart::is_enabled();
+
+    // Notification cooldown to prevent spam during flapping
+    let mut last_notification: Option<Instant> = None;
+    const NOTIFICATION_COOLDOWN: Duration = Duration::from_secs(5);
 
     let menu_rx = MenuEvent::receiver();
 
     info!("Tray running -- right-click the icon for status");
 
-    loop {
+    'main: loop {
+        // ── Check for system shutdown signal (Windows) ──
+        #[cfg(target_os = "windows")]
+        if SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            info!("System shutdown/logoff signal received");
+            proc_mgr.graceful_shutdown(Duration::from_secs(3));
+            break 'main;
+        }
+
         // ── Process WebSocket events (non-blocking) ──
         while let Ok(event) = ws_rx.try_recv() {
             match event {
                 WsEvent::Snapshot(snapshot) => {
                     let new_color = color_for_snapshot(&snapshot);
                     if new_color != current_color {
-                        let icon = generate_icon(new_color);
+                        let icon = icon_cache.get(new_color, false);
                         let _ = tray.set_icon(Some(icon));
                         current_color = new_color;
                         blink_on = true;
-                        blink_tick = 0;
+                        last_blink_toggle = Instant::now();
                     }
 
                     // Update tooltip
                     let tooltip = format_tooltip(&snapshot);
                     let _ = tray.set_tooltip(Some(&tooltip));
 
-                    // Update menu
-                    let menu = build_status_menu(&snapshot);
-                    let _ = tray.set_menu(Some(Box::new(menu)));
+                    // Update menu only if state changed
+                    let new_menu_state =
+                        MenuState::from_snapshot(&snapshot, auto_start_cached);
+                    if last_menu_state.as_ref() != Some(&new_menu_state) {
+                        let menu_obj =
+                            build_status_menu(&snapshot, auto_start_cached);
+                        let _ = tray.set_menu(Some(Box::new(menu_obj)));
+                        last_menu_state = Some(new_menu_state);
+                    }
 
-                    // Check for failover notifications
+                    // Check for failover notifications (with cooldown)
                     if let Some(ref prev) = last_snapshot {
-                        check_notifications(prev, &snapshot);
+                        let should_notify = last_notification
+                            .map_or(true, |t| t.elapsed() >= NOTIFICATION_COOLDOWN);
+                        if should_notify && check_notifications(prev, &snapshot) {
+                            last_notification = Some(Instant::now());
+                        }
                     }
 
                     last_snapshot = Some(snapshot);
@@ -212,12 +378,13 @@ fn main() {
                         info!("Lost connection to daemon");
                         daemon_connected = false;
                         last_snapshot = None;
+                        last_menu_state = None;
 
-                        let icon = generate_icon(IconColor::Gray);
+                        let icon = icon_cache.get(IconColor::Gray, false);
                         let _ = tray.set_icon(Some(icon));
                         current_color = IconColor::Gray;
                         blink_on = true;
-                        blink_tick = 0;
+                        last_blink_toggle = Instant::now();
 
                         let _ = tray.set_tooltip(Some("MIDInet: Daemon not running"));
                         let menu = build_disconnected_menu();
@@ -227,48 +394,45 @@ fn main() {
             }
         }
 
-        // ── Blink the icon when connected (green) ──
-        if current_color == IconColor::Green {
-            blink_tick += 1;
-            if blink_tick >= BLINK_HALF_PERIOD {
-                blink_tick = 0;
-                blink_on = !blink_on;
-                let icon = if blink_on {
-                    generate_icon(IconColor::Green)
-                } else {
-                    generate_icon_dim(IconColor::Green)
-                };
-                let _ = tray.set_icon(Some(icon));
-            }
+        // ── Blink the icon when connected (green) — wall-clock based ──
+        if current_color == IconColor::Green
+            && last_blink_toggle.elapsed() >= BLINK_INTERVAL
+        {
+            last_blink_toggle = Instant::now();
+            blink_on = !blink_on;
+            let icon = icon_cache.get(IconColor::Green, !blink_on);
+            let _ = tray.set_icon(Some(icon));
         }
 
-        // ── Windows: monitor child process ──
+        // ── Windows: monitor child process (~every 500ms) ──
         #[cfg(target_os = "windows")]
         {
-            proc_check_tick += 1;
-            if proc_check_tick >= 30 {
-                proc_check_tick = 0;
+            if last_proc_check.elapsed() >= Duration::from_millis(500) {
+                last_proc_check = Instant::now();
                 proc_mgr.reset_backoff();
 
-                if let Some(exit_code) = proc_mgr.check() {
-                    if quit_requested {
-                        // Intentional quit -- exit the tray
-                        std::process::exit(0);
+                match proc_mgr.check() {
+                    ProcessStatus::Running => {} // healthy
+                    ProcessStatus::NotStarted => {
+                        // Initial spawn failed — retry
+                        if proc_mgr.should_restart() {
+                            if let Err(e) = proc_mgr.spawn() {
+                                error!("Failed to spawn client: {}", e);
+                            }
+                        }
                     }
-                    match exit_code {
+                    ProcessStatus::Exited(code) => match code {
                         Some(0) => {
-                            // Client exited cleanly on its own
                             info!("Client exited cleanly (code 0)");
                         }
                         _ => {
-                            // Crash or signal -- auto-restart with backoff
                             if proc_mgr.should_restart() {
                                 if let Err(e) = proc_mgr.restart() {
                                     error!("Failed to restart client: {}", e);
                                 }
                             }
                         }
-                    }
+                    },
                 }
             }
         }
@@ -306,6 +470,9 @@ fn main() {
                         match autostart::toggle() {
                             Ok(enabled) => {
                                 info!(enabled, "Auto-start toggled");
+                                auto_start_cached = enabled;
+                                // Force menu rebuild to reflect new state
+                                last_menu_state = None;
                             }
                             Err(e) => {
                                 error!("Failed to toggle auto-start: {}", e);
@@ -316,18 +483,22 @@ fn main() {
                 ID_QUIT => {
                     #[cfg(target_os = "windows")]
                     {
+                        // Block quit if Resolume Arena is running
+                        if process_manager::is_resolume_running() {
+                            show_resolume_block_dialog();
+                            continue;
+                        }
                         if !confirm_quit() {
                             continue;
                         }
-                        quit_requested = true;
                         info!("Shutting down client and exiting");
                         proc_mgr.graceful_shutdown(Duration::from_secs(5));
-                        std::process::exit(0);
+                        break 'main;
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
                         info!("Quit requested");
-                        std::process::exit(0);
+                        break 'main;
                     }
                 }
                 _ => {}
@@ -335,15 +506,44 @@ fn main() {
         }
 
         // ── Pump the event loop ──
-        // On macOS, we must pump the native CFRunLoop for the menu bar icon
-        // to render. On other platforms, a simple sleep suffices.
+        // On macOS: pump the native CFRunLoop for menu bar icon to render.
+        // On Windows: pump the Win32 message queue for right-click context menu.
+        // On Linux: a simple sleep suffices (GTK loop is implicit via tray-icon).
         #[cfg(target_os = "macos")]
         unsafe {
             CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.016, 0);
         }
-        #[cfg(not(target_os = "macos"))]
-        std::thread::sleep(Duration::from_millis(16));
+        #[cfg(target_os = "windows")]
+        {
+            unsafe {
+                let mut msg: windows_sys::Win32::UI::WindowsAndMessaging::MSG =
+                    std::mem::zeroed();
+                while windows_sys::Win32::UI::WindowsAndMessaging::PeekMessageW(
+                    &mut msg,
+                    0,
+                    0,
+                    0,
+                    0x0001, // PM_REMOVE
+                ) != 0
+                {
+                    windows_sys::Win32::UI::WindowsAndMessaging::TranslateMessage(&msg);
+                    windows_sys::Win32::UI::WindowsAndMessaging::DispatchMessageW(&msg);
+                }
+            }
+            // Adaptive sleep: faster during blink animation, slower when idle
+            let sleep_ms = if current_color == IconColor::Green { 16 } else { 100 };
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        std::thread::sleep(Duration::from_millis(100));
     }
+
+    // ── Clean shutdown ──
+    // Explicit drop order: tray icon first (removes from system tray),
+    // then ProcessManager (graceful client shutdown), then log guard (flush).
+    info!("MIDInet tray shutting down");
+    drop(tray);
+    // proc_mgr dropped here (Windows), _log_guard dropped last
 }
 
 fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
@@ -380,8 +580,8 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Compare consecutive snapshots and show desktop notifications for
-/// significant state transitions.
-fn check_notifications(prev: &ClientHealthSnapshot, curr: &ClientHealthSnapshot) {
+/// significant state transitions. Returns true if a notification was shown.
+fn check_notifications(prev: &ClientHealthSnapshot, curr: &ClientHealthSnapshot) -> bool {
     // Failover occurred
     if curr.failover_count > prev.failover_count {
         let host_name = curr
@@ -390,6 +590,7 @@ fn check_notifications(prev: &ClientHealthSnapshot, curr: &ClientHealthSnapshot)
             .map(|h| capitalize(&h.role))
             .unwrap_or_else(|| "unknown".to_string());
         show_notification("MIDInet Failover", &format!("Switched to {} host", host_name));
+        return true;
     }
 
     // Both hosts lost
@@ -397,6 +598,7 @@ fn check_notifications(prev: &ClientHealthSnapshot, curr: &ClientHealthSnapshot)
         && curr.connection_state == ConnectionState::Disconnected
     {
         show_notification("MIDInet", "All hosts unreachable!");
+        return true;
     }
 
     // Reconnected after outage
@@ -409,7 +611,10 @@ fn check_notifications(prev: &ClientHealthSnapshot, curr: &ClientHealthSnapshot)
             .map(|h| capitalize(&h.role))
             .unwrap_or_else(|| "host".to_string());
         show_notification("MIDInet", &format!("Reconnected to {}", host_name));
+        return true;
     }
+
+    false
 }
 
 fn show_notification(title: &str, body: &str) {
