@@ -44,7 +44,7 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
     if let Err(e) = raw.set_reuse_address(true) {
         warn!(error = %e, "Failed to set SO_REUSEADDR");
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     if let Err(e) = raw.set_reuse_port(true) {
         warn!(error = %e, "Failed to set SO_REUSEPORT");
     }
@@ -241,7 +241,7 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
     if let Err(e) = raw.set_reuse_address(true) {
         warn!(error = %e, "Failed to set SO_REUSEADDR on control sniffer");
     }
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     if let Err(e) = raw.set_reuse_port(true) {
         warn!(error = %e, "Failed to set SO_REUSEPORT on control sniffer");
     }

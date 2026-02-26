@@ -75,18 +75,32 @@ mod ffi {
     }
 }
 
+/// Shared feedback buffer for callback-mode ports.
+/// The callback pushes data here; `receive()` pops from it.
+#[cfg(target_os = "windows")]
+type FeedbackBuffer = std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>;
+
 /// teVirtualMIDI callback - invoked when other apps send MIDI to the virtual port.
 /// Must be extern "system" (stdcall on Windows).
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn midi_data_callback(
     _port: ffi::HANDLE,
-    _data: *const u8,
-    _length: ffi::DWORD,
-    _instance: *mut std::ffi::c_void,
+    data: *const u8,
+    length: ffi::DWORD,
+    instance: *mut std::ffi::c_void,
 ) {
-    // Data from other apps (e.g., Resolume sending MIDI back).
-    // Currently unused but providing this callback may be required
-    // for the driver to register the MIDI Input device.
+    if instance.is_null() || data.is_null() || length == 0 {
+        return;
+    }
+    let buf = &*(instance as *const FeedbackBuffer);
+    let slice = std::slice::from_raw_parts(data, length as usize);
+    if let Ok(mut q) = buf.lock() {
+        q.push_back(slice.to_vec());
+        // Cap at 1024 entries to prevent unbounded growth
+        while q.len() > 1024 {
+            q.pop_front();
+        }
+    }
 }
 
 // ── Runtime-loaded teVirtualMIDI library ──
@@ -208,18 +222,20 @@ impl TeVirtualMidiLib {
         label: &str,
         midi_in_before: u32,
         midi_out_before: u32,
+        feedback_buf_ptr: *mut std::ffi::c_void,
     ) -> Option<(ffi::HANDLE, bool)> {
         let callback_ptr = if use_callback {
             midi_data_callback as *const std::ffi::c_void
         } else {
             std::ptr::null()
         };
+        let instance_ptr = if use_callback { feedback_buf_ptr } else { std::ptr::null_mut() };
 
         let h = unsafe {
             (self.create_port_ex2)(
                 wide_name.as_ptr(),
                 callback_ptr,
-                std::ptr::null_mut(),
+                instance_ptr,
                 65535,
                 flags,
             )
@@ -291,6 +307,12 @@ pub struct TeVirtualMidiDevice {
     lib: Option<TeVirtualMidiLib>,
     #[cfg(target_os = "windows")]
     port: Mutex<Option<ffi::HANDLE>>,
+    /// Feedback buffer for callback-mode ports. Pinned so the pointer stays stable.
+    #[cfg(target_os = "windows")]
+    feedback_buf: std::pin::Pin<Box<FeedbackBuffer>>,
+    /// Whether the port was created with a callback (callback mode vs polling mode).
+    #[cfg(target_os = "windows")]
+    use_callback: std::sync::atomic::AtomicBool,
     /// When true, Drop skips port close — the kernel driver cleans up on process exit.
     #[cfg(target_os = "windows")]
     detached: bool,
@@ -311,6 +333,10 @@ impl TeVirtualMidiDevice {
             lib: TeVirtualMidiLib::load(),
             #[cfg(target_os = "windows")]
             port: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            feedback_buf: Box::pin(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            #[cfg(target_os = "windows")]
+            use_callback: std::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "windows")]
             detached: false,
             #[cfg(not(target_os = "windows"))]
@@ -402,6 +428,11 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
             let mut final_handle: ffi::HANDLE = std::ptr::null_mut();
             let mut final_label = "";
             let mut midi_input_ok = false;
+            let mut final_uses_callback = false;
+
+            // Get a raw pointer to the feedback buffer for the callback.
+            // The buffer is Pin<Box<...>> so the pointer stays stable.
+            let buf_ptr = &*self.feedback_buf as *const FeedbackBuffer as *mut std::ffi::c_void;
 
             for attempt in &attempts {
                 if let Some((h, input_created)) = lib.try_create_port(
@@ -411,11 +442,13 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
                     attempt.label,
                     midi_in_before,
                     midi_out_before,
+                    buf_ptr,
                 ) {
                     if input_created {
                         final_handle = h;
                         final_label = attempt.label;
                         midi_input_ok = true;
+                        final_uses_callback = attempt.callback;
                         break;
                     }
 
@@ -432,7 +465,7 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
                     (lib.create_port_ex2)(
                         wide_name.as_ptr(),
                         midi_data_callback as *const std::ffi::c_void,
-                        std::ptr::null_mut(),
+                        buf_ptr,
                         65535,
                         ffi::TE_VM_FLAGS_PARSE_RX | ffi::TE_VM_FLAGS_INSTANTIATE_BOTH,
                     )
@@ -440,6 +473,7 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
                 if !h.is_null() {
                     final_handle = h;
                     final_label = "fallback+callback";
+                    final_uses_callback = true;
                 }
             }
 
@@ -477,11 +511,13 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
 
             info!(
                 flags = final_label,
+                callback_mode = final_uses_callback,
                 midi_in = midi_in_final,
                 midi_out = midi_out_final,
                 "Virtual MIDI port creation complete with MIDI Input"
             );
 
+            self.use_callback.store(final_uses_callback, std::sync::atomic::Ordering::Relaxed);
             *self.port.lock().unwrap() = Some(final_handle);
         }
 
@@ -516,6 +552,15 @@ impl VirtualMidiDevice for TeVirtualMidiDevice {
     fn receive(&self) -> anyhow::Result<Option<Vec<u8>>> {
         #[cfg(target_os = "windows")]
         {
+            // Callback mode: data was buffered by midi_data_callback
+            if self.use_callback.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(mut q) = self.feedback_buf.lock() {
+                    return Ok(q.pop_front());
+                }
+                return Ok(None);
+            }
+
+            // Polling mode: use virtualMIDIGetData directly
             if let Some(ref lib) = self.lib {
                 let guard = self.port.lock().unwrap();
                 if let Some(handle) = *guard {

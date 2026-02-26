@@ -42,9 +42,31 @@ fn now_us() -> u64 {
 /// Also sends feedback from the virtual device to the active host.
 /// Accepts external focus commands from the tray/health API via the channel in ClientState.
 pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
-    // Take the focus command receiver (only the first invocation gets it)
-    let mut focus_rx = state.focus_rx.lock().unwrap().take()
-        .expect("focus_rx already taken -- focus task started twice?");
+    // Take the focus command receiver from state.
+    // On supervised restart after a panic the receiver may have been lost,
+    // so create a dummy channel — auto_claim still works, just tray commands won't.
+    let mut focus_rx = match state.focus_rx.lock().unwrap().take() {
+        Some(rx) => rx,
+        None => {
+            warn!("Focus task restarted after panic — tray commands unavailable until full restart");
+            let (_tx, rx) = tokio::sync::mpsc::channel::<FocusCommand>(1);
+            rx
+        }
+    };
+
+    let result = run_inner(&state, pulse, &mut focus_rx).await;
+
+    // Return the receiver so the next supervised restart can re-take it
+    *state.focus_rx.lock().unwrap() = Some(focus_rx);
+
+    result
+}
+
+async fn run_inner(
+    state: &Arc<ClientState>,
+    pulse: TaskPulse,
+    focus_rx: &mut tokio::sync::mpsc::Receiver<FocusCommand>,
+) -> anyhow::Result<()> {
 
     let control_group: Ipv4Addr = state.config.network.control_group.parse()?;
     let control_port = state.config.network.control_port;
