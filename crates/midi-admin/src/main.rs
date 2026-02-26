@@ -88,12 +88,23 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(discovery::run(state.clone()));
 
     // Spawn multicast MIDI sniffer (reads host's multicast stream for metrics)
-    if let Some(net) = network_config {
+    if let Some(ref net) = network_config {
         info!(group = %net.multicast_group, port = net.data_port, "Starting MIDI multicast sniffer");
         tokio::spawn(midi_sniffer::run(
             state.clone(),
-            net.multicast_group,
+            net.multicast_group.clone(),
             net.data_port,
+            net.interface.clone(),
+        ));
+    }
+
+    // Spawn control group sniffer (monitors focus claims + feedback MIDI)
+    if let Some(net) = network_config {
+        info!(group = %net.control_group, port = net.control_port, "Starting control group sniffer");
+        tokio::spawn(midi_sniffer::run_control(
+            state.clone(),
+            net.control_group,
+            net.control_port,
             net.interface,
         ));
     }

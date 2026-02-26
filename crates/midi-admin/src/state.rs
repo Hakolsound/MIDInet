@@ -502,6 +502,12 @@ pub struct FailoverEvent {
 pub struct FocusInfo {
     pub holder: Option<FocusHolder>,
     pub history: Vec<FocusHistoryEntry>,
+    /// Epoch seconds of the last feedback MIDI received (from control sniffer)
+    #[serde(default)]
+    pub last_feedback_at: Option<u64>,
+    /// Total feedback MIDI packets observed
+    #[serde(default)]
+    pub feedback_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

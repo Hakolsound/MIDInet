@@ -94,6 +94,11 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
     let mut last_claim = Instant::now();
     let claim_interval = Duration::from_secs(5);
 
+    // Periodic status log for debugging feedback path
+    let mut last_status_log = Instant::now();
+    let status_log_interval = Duration::from_secs(5);
+    let mut feedback_sent_count: u64 = 0;
+
     loop {
         // Listen for focus ack/release from the host
         match recv_socket.try_recv_from(&mut buf) {
@@ -132,6 +137,18 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
             _ => {}
         }
 
+        // Periodic status log for debugging
+        if last_status_log.elapsed() >= status_log_interval {
+            last_status_log = Instant::now();
+            let active = state.active_host_id.read().await;
+            info!(
+                focused = is_focused(),
+                active_host = ?*active,
+                feedback_sent = feedback_sent_count,
+                "Focus status"
+            );
+        }
+
         // Re-claim focus periodically to survive host auto-release timeout
         if state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
             last_claim = Instant::now();
@@ -168,6 +185,7 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                                 journal: None,
                             };
                             feedback_sequence = feedback_sequence.wrapping_add(1);
+                            feedback_sent_count += 1;
 
                             let mut pkt_buf = Vec::new();
                             packet.serialize(&mut pkt_buf);

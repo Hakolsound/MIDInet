@@ -211,6 +211,138 @@ fn describe_midi(data: &[u8]) -> String {
     }
 }
 
+/// Run a control-group sniffer. Joins `control_group:control_port`,
+/// monitors focus claims/acks and feedback MIDI packets, and updates the
+/// admin panel's focus state + traffic sniffer.
+pub async fn run_control(state: AppState, control_group: String, control_port: u16, interface: String) {
+    let group: Ipv4Addr = match control_group.parse() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!(group = %control_group, error = %e, "Invalid control group, control sniffer disabled");
+            return;
+        }
+    };
+
+    let iface: Ipv4Addr = if interface == "0.0.0.0" || interface.is_empty() {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        resolve_interface_ip(&interface).unwrap_or(Ipv4Addr::UNSPECIFIED)
+    };
+
+    let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, control_port);
+
+    let raw = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "Control sniffer failed to create socket");
+            return;
+        }
+    };
+    if let Err(e) = raw.set_reuse_address(true) {
+        warn!(error = %e, "Failed to set SO_REUSEADDR on control sniffer");
+    }
+    #[cfg(not(windows))]
+    if let Err(e) = raw.set_reuse_port(true) {
+        warn!(error = %e, "Failed to set SO_REUSEPORT on control sniffer");
+    }
+    raw.set_nonblocking(true).ok();
+    if let Err(e) = raw.bind(&bind_addr.into()) {
+        warn!(addr = %bind_addr, error = %e, "Control sniffer failed to bind");
+        return;
+    }
+
+    let std_socket: std::net::UdpSocket = raw.into();
+    let socket = match UdpSocket::from_std(std_socket) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "Control sniffer failed to convert socket to tokio");
+            return;
+        }
+    };
+
+    if let Err(e) = socket.join_multicast_v4(group, iface) {
+        warn!(group = %group, iface = %iface, error = %e, "Control sniffer failed to join multicast");
+        return;
+    }
+
+    info!(group = %group, port = control_port, "Control sniffer listening (focus + feedback MIDI)");
+
+    let mut buf = [0u8; 2048];
+
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((len, addr)) => {
+                if len < 4 {
+                    continue;
+                }
+
+                let now_s = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                // Focus packets (MAGIC_FOCUS = "MDFC")
+                if &buf[0..4] == b"MDFC" && len >= 16 {
+                    let action = buf[4];
+                    let client_id = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]);
+                    let action_str = match action {
+                        0 => "Claim",
+                        1 => "Ack",
+                        2 => "Release",
+                        _ => "Unknown",
+                    };
+
+                    // Update admin focus state
+                    if action == 1 {
+                        // Ack = focus granted to this client
+                        let mut fs = state.inner.focus_state.write().await;
+                        fs.holder = Some(crate::state::FocusHolder {
+                            client_id,
+                            ip: addr.ip().to_string(),
+                            since: now_s,
+                        });
+                    }
+
+                    let _ = state.inner.traffic_log_tx.send(
+                        serde_json::json!({
+                            "ch": "focus",
+                            "ts": now_s,
+                            "msg": format!("Focus {} client={} from={}", action_str, client_id, addr),
+                        }).to_string(),
+                    );
+                }
+
+                // Feedback MIDI packets (MAGIC_MIDI = "MDMI")
+                if &buf[0..4] == b"MDMI" && len >= 18 {
+                    let midi_len = u16::from_be_bytes([buf[16], buf[17]]) as usize;
+                    if len >= 18 + midi_len && midi_len > 0 {
+                        let midi_data = &buf[18..18 + midi_len];
+                        let desc = describe_midi(midi_data);
+
+                        let _ = state.inner.traffic_log_tx.send(
+                            serde_json::json!({
+                                "ch": "feedback",
+                                "ts": now_s,
+                                "msg": format!("Feedback MIDI: {} from={}", desc, addr),
+                            }).to_string(),
+                        );
+                        state.inner.traffic_counters.midi_packets_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                        // Update focus last_feedback timestamp
+                        let mut fs = state.inner.focus_state.write().await;
+                        fs.last_feedback_at = Some(now_s);
+                        fs.feedback_count += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Control sniffer recv error");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 /// Try to resolve a network interface name (e.g. "eth0") to its IPv4 address.
 fn resolve_interface_ip(name: &str) -> Option<Ipv4Addr> {
     // Try parsing as IP first
