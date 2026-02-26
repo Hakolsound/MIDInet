@@ -1,6 +1,7 @@
 # ──────────────────────────────────────────────────────────────
 # MIDInet - Windows Client Installer (PowerShell)
-# Clones from GitHub, builds natively, and installs as a startup task.
+# Clones from GitHub, builds natively, and installs the system tray
+# wrapper that manages the MIDI client lifecycle.
 # Safe for both fresh installs and updates — stops running processes
 # before replacing binaries to prevent stale versions.
 #
@@ -104,7 +105,8 @@ if (Test-Path "$BinDir\version.txt") {
 }
 Write-Host ""
 
-$TotalSteps = 10
+$TotalSteps = 11
+$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # ── 1. Prerequisites ─────────────────────────────────────────
 Write-Step 1 $TotalSteps "Checking prerequisites..."
@@ -342,8 +344,37 @@ try {
     Write-Err "Failed to set up config: $_"
 }
 
-# ── 9. Remove legacy scheduled task (tray now manages client) ─
-Write-Step 9 $TotalSteps "Configuring startup..."
+# ── 9. Windows Firewall Rules ────────────────────────────────
+Write-Step 9 $TotalSteps "Configuring Windows Firewall rules..."
+
+if ($IsAdmin) {
+    $fwRules = @(
+        @{ Name = "MIDInet MIDI Data (UDP 5004)";   Port = 5004; Desc = "MIDInet multicast MIDI data" },
+        @{ Name = "MIDInet Heartbeat (UDP 5005)";    Port = 5005; Desc = "MIDInet host heartbeat" },
+        @{ Name = "MIDInet Control (UDP 5006)";      Port = 5006; Desc = "MIDInet focus/control channel" },
+        @{ Name = "MIDInet mDNS (UDP 5353)";         Port = 5353; Desc = "mDNS service discovery" }
+    )
+
+    foreach ($rule in $fwRules) {
+        $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+        if (-not $existing) {
+            New-NetFirewallRule -DisplayName $rule.Name `
+                -Direction Inbound -Protocol UDP -LocalPort $rule.Port `
+                -Action Allow -Profile Private,Domain `
+                -Description $rule.Desc -ErrorAction SilentlyContinue | Out-Null
+            Write-Ok "Created: $($rule.Name)"
+        } else {
+            Write-Ok "Already exists: $($rule.Name)"
+        }
+    }
+} else {
+    Write-Warn "Not running as Administrator - skipping firewall rules"
+    Write-Warn "If MIDI doesn't connect, re-run this script as Administrator, or manually allow"
+    Write-Warn "inbound UDP ports 5004, 5005, 5006, and 5353 in Windows Firewall."
+}
+
+# ── 10. Remove legacy scheduled task (tray now manages client)
+Write-Step 10 $TotalSteps "Cleaning up legacy startup..."
 
 # Remove the old standalone client task — the tray spawns the client now
 $oldTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -355,8 +386,8 @@ if ($oldTask) {
     Write-Ok "No legacy scheduled task to remove"
 }
 
-# ── 10. Tray Auto-Start ──────────────────────────────────────
-Write-Step 10 $TotalSteps "Installing tray application (auto-start at login)..."
+# ── 11. Tray Auto-Start ──────────────────────────────────────
+Write-Step 11 $TotalSteps "Installing tray application (auto-start at login)..."
 
 try {
     # Register tray in user startup via Registry Run key
@@ -421,15 +452,26 @@ Write-Host "  Binaries: $BinDir"
 Write-Host "  Logs:     $LogDir"
 Write-Host "  Source:   $SrcDir"
 Write-Host ""
+Write-Host "  Management:"
+Write-Host "    Right-click the MIDInet tray icon for focus control and status."
+Write-Host "    The tray auto-starts the client and restarts it on crash."
+Write-Host ""
 Write-Host "  Commands:"
 Write-Host "    midinet-cli status                            # Check connection"
 Write-Host "    midinet-cli focus                             # View/claim focus"
-Write-Host "    Stop-ScheduledTask -TaskName '$TaskName'      # Stop client"
-Write-Host "    Start-ScheduledTask -TaskName '$TaskName'     # Start client"
 Write-Host ""
 Write-Host "  Update:"
 Write-Host "    cd $SrcDir; .\scripts\client-install-windows.ps1"
 Write-Host ""
+Write-Host "  Uninstall:"
+Write-Host "    .\scripts\client-uninstall-windows.ps1"
+Write-Host ""
+if (-not $IsAdmin) {
+    Write-Host "  NOTE: Firewall rules were skipped (not running as Administrator)." -ForegroundColor Yellow
+    Write-Host "  If the client can't discover hosts, re-run as Admin or manually open" -ForegroundColor Yellow
+    Write-Host "  inbound UDP ports 5004, 5005, 5006, 5353 in Windows Firewall." -ForegroundColor Yellow
+    Write-Host ""
+}
 
 if (-not $IsWin11 -and -not $HasTeVirtualMidi) {
     Write-Host "  REMINDER: Install teVirtualMIDI driver for virtual MIDI ports:" -ForegroundColor Yellow
