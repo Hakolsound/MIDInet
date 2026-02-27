@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod pipeline;
 pub mod settings;
 pub mod status;
+pub mod system;
 
 use axum::{
     body::Body,
@@ -150,6 +151,9 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/alerts/config", get(alerts::get_alert_config).put(alerts::update_alert_config))
         // Config
         .route("/api/config", get(config::get_config).put(config::put_config))
+        // System management
+        .route("/api/system/update-check", get(system::check_update))
+        .route("/api/system/update", post(system::run_update))
         // Settings
         .route("/api/settings", get(settings::get_settings))
         .route("/api/settings/midi-device", put(settings::set_midi_device))

@@ -42,6 +42,15 @@ pub struct ClientHealthSnapshot {
     pub admin_url: Option<String>,
     /// Watchdog / task health summary
     pub watchdog: WatchdogStatus,
+    /// True if the host and client are running different git hashes
+    #[serde(default)]
+    pub version_mismatch: bool,
+    /// Git hash of the host (received via admin heartbeat response)
+    #[serde(default)]
+    pub host_git_hash: String,
+    /// Git hash of this client binary (compiled in)
+    #[serde(default)]
+    pub client_git_hash: String,
 }
 
 /// High-level connection state for the tray icon color.

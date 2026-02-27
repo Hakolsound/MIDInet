@@ -48,6 +48,7 @@ pub async fn run(state: Arc<ClientState>) {
         "device_name": state.identity.read().await.name.clone(),
         "device_ready": *state.device_ready.read().await,
         "connection_state": connection_state_str(&state).await,
+        "git_hash": midi_protocol::GIT_HASH,
     });
 
     match http.post(format!("{}/api/clients/register", admin_url))
@@ -77,6 +78,7 @@ pub async fn run(state: Arc<ClientState>) {
             "device_ready": snapshot.device_ready,
             "device_name": snapshot.device_name,
             "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
+            "git_hash": midi_protocol::GIT_HASH,
         });
 
         match http.post(format!("{}/api/clients/{}/heartbeat", admin_url, state.client_id))
@@ -97,11 +99,17 @@ pub async fn run(state: Arc<ClientState>) {
                             "device_name": snapshot.device_name,
                             "device_ready": snapshot.device_ready,
                             "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
+                            "git_hash": midi_protocol::GIT_HASH,
                         });
                         let _ = http.post(format!("{}/api/clients/register", admin_url))
                             .json(&register_body)
                             .send()
                             .await;
+                    }
+
+                    // Store host version for mismatch detection
+                    if let Some(host_hash) = resp_body.get("host_git_hash").and_then(|v| v.as_str()) {
+                        state.health.set_host_version(host_hash);
                     }
 
                     // Process focus commands from admin panel

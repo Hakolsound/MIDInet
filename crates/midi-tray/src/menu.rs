@@ -14,6 +14,7 @@ pub const ID_RELEASE_FOCUS: &str = "release_focus";
 pub const ID_OPEN_DASHBOARD: &str = "open_dashboard";
 pub const ID_RESTART_CLIENT: &str = "restart_client";
 pub const ID_AUTO_START: &str = "auto_start";
+pub const ID_CHECK_UPDATE: &str = "check_update";
 pub const ID_QUIT: &str = "quit";
 
 /// Snapshot of menu-driving state for diffing. Menu is only rebuilt when this changes.
@@ -29,6 +30,7 @@ pub struct MenuState {
     pub uptime_mins: u64,
     pub has_dashboard: bool,
     pub auto_start: bool,
+    pub version_mismatch: bool,
 }
 
 impl MenuState {
@@ -44,6 +46,7 @@ impl MenuState {
             uptime_mins: snapshot.uptime_secs / 60,
             has_dashboard: snapshot.admin_url.is_some(),
             auto_start,
+            version_mismatch: snapshot.version_mismatch,
         }
     }
 }
@@ -67,9 +70,15 @@ pub fn build_initial_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Windows-only: restart and auto-start
+    // Windows-only: restart, auto-start, check for updates
     #[cfg(target_os = "windows")]
     {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_CHECK_UPDATE,
+            "Check for Updates",
+            true,
+            None::<Accelerator>,
+        ));
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",
@@ -195,9 +204,35 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
 
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Windows-only: restart client and auto-start toggle
+    // Version mismatch warning
+    if snapshot.version_mismatch {
+        let _ = menu.append(&MenuItem::with_id(
+            "mismatch_warn",
+            "!! Version mismatch - update needed",
+            false,
+            None::<Accelerator>,
+        ));
+        let _ = menu.append(&MenuItem::with_id(
+            "mismatch_detail",
+            &format!(
+                "Host: {} | Client: {}",
+                snapshot.host_git_hash, snapshot.client_git_hash
+            ),
+            false,
+            None::<Accelerator>,
+        ));
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
+
+    // Windows-only: check for updates, restart client, auto-start toggle
     #[cfg(target_os = "windows")]
     {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_CHECK_UPDATE,
+            "Check for Updates",
+            true,
+            None::<Accelerator>,
+        ));
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",
@@ -255,9 +290,15 @@ pub fn build_disconnected_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Windows-only: restart and auto-start
+    // Windows-only: check for updates, restart, auto-start
     #[cfg(target_os = "windows")]
     {
+        let _ = menu.append(&MenuItem::with_id(
+            ID_CHECK_UPDATE,
+            "Check for Updates",
+            true,
+            None::<Accelerator>,
+        ));
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",

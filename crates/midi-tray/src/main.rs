@@ -22,6 +22,8 @@ mod autostart;
 mod icons;
 mod menu;
 mod process_manager;
+#[cfg(target_os = "windows")]
+mod updater;
 mod ws_client;
 
 use std::time::{Duration, Instant};
@@ -37,7 +39,8 @@ use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
 use crate::icons::{color_for_snapshot, IconCache, IconColor};
 use crate::menu::{
     build_disconnected_menu, build_initial_menu, build_status_menu, MenuState, ID_AUTO_START,
-    ID_CLAIM_FOCUS, ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS, ID_RESTART_CLIENT,
+    ID_CHECK_UPDATE, ID_CLAIM_FOCUS, ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS,
+    ID_RESTART_CLIENT,
 };
 #[cfg(target_os = "windows")]
 use crate::process_manager::ProcessStatus;
@@ -88,6 +91,47 @@ fn show_resolume_block_dialog() {
             0x00000000 | 0x00000010 | 0x00040000 | 0x00010000,
         );
     }
+}
+
+/// Show an informational dialog on Windows (OK button only).
+#[cfg(target_os = "windows")]
+fn show_info_dialog(title: &str, message: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let text: Vec<u16> = OsStr::new(message).encode_wide().chain(Some(0)).collect();
+    let caption: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
+
+    // MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x00000000 | 0x00000040 | 0x00040000 | 0x00010000,
+        );
+    }
+}
+
+/// Show a Yes/No dialog on Windows. Returns true if user clicked Yes.
+#[cfg(target_os = "windows")]
+fn show_yesno_dialog(title: &str, message: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let text: Vec<u16> = OsStr::new(message).encode_wide().chain(Some(0)).collect();
+    let caption: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
+
+    // MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFBUTTON2
+    let result = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            0x00000004 | 0x00000020 | 0x00040000 | 0x00010000 | 0x00000100,
+        )
+    };
+    result == 6 // IDYES
 }
 
 /// Show a strict confirmation dialog on Windows. Returns true if user clicked Yes.
@@ -496,6 +540,41 @@ fn main() {
                         }
                     }
                 }
+                ID_CHECK_UPDATE => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        if process_manager::is_resolume_running() {
+                            show_resolume_block_dialog();
+                            continue;
+                        }
+                        // Run update check in a background thread to avoid blocking the GUI
+                        let admin_url = last_snapshot
+                            .as_ref()
+                            .and_then(|s| s.admin_url.clone());
+                        std::thread::spawn(move || {
+                            let result = updater::check_for_update();
+                            if !result.available {
+                                // Show "up to date" dialog
+                                show_info_dialog(
+                                    "MIDInet Update",
+                                    &format!("MIDInet is up to date ({})", result.current_hash),
+                                );
+                                return;
+                            }
+                            // Show confirmation dialog with changelog and cross-component warning
+                            let msg = updater::format_update_dialog(
+                                &result,
+                                admin_url.as_deref(),
+                            );
+                            if show_yesno_dialog("MIDInet Update", &msg) {
+                                if updater::run_update() {
+                                    // Script launched — exit tray so it can be replaced
+                                    std::process::exit(0);
+                                }
+                            }
+                        });
+                    }
+                }
                 ID_QUIT => {
                     #[cfg(target_os = "windows")]
                     {
@@ -581,14 +660,20 @@ fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
         ConnectionState::Disconnected => "Disconnected".to_string(),
     };
 
-    format!(
+    let base = format!(
         "MIDInet {} | {} | {:.0} in {:.0} out msg/s | {:.1}% loss",
         midi_protocol::version_string(),
         state,
         snapshot.midi_rate_in,
         snapshot.midi_rate_out,
         snapshot.packet_loss_percent
-    )
+    );
+
+    if snapshot.version_mismatch {
+        format!("{} | !! VERSION MISMATCH", base)
+    } else {
+        base
+    }
 }
 
 fn capitalize(s: &str) -> String {

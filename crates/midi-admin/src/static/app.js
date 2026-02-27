@@ -296,10 +296,55 @@ function Header() {
 
 // ── Footer ────────────────────────────────────────────────────
 function Footer() {
-  const { state } = useContext(AppContext);
+  const { state, dispatch } = useContext(AppContext);
   const s = state.status;
   const clients = s.clients || [];
   const estLat = estimateLatency(s, clients);
+  const [updating, setUpdating] = useState(false);
+
+  const checkUpdate = async () => {
+    setUpdating(true);
+    try {
+      const res = await apiFetch('/api/system/update-check');
+      if (!res.available) {
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Host is up to date (' + (res.current_hash || '') + ')') });
+        return;
+      }
+      const clientCount = state.clients.length;
+      const midiRate = Math.round(s.midi?.messages_per_sec || 0);
+      let body = 'Current: ' + res.current_hash + '  →  Latest: ' + res.latest_hash + '\n\n';
+      if (res.changelog && res.changelog.length) {
+        body += 'Changes:\n' + res.changelog.map(l => '  • ' + l).join('\n') + '\n\n';
+      }
+      body += '⚠ IMPORTANT: Both host (Raspberry Pi) and client machines must run the same version.\n\n';
+      body += 'After updating this host, update each client:\n';
+      body += '  • Windows: Right-click tray icon → "Check for Updates"\n';
+      body += '  • macOS/Linux: Re-run the install script\n\n';
+      body += 'Connected clients: ' + clientCount + '  |  MIDI traffic: ' + midiRate + ' msg/s';
+      if (clientCount > 0 || midiRate > 0) {
+        body += '\n\n⚠ WARNING: There are active clients/traffic. Updating will restart host services and briefly interrupt MIDI streaming.';
+      }
+      dispatch({ type: 'MODAL', modal: {
+        title: 'Update MIDInet Host',
+        message: body,
+        ok: 'Update Now',
+        cls: 'btn-active',
+        onConfirm: async () => {
+          const r = await apiFetch('/api/system/update', { method: 'POST' });
+          if (r.success) {
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Update started — services will restart') });
+          } else {
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Update failed') });
+          }
+        }
+      }});
+    } catch (e) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Update check failed') });
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   return html`<footer class="footer">
     <div class="footer-item"><span class="footer-label">CPU</span><span class="footer-val" data-lv=${cpuLv(s.cpu_percent)}>${Math.round(s.cpu_percent)}%</span></div>
     <span class="footer-sep" />
@@ -314,7 +359,20 @@ function Footer() {
     <div class="footer-item"><span class="footer-label">Up</span><span class="footer-val">${fmtUp(s.uptime)}</span></div>
     <span class="footer-sep" />
     <div class="footer-item"><span class="footer-label">Build</span><span class="footer-val footer-ver">${s.git_branch || ''} ${s.git_hash ? '(' + s.git_hash + ')' : ''}</span></div>
+    <button class="footer-update-btn" onClick=${checkUpdate} disabled=${updating}>${updating ? 'Checking...' : 'Update'}</button>
   </footer>`;
+}
+
+// ── Version Mismatch Banner ──────────────────────────────────
+function VersionMismatchBanner() {
+  const { state } = useContext(AppContext);
+  const hostHash = state.status.git_hash || '';
+  const mismatched = state.clients.filter(c => c.git_hash && c.git_hash !== hostHash);
+  if (!hostHash || mismatched.length === 0) return null;
+  return html`<div class="version-mismatch-banner">
+    ⚠ Version mismatch: ${mismatched.length} client${mismatched.length > 1 ? 's' : ''} running a different version than the host.
+    Update all components to the same version for proper functionality.
+  </div>`;
 }
 
 // ── Overlays ──────────────────────────────────────────────────
@@ -692,9 +750,11 @@ function ClientsCard() {
         ${state.clients.map(c => {
           const hasFocus = state.designatedFocus === c.id;
           const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'manual' ? 'warn' : c.connection_state === 'discovering' ? 'warn' : 'error';
+          const hostHash = state.status.git_hash || '';
+          const verMismatch = hostHash && c.git_hash && c.git_hash !== hostHash;
           return html`<div class="client-row" key=${c.id}>
             <span class="status-dot" data-status=${connStatus} />
-            <span class="client-name">${c.hostname || 'Client ' + c.id}</span>
+            <span class="client-name">${c.hostname || 'Client ' + c.id}${verMismatch ? html`<span class="ver-mismatch-badge" title=${'Client: ' + c.git_hash + ' | Host: ' + hostHash}>v!</span>` : ''}</span>
             <span class="client-ip">${c.ip}</span>
             <span class="client-stat">${c.device_ready ? (c.device_name || 'Ready') : c.manual ? 'Manual' : 'No device'}</span>
             <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
@@ -1288,6 +1348,7 @@ function App() {
 
   return html`<${AppContext.Provider} value=${ctx}>
     <${Header} />
+    <${VersionMismatchBanner} />
     <main class="main">
       ${state.page === 'overview' && html`<${OverviewPage} />`}
       ${state.page === 'control' && html`<${ControlPage} />`}

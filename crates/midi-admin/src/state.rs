@@ -436,6 +436,9 @@ pub struct ClientInfo {
     pub midi_rate_out: f32,
     #[serde(default)]
     pub connection_state: String,
+    /// Git hash of the client binary (reported via heartbeat)
+    #[serde(default)]
+    pub git_hash: String,
     /// True if this client was manually added by the operator (not self-registered)
     #[serde(default)]
     pub manual: bool,

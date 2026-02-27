@@ -58,6 +58,8 @@ pub struct RegisterClientBody {
     pub device_ready: bool,
     #[serde(default)]
     pub connection_state: String,
+    #[serde(default)]
+    pub git_hash: String,
 }
 
 /// POST /api/clients/register — client self-registers on startup
@@ -75,6 +77,7 @@ pub async fn register_client(
         existing.device_name = body.device_name;
         existing.device_ready = body.device_ready;
         existing.connection_state = body.connection_state;
+        existing.git_hash = body.git_hash;
         existing.last_heartbeat_ms = now_ms;
     } else {
         info!(id = body.id, ip = %body.ip, hostname = %body.hostname, "Client registered");
@@ -92,6 +95,7 @@ pub async fn register_client(
             midi_rate_in: 0.0,
             midi_rate_out: 0.0,
             connection_state: body.connection_state,
+            git_hash: body.git_hash,
             manual: false,
         });
     }
@@ -115,6 +119,8 @@ pub struct ClientHeartbeatBody {
     pub device_name: String,
     #[serde(default)]
     pub connection_state: String,
+    #[serde(default)]
+    pub git_hash: String,
 }
 
 /// POST /api/clients/:id/heartbeat — periodic health update from client
@@ -139,6 +145,9 @@ pub async fn client_heartbeat(
         if !body.connection_state.is_empty() {
             client.connection_state = body.connection_state;
         }
+        if !body.git_hash.is_empty() {
+            client.git_hash = body.git_hash;
+        }
 
         // Include focus command based on designated_focus
         let designated = *state.inner.designated_focus.read().await;
@@ -148,7 +157,7 @@ pub async fn client_heartbeat(
             None => None,
         };
 
-        Json(json!({ "success": true, "focus_command": focus_cmd }))
+        Json(json!({ "success": true, "focus_command": focus_cmd, "host_git_hash": midi_protocol::GIT_HASH }))
     } else {
         Json(json!({ "success": false, "error": "Client not registered" }))
     }
@@ -254,6 +263,7 @@ pub async fn add_client_manual(
         midi_rate_in: 0.0,
         midi_rate_out: 0.0,
         connection_state: "manual".to_string(),
+        git_hash: String::new(),
         manual: true,
     });
 

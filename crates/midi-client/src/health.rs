@@ -139,6 +139,8 @@ pub struct HealthCollector {
     pub memory_mb: AtomicU64, // f32 bits
     /// Total task restart count
     pub restart_count: AtomicU32,
+    /// Host git hash received via admin heartbeat response
+    host_git_hash: std::sync::RwLock<String>,
 }
 
 impl HealthCollector {
@@ -153,12 +155,21 @@ impl HealthCollector {
             packet_loss: AtomicU64::new(0),
             memory_mb: AtomicU64::new(0),
             restart_count: AtomicU32::new(0),
+            host_git_hash: std::sync::RwLock::new(String::new()),
         }
     }
 
     /// Register a task monitor (called once per task during startup).
     pub fn register_monitor(&self, monitor: TaskMonitor) {
         self.monitors.lock().unwrap().push(monitor);
+    }
+
+    /// Store the host's git hash (received from admin heartbeat response).
+    pub fn set_host_version(&self, hash: &str) {
+        let mut h = self.host_git_hash.write().unwrap();
+        if *h != hash {
+            *h = hash.to_string();
+        }
     }
 
     /// Update computed rates from the raw counters.  Called periodically
@@ -263,6 +274,12 @@ impl HealthCollector {
         let memory_mb =
             f32::from_bits(self.memory_mb.load(Ordering::Relaxed) as u32);
 
+        // Version mismatch detection
+        let host_git_hash = self.host_git_hash.read().unwrap().clone();
+        let client_git_hash = midi_protocol::GIT_HASH.to_string();
+        let version_mismatch =
+            !host_git_hash.is_empty() && host_git_hash != client_git_hash;
+
         ClientHealthSnapshot {
             timestamp_ms: now_ms,
             connection_state,
@@ -284,6 +301,9 @@ impl HealthCollector {
                 memory_mb,
                 restart_count: self.restart_count.load(Ordering::Relaxed),
             },
+            version_mismatch,
+            host_git_hash,
+            client_git_hash,
         }
     }
 }

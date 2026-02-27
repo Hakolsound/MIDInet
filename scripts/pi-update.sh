@@ -12,6 +12,10 @@ set -euo pipefail
 
 MIDINET_DIR="${MIDINET_DIR:-/opt/midinet/src}"
 BRANCH="${MIDINET_BRANCH:-v3.1}"
+FORCE=false
+if [ "${1:-}" = "--force" ]; then
+    FORCE=true
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,12 +46,16 @@ AFTER=$(git rev-parse --short HEAD)
 
 if [ "$BEFORE" = "$AFTER" ]; then
     echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER)"
-    echo ""
-    read -p "  Rebuild anyway? [y/N] " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "  Aborted."
-        exit 0
+    if [ "$FORCE" = true ]; then
+        echo "  --force: rebuilding anyway"
+    else
+        echo ""
+        read -p "  Rebuild anyway? [y/N] " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "  Aborted."
+            exit 0
+        fi
     fi
 else
     echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
