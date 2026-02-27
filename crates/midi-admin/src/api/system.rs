@@ -118,9 +118,10 @@ fn git_update_check() -> Value {
         });
     }
 
-    // Query remote using ls-remote with the URL directly (no repo access needed)
+    // Query remote using ls-remote with the URL directly (no repo access needed).
+    // Don't use --heads flag with explicit refs/heads/ pattern — they double-filter.
     let latest = match std::process::Command::new("git")
-        .args(["ls-remote", "--heads", &remote_url, &format!("refs/heads/{}", branch)])
+        .args(["ls-remote", &remote_url, &format!("refs/heads/{}", branch)])
         .output()
     {
         Err(e) => {
@@ -137,21 +138,34 @@ fn git_update_check() -> Value {
             });
         }
         Ok(output) => {
-            // Output format: "<full-hash>\trefs/heads/<branch>"
-            String::from_utf8_lossy(&output.stdout)
+            let raw = String::from_utf8_lossy(&output.stdout);
+            // Output format: "<full-hash>\trefs/heads/<branch>\n"
+            let hash: String = raw
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
                 .chars()
                 .take(7)
-                .collect::<String>()
+                .collect();
+            if hash.is_empty() {
+                error!(
+                    remote_url = %remote_url,
+                    branch = %branch,
+                    raw_output = %raw.trim(),
+                    "git ls-remote returned no matching refs"
+                );
+            }
+            hash
         }
     };
 
     if current.is_empty() || latest.is_empty() {
         return json!({
             "available": false,
-            "error": "Failed to read git hashes",
+            "error": format!(
+                "Failed to read git hashes (current={:?}, latest={:?}, url={:?}, branch={:?})",
+                current, latest, remote_url, branch
+            ),
         });
     }
 
