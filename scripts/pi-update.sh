@@ -51,14 +51,26 @@ git checkout "$BRANCH"
 git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse --short HEAD)
 
-if [ "$BEFORE" = "$AFTER" ]; then
-    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — rebuilding anyway"
+NEED_BUILD=true
+if [ "$BEFORE" = "$AFTER" ] && [ "$FORCE" = false ]; then
+    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — skipping build"
+    NEED_BUILD=false
 else
-    echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
-    echo ""
-    echo "  Changes:"
-    git log --oneline "$BEFORE..$AFTER" | head -10 | sed 's/^/    /'
-    echo ""
+    if [ "$BEFORE" != "$AFTER" ]; then
+        echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
+        echo ""
+        echo "  Changes:"
+        git log --oneline "$BEFORE..$AFTER" | head -10 | sed 's/^/    /'
+        echo ""
+        # Skip build if only non-Rust files changed (scripts, deploy, docs, etc.)
+        RUST_CHANGES=$(git diff --name-only "$BEFORE..$AFTER" -- 'crates/' 'Cargo.toml' 'Cargo.lock' | head -1)
+        if [ -z "$RUST_CHANGES" ]; then
+            echo -e "    ${CYAN}ℹ${NC}  No Rust source changes — skipping build"
+            NEED_BUILD=false
+        fi
+    else
+        echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — forced rebuild"
+    fi
 fi
 
 # Ensure Rust toolchain is available under sudo.
@@ -79,27 +91,52 @@ if [ -n "$RUST_USER_HOME" ]; then
 fi
 
 if ! command -v cargo &>/dev/null; then
-    echo -e "${RED}cargo not found. Install Rust as the pi user:${NC}"
-    echo -e "${RED}  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
-    echo -e "${RED}  rustup default stable${NC}"
-    exit 1
+    echo -e "${CYAN}Rust not found. Installing...${NC}"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    # Set up environment for the rest of this script
+    if [ -n "$RUST_USER_HOME" ]; then
+        export CARGO_HOME="$RUST_USER_HOME/.cargo"
+        export RUSTUP_HOME="$RUST_USER_HOME/.rustup"
+    else
+        export CARGO_HOME="$HOME/.cargo"
+        export RUSTUP_HOME="$HOME/.rustup"
+    fi
+    export PATH="$CARGO_HOME/bin:$PATH"
+    if ! command -v cargo &>/dev/null; then
+        echo -e "${RED}Rust installation failed. Install manually:${NC}"
+        echo -e "${RED}  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+        exit 1
+    fi
+    echo -e "    ${GREEN}✓${NC} Rust installed ($(rustc --version))"
 fi
 
-# Build
-echo -e "${CYAN}[2/4]${NC} Building release (first build may take 15+ min on ARM)..."
-cargo build --release -p midi-host -p midi-admin -p midi-cli
-echo -e "    ${GREEN}✓${NC} Build complete"
+# Build (skip if no Rust changes)
+STEP=2
+if [ "$NEED_BUILD" = true ]; then
+    echo -e "${CYAN}[2/4]${NC} Building release (first build may take 15+ min on ARM)..."
+    echo -e "    ${CYAN}ℹ${NC}  The final linking step uses low CPU and may look stuck — this is normal on ARM"
+    BUILD_START=$SECONDS
+    cargo build --release -p midi-host -p midi-admin -p midi-cli
+    BUILD_ELAPSED=$((SECONDS - BUILD_START))
+    BUILD_MIN=$((BUILD_ELAPSED / 60))
+    BUILD_SEC=$((BUILD_ELAPSED % 60))
+    echo -e "    ${GREEN}✓${NC} Build complete (${BUILD_MIN}m ${BUILD_SEC}s)"
+    STEP=3
+fi
 
 # Stop services
-echo -e "${CYAN}[3/4]${NC} Stopping services..."
+echo -e "${CYAN}[$STEP/4]${NC} Stopping services..."
 systemctl stop midinet-admin.service 2>/dev/null || true
 systemctl stop midinet-host.service 2>/dev/null || true
+STEP=$((STEP + 1))
 
 # Install & restart
-echo -e "${CYAN}[4/4]${NC} Installing and restarting..."
-install -m 755 "$MIDINET_DIR/target/release/midi-host"  /usr/local/bin/midi-host
-install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admin
-install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
+echo -e "${CYAN}[$STEP/4]${NC} Installing and restarting..."
+if [ "$NEED_BUILD" = true ]; then
+    install -m 755 "$MIDINET_DIR/target/release/midi-host"  /usr/local/bin/midi-host
+    install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admin
+    install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
+fi
 
 # Update systemd units in case they changed
 install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"  /etc/systemd/system/
@@ -112,7 +149,7 @@ systemctl start midinet-admin.service
 echo ""
 echo -e "${GREEN}✓ MIDInet updated and running${NC}"
 echo ""
-systemctl status midinet-host.service midinet-admin.service --no-pager -l 2>/dev/null | head -20 || true
+systemctl status midinet-host.service midinet-admin.service --no-pager -l 2>/dev/null || true
 echo ""
 echo "  Dashboard: http://$(hostname -I | awk '{print $1}'):8080"
 echo "  Logs:      journalctl -u midinet-host -u midinet-admin -f"

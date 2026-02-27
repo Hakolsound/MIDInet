@@ -43,20 +43,37 @@ echo "  │   Hakol Fine AV Services             │"
 echo "  └──────────────────────────────────────┘"
 echo -e "${NC}"
 
-# ── 1. Check prerequisites ──────────────────────────────────
+# ── 1. Check & install prerequisites ────────────────────────
 step 1 "Checking prerequisites..."
 
+# Rust
 if ! command -v cargo &>/dev/null; then
-    fail "Rust not found. Install with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    warn "Rust not found. Installing..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    source "$HOME/.cargo/env"
+    ok "Rust installed ($(rustc --version))"
+else
+    ok "Rust $(rustc --version | awk '{print $2}')"
 fi
-ok "Rust $(rustc --version | awk '{print $2}')"
 
-# Check for ALSA dev headers (Linux only)
+# ALSA dev headers + build tools (Linux only)
 if [ "$(uname -s)" = "Linux" ]; then
     if ! pkg-config --exists alsa 2>/dev/null; then
-        fail "libasound2-dev not found. Install with: sudo apt-get install -y libasound2-dev"
+        warn "ALSA development headers not found. Installing..."
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libasound2-dev build-essential pkg-config
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y alsa-lib-devel gcc pkg-config
+        elif command -v pacman &>/dev/null; then
+            sudo pacman -S --needed --noconfirm alsa-lib base-devel pkg-config
+        else
+            fail "Unknown package manager. Install libasound2-dev (or equivalent) manually."
+        fi
+        ok "ALSA development headers installed"
+    else
+        ok "ALSA development headers found"
     fi
-    ok "ALSA development headers found"
 fi
 
 # ── 2. Stop existing service ────────────────────────────────

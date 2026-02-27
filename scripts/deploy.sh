@@ -31,6 +31,51 @@ fi
 cd "$REPO_DIR"
 
 # ══════════════════════════════════════════════════════════════
+#  Prerequisites (auto-install)
+# ══════════════════════════════════════════════════════════════
+echo -e "${CYAN}Checking prerequisites...${NC}"
+
+# Rust
+if ! command -v cargo &>/dev/null; then
+    warn "Rust not found. Installing..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    source "$HOME/.cargo/env"
+    ok "Rust installed ($(rustc --version))"
+else
+    ok "Rust $(rustc --version | awk '{print $2}')"
+fi
+
+if [ "$OS" = "Darwin" ]; then
+    # macOS: Xcode Command Line Tools (needed for CoreMIDI headers)
+    if ! xcode-select -p &>/dev/null; then
+        warn "Installing Xcode Command Line Tools..."
+        xcode-select --install
+        echo "    Press any key after installation completes..."
+        read -n 1 -s
+    fi
+    ok "Xcode Command Line Tools available"
+else
+    # Linux: ALSA dev headers + build tools
+    if ! pkg-config --exists alsa 2>/dev/null; then
+        warn "ALSA development headers not found. Installing..."
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libasound2-dev build-essential pkg-config
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y alsa-lib-devel gcc pkg-config
+        elif command -v pacman &>/dev/null; then
+            sudo pacman -S --needed --noconfirm alsa-lib base-devel pkg-config
+        else
+            fail "Unknown package manager. Install libasound2-dev (or equivalent) manually."
+        fi
+        ok "ALSA development headers installed"
+    else
+        ok "ALSA development headers found"
+    fi
+fi
+echo ""
+
+# ══════════════════════════════════════════════════════════════
 #  macOS
 # ══════════════════════════════════════════════════════════════
 if [ "$OS" = "Darwin" ]; then
