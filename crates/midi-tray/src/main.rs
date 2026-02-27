@@ -554,6 +554,10 @@ fn main() {
                         let snapshot_for_update = last_snapshot.clone();
                         std::thread::spawn(move || {
                             let result = updater::check_for_update();
+                            if !result.error.is_empty() {
+                                show_info_dialog("MIDInet Update", &format!("Update check failed:\n\n{}", result.error));
+                                return;
+                            }
                             if !result.available {
                                 // Client is up to date — check if host needs updating
                                 let host_mismatch = snapshot_for_update

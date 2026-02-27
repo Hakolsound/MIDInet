@@ -7,8 +7,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Result of an update check.
 pub struct UpdateCheckResult {
@@ -16,6 +17,8 @@ pub struct UpdateCheckResult {
     pub current_hash: String,
     pub latest_hash: String,
     pub changelog: Vec<String>,
+    /// If non-empty, the check failed and this contains a user-visible error message.
+    pub error: String,
 }
 
 /// Find the MIDInet source directory.
@@ -45,45 +48,115 @@ fn find_src_dir() -> Option<PathBuf> {
     None
 }
 
-/// Check for available updates by fetching from origin and comparing HEAD.
-/// This is a blocking call — run in a background thread.
-pub fn check_for_update() -> UpdateCheckResult {
-    let no_update = UpdateCheckResult {
+/// Get the git remote URL from the local repo.
+fn get_remote_url(src_dir: &PathBuf) -> Option<String> {
+    Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(src_dir)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn make_error(msg: &str) -> UpdateCheckResult {
+    UpdateCheckResult {
         available: false,
         current_hash: String::new(),
         latest_hash: String::new(),
         changelog: Vec::new(),
-    };
+        error: msg.to_string(),
+    }
+}
 
+/// Check for available updates using ls-remote (no fetch, no credential prompt).
+/// This is a blocking call — run in a background thread.
+pub fn check_for_update() -> UpdateCheckResult {
     let src_dir = match find_src_dir() {
         Some(d) => d,
         None => {
             error!("Cannot find MIDInet source directory for update check");
-            return no_update;
+            return make_error(
+                "Source directory not found.\n\n\
+                 Expected: %LOCALAPPDATA%\\MIDInet\\src\\\n\
+                 Run the installer to set it up.",
+            );
         }
     };
 
     let branch = midi_protocol::GIT_BRANCH;
 
-    // Fetch latest from origin
-    info!(dir = %src_dir.display(), "Fetching updates from origin");
-    let fetch = Command::new("git")
-        .args(["fetch", "origin"])
-        .current_dir(&src_dir)
-        .output();
-
-    if let Err(e) = fetch {
-        error!(error = %e, "git fetch failed");
-        return no_update;
+    // Get current HEAD hash from the local repo (read-only, fast)
+    let current_hash = git_rev_parse(&src_dir, "HEAD");
+    if current_hash.is_empty() {
+        error!("Failed to get current HEAD hash");
+        return make_error("Failed to read current git hash.");
     }
 
-    // Get current HEAD hash
-    let current_hash = git_rev_parse(&src_dir, "HEAD");
-    let latest_hash = git_rev_parse(&src_dir, &format!("origin/{}", branch));
+    // Get remote URL from the local repo
+    let remote_url = match get_remote_url(&src_dir) {
+        Some(url) => url,
+        None => {
+            error!("Failed to get git remote URL");
+            return make_error("Failed to read git remote URL from repo.");
+        }
+    };
 
-    if current_hash.is_empty() || latest_hash.is_empty() {
-        error!("Failed to get git hashes");
-        return no_update;
+    // Query remote using ls-remote (read-only, no credential prompt for public repos).
+    // Use a child process with a timeout to avoid hanging forever.
+    info!(remote = %remote_url, branch = %branch, "Checking for updates via ls-remote");
+    let ls_remote = Command::new("git")
+        .args(["ls-remote", &remote_url, &format!("refs/heads/{}", branch)])
+        .current_dir(&src_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let child = match ls_remote {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "Failed to spawn git ls-remote");
+            return make_error(&format!("Failed to run git: {}", e));
+        }
+    };
+
+    // Wait with a 15-second timeout
+    let output = wait_with_timeout(child, Duration::from_secs(15));
+    let output = match output {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => {
+            error!(error = %e, "git ls-remote failed");
+            return make_error(&format!("git ls-remote failed: {}", e));
+        }
+        None => {
+            warn!("git ls-remote timed out after 15 seconds");
+            return make_error("Update check timed out.\nCheck your internet connection.");
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        error!(exit = %output.status, stderr = %stderr.trim(), "git ls-remote failed");
+        return make_error(&format!("git ls-remote failed: {}", stderr.trim()));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let latest_hash: String = raw
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(7)
+        .collect();
+
+    if latest_hash.is_empty() {
+        error!(raw = %raw.trim(), "git ls-remote returned no matching refs");
+        return make_error(&format!(
+            "No branch '{}' found on remote.\nls-remote output: {}",
+            branch,
+            raw.trim()
+        ));
     }
 
     if current_hash == latest_hash {
@@ -93,19 +166,21 @@ pub fn check_for_update() -> UpdateCheckResult {
             current_hash,
             latest_hash,
             changelog: Vec::new(),
+            error: String::new(),
         };
     }
 
-    // Get changelog
+    // Try to get changelog from locally-cached refs (may be stale, that's OK)
     let changelog = Command::new("git")
         .args([
             "log",
             "--oneline",
-            &format!("{}..{}", current_hash, latest_hash),
+            &format!("HEAD..origin/{}", branch),
         ])
         .current_dir(&src_dir)
         .output()
         .ok()
+        .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| {
             s.lines()
@@ -127,6 +202,32 @@ pub fn check_for_update() -> UpdateCheckResult {
         current_hash,
         latest_hash,
         changelog,
+        error: String::new(),
+    }
+}
+
+/// Wait for a child process with a timeout. Returns None if timed out (and kills the process).
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Option<std::io::Result<std::process::Output>> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Process exited — collect output
+                return Some(child.wait_with_output());
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Some(Err(e)),
+        }
     }
 }
 
