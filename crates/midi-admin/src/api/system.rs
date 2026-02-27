@@ -147,6 +147,16 @@ fn git_update_check() -> Value {
 }
 
 fn find_src_dir() -> Option<std::path::PathBuf> {
+    // Check marker file written by pi-update.sh / pi-provision.sh
+    // This is the most reliable method since the update scripts know the exact path
+    // and the marker is in a directory the admin service always has access to.
+    if let Ok(path) = std::fs::read_to_string("/var/lib/midinet/src-dir") {
+        let dir = std::path::PathBuf::from(path.trim());
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+    }
+
     let candidates = [
         std::path::PathBuf::from("/opt/midinet/src"),
         std::path::PathBuf::from("/home/pi/MIDInet"),

@@ -191,6 +191,8 @@ install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admi
 install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
 # Stamp installed version for update detection
 git -C "$MIDINET_DIR" rev-parse --short HEAD > /usr/local/bin/.midinet-version
+# Write source directory marker so the admin service can find it for update checks
+echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
 ok "Binaries installed to /usr/local/bin/"
 
 # Install the update command

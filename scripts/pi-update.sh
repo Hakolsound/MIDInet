@@ -153,6 +153,9 @@ if [ "$NEED_BUILD" = true ]; then
     echo "$AFTER" > /usr/local/bin/.midinet-version
 fi
 
+# Write source directory marker so the admin service can find it for update checks
+echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
+
 # Update systemd units in case they changed
 install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"  /etc/systemd/system/
 install -m 644 "$MIDINET_DIR/deploy/midinet-admin.service" /etc/systemd/system/
