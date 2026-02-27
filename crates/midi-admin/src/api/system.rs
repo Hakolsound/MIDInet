@@ -158,6 +158,19 @@ fn find_src_dir() -> Option<std::path::PathBuf> {
         }
     }
 
+    // Fallback: walk up from the executable (works for dev and non-standard installs)
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        for _ in 0..5 {
+            if let Some(ref d) = dir {
+                if d.join(".git").exists() {
+                    return dir;
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+    }
+
     None
 }
 

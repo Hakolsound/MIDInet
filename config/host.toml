@@ -51,7 +51,7 @@ guard_note = 0                      # Optional: hold this note as safety lock (0
 
 [failover.triggers.osc]
 enabled = false                     # Enable OSC as failover trigger
-listen_port = 8000                  # OSC listen port
+listen_port = 5588                  # OSC listen port
 address = "/midinet/failover/switch"
 allowed_sources = ["192.168.1.0/24"]  # IP whitelist (CIDR notation)
 
@@ -62,4 +62,4 @@ username = "admin"                  # Basic auth username
 password = "midinet"                # Basic auth password — CHANGE IN PRODUCTION!
 
 [osc]
-listen_port = 8000                  # OSC listener port
+listen_port = 5588                  # OSC listener port

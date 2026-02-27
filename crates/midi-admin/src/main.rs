@@ -35,7 +35,7 @@ struct Args {
     config: String,
 
     /// OSC monitor port (0 to disable)
-    #[arg(long, default_value = "9000")]
+    #[arg(long, default_value = "5588")]
     osc_port: u16,
 }
 

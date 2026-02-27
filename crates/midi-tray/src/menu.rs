@@ -204,11 +204,20 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
 
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Version mismatch warning
+    // Version mismatch warning — directional guidance
     if snapshot.version_mismatch {
+        // The client's compiled hash is always client_git_hash.
+        // If the host hash is different, the host is the one that needs updating
+        // (the user already has the latest client binary running).
+        let client_is_current = snapshot.client_git_hash == midi_protocol::GIT_HASH;
+        let warn_text = if client_is_current {
+            "!! Host outdated — update via dashboard or SSH"
+        } else {
+            "!! Client outdated — check for updates"
+        };
         let _ = menu.append(&MenuItem::with_id(
             "mismatch_warn",
-            "!! Version mismatch - update needed",
+            warn_text,
             false,
             None::<Accelerator>,
         ));

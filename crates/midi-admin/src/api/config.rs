@@ -69,13 +69,13 @@ pub struct OscConfig {
 }
 
 fn default_osc_port() -> u16 {
-    9000
+    5588
 }
 
 impl Default for OscConfig {
     fn default() -> Self {
         Self {
-            listen_port: 8000,
+            listen_port: 5588,
         }
     }
 }

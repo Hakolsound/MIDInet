@@ -153,7 +153,7 @@ impl Default for OscTrigger {
     fn default() -> Self {
         Self {
             enabled: false,
-            listen_port: 8000,
+            listen_port: 5588,
             address: "/midinet/failover/switch".to_string(),
             allowed_sources: vec![],
         }
@@ -192,7 +192,7 @@ pub struct OscSection {
 impl Default for OscSection {
     fn default() -> Self {
         Self {
-            listen_port: 8000,
+            listen_port: 5588,
         }
     }
 }
@@ -225,7 +225,7 @@ fn default_confirmation_mode() -> String { "immediate".to_string() }
 fn default_trigger_channel() -> u8 { 16 }
 fn default_trigger_note() -> u8 { 127 }
 fn default_velocity_threshold() -> u8 { 100 }
-fn default_osc_port() -> u16 { 8000 }
+fn default_osc_port() -> u16 { 5588 }
 fn default_osc_address() -> String { "/midinet/failover/switch".to_string() }
 fn default_admin_listen() -> String { "0.0.0.0:8080".to_string() }
 fn default_admin_user() -> String { "admin".to_string() }

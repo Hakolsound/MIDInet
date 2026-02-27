@@ -178,7 +178,7 @@ impl Default for OscTriggerSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            listen_port: 8000,
+            listen_port: 5588,
             address: "/midinet/failover/switch".to_string(),
             allowed_sources: vec![],
         }
@@ -194,7 +194,7 @@ pub struct OscPortState {
 impl Default for OscPortState {
     fn default() -> Self {
         Self {
-            port: 8000,
+            port: 5588,
             status: "stopped".to_string(),
         }
     }
@@ -235,7 +235,7 @@ fn default_miss_threshold() -> u8 { 3 }
 fn default_trigger_channel() -> u8 { 16 }
 fn default_trigger_note() -> u8 { 127 }
 fn default_velocity_threshold() -> u8 { 100 }
-fn default_osc_trigger_port() -> u16 { 8000 }
+fn default_osc_trigger_port() -> u16 { 5588 }
 fn default_osc_address() -> String { "/midinet/failover/switch".to_string() }
 
 /// Top-level shared state for the admin panel

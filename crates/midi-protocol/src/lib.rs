@@ -34,7 +34,7 @@ pub const DEFAULT_CONTROL_PORT: u16 = 5006;
 pub const DEFAULT_FOCUS_PORT: u16 = 5007;
 pub const DEFAULT_DISCOVERY_PORT: u16 = 5008;
 pub const DEFAULT_ADMIN_PORT: u16 = 8080;
-pub const DEFAULT_OSC_PORT: u16 = 8000;
+pub const DEFAULT_OSC_PORT: u16 = 5588;
 
 /// Heartbeat defaults
 pub const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 3;

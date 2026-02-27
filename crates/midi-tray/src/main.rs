@@ -551,14 +551,36 @@ fn main() {
                         let admin_url = last_snapshot
                             .as_ref()
                             .and_then(|s| s.admin_url.clone());
+                        let snapshot_for_update = last_snapshot.clone();
                         std::thread::spawn(move || {
                             let result = updater::check_for_update();
                             if !result.available {
-                                // Show "up to date" dialog
-                                show_info_dialog(
-                                    "MIDInet Update",
-                                    &format!("MIDInet is up to date ({})", result.current_hash),
-                                );
+                                // Client is up to date — check if host needs updating
+                                let host_mismatch = snapshot_for_update
+                                    .as_ref()
+                                    .map(|s| s.version_mismatch)
+                                    .unwrap_or(false);
+                                if host_mismatch {
+                                    let host_hash = snapshot_for_update
+                                        .as_ref()
+                                        .map(|s| s.host_git_hash.as_str())
+                                        .unwrap_or("unknown");
+                                    show_info_dialog(
+                                        "MIDInet Update",
+                                        &format!(
+                                            "Client is up to date ({}).\n\n\
+                                             Your host (Pi) is running an older version ({}).\n\
+                                             Update it from the Admin Dashboard or via SSH:\n\n\
+                                             sudo midinet-update",
+                                            result.current_hash, host_hash
+                                        ),
+                                    );
+                                } else {
+                                    show_info_dialog(
+                                        "MIDInet Update",
+                                        &format!("MIDInet is up to date ({})", result.current_hash),
+                                    );
+                                }
                                 return;
                             }
                             // Show confirmation dialog with changelog and cross-component warning
