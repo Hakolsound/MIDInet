@@ -189,6 +189,8 @@ systemctl stop midinet-host.service 2>/dev/null || true
 install -m 755 "$MIDINET_DIR/target/release/midi-host"  /usr/local/bin/midi-host
 install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admin
 install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
+# Stamp installed version for update detection
+git -C "$MIDINET_DIR" rev-parse --short HEAD > /usr/local/bin/.midinet-version
 ok "Binaries installed to /usr/local/bin/"
 
 # Install the update command

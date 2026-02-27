@@ -362,7 +362,7 @@ function Footer() {
     <div class="footer-spacer" />
     <div class="footer-item"><span class="footer-label">Up</span><span class="footer-val">${fmtUp(s.uptime)}</span></div>
     <span class="footer-sep" />
-    <div class="footer-item"><span class="footer-label">Build</span><span class="footer-val footer-ver">${s.git_branch || ''} ${s.git_hash ? '(' + s.git_hash + ')' : ''}</span></div>
+    <div class="footer-item"><span class="footer-label">Running</span><span class="footer-val footer-ver">${s.git_branch || ''}${s.git_hash ? ' (' + s.git_hash + ')' : ''}</span></div>
     <button class="footer-update-btn" onClick=${checkUpdate} disabled=${updating}>${updating ? 'Checking...' : 'Update'}</button>
   </footer>`;
 }

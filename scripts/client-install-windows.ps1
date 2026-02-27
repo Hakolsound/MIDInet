@@ -120,8 +120,6 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     } catch {}
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Err "Git installation failed. Install from https://git-scm.com and re-run."
-        Write-Host "`nCannot continue without Git. Press Enter to exit..." -ForegroundColor Red
-        Read-Host
         exit 1
     }
 }
@@ -138,8 +136,6 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     } catch {}
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Write-Err "Rust installation failed. Install from https://rustup.rs and re-run."
-        Write-Host "`nCannot continue without Rust. Press Enter to exit..." -ForegroundColor Red
-        Read-Host
         exit 1
     }
     Write-Ok "Rust installed ($(rustc --version))"
@@ -186,14 +182,9 @@ if ($HasTeVirtualMidi) {
         Write-Host ""
         Write-Host "    The client will build and install, but virtual MIDI ports won't work" -ForegroundColor Yellow
         Write-Host "    until the driver is installed." -ForegroundColor Yellow
+        Write-Host "    Download from: https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
         Write-Host ""
-
-        $response = Read-Host "    Continue anyway? (Y/n)"
-        if ($response -eq 'n' -or $response -eq 'N') {
-            Write-Host "    Opening download page..."
-            Start-Process "https://www.tobias-erichsen.de/software/virtualmidi.html"
-            exit 0
-        }
+        Write-Warn "Continuing without teVirtualMIDI driver..."
     }
 }
 
@@ -272,8 +263,6 @@ try {
     }
 } catch {
     Write-Err "Failed to fetch source: $_"
-    Write-Host "`nCannot continue without source. Press Enter to exit..." -ForegroundColor Red
-    Read-Host
     exit 1
 }
 
@@ -283,8 +272,6 @@ Set-Location $SrcDir
 cargo build --release -p midi-client -p midi-cli -p midi-tray
 if ($LASTEXITCODE -ne 0) {
     Write-Err "Build failed. Check errors above."
-    Write-Host "`nCannot continue without a successful build. Press Enter to exit..." -ForegroundColor Red
-    Read-Host
     exit 1
 }
 Write-Ok "Build complete"

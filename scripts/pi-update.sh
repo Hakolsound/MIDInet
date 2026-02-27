@@ -52,25 +52,38 @@ git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse --short HEAD)
 
 NEED_BUILD=true
-if [ "$BEFORE" = "$AFTER" ] && [ "$FORCE" = false ]; then
-    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — skipping build"
-    NEED_BUILD=false
-else
+
+# Check if installed binaries match current HEAD
+INSTALLED_HASH=$(cat /usr/local/bin/.midinet-version 2>/dev/null || echo "none")
+BINARIES_MATCH=false
+if [ "$INSTALLED_HASH" = "$AFTER" ]; then
+    BINARIES_MATCH=true
+fi
+
+if [ "$FORCE" = true ]; then
     if [ "$BEFORE" != "$AFTER" ]; then
         echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
-        echo ""
-        echo "  Changes:"
-        git log --oneline "$BEFORE..$AFTER" | head -10 | sed 's/^/    /'
-        echo ""
-        # Skip build if only non-Rust files changed (scripts, deploy, docs, etc.)
-        RUST_CHANGES=$(git diff --name-only "$BEFORE..$AFTER" -- 'crates/' 'Cargo.toml' 'Cargo.lock' | head -1)
-        if [ -z "$RUST_CHANGES" ]; then
-            echo -e "    ${CYAN}ℹ${NC}  No Rust source changes — skipping build"
-            NEED_BUILD=false
-        fi
     else
         echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — forced rebuild"
     fi
+elif [ "$BINARIES_MATCH" = true ]; then
+    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — binaries match"
+    NEED_BUILD=false
+elif [ "$BEFORE" != "$AFTER" ]; then
+    echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
+    echo ""
+    echo "  Changes:"
+    git log --oneline "$BEFORE..$AFTER" | head -10 | sed 's/^/    /'
+    echo ""
+    # Skip build if only non-Rust files changed (scripts, deploy, docs, etc.)
+    RUST_CHANGES=$(git diff --name-only "$BEFORE..$AFTER" -- 'crates/' 'Cargo.toml' 'Cargo.lock' | head -1)
+    if [ -z "$RUST_CHANGES" ]; then
+        echo -e "    ${CYAN}ℹ${NC}  No Rust source changes — skipping build"
+        NEED_BUILD=false
+    fi
+else
+    # Source unchanged but binaries are stale (e.g. user ran git pull separately)
+    echo -e "    ${GREEN}✓${NC} Source up-to-date ($AFTER) — binaries stale, rebuilding"
 fi
 
 # Ensure Rust toolchain is available under sudo.
@@ -136,6 +149,8 @@ if [ "$NEED_BUILD" = true ]; then
     install -m 755 "$MIDINET_DIR/target/release/midi-host"  /usr/local/bin/midi-host
     install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admin
     install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
+    # Stamp installed version so future runs can detect stale binaries
+    echo "$AFTER" > /usr/local/bin/.midinet-version
 fi
 
 # Update systemd units in case they changed

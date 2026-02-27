@@ -266,9 +266,18 @@ pub async fn set_midi_device(
         }
     }
 
+    // Persist as auto:DeviceName so the host resolves by name at startup.
+    // This avoids storing hw:N,0,0 which changes when devices are re-plugged
+    // or on reboot (ALSA card numbers are not stable).
+    let config_value = if device_id.starts_with("hw:") {
+        format!("auto:{}", device_name)
+    } else {
+        device_id.clone()
+    };
+
     // Update state based on role
     if role == "active" {
-        *state.inner.active_device.write().await = Some(device_id.clone());
+        *state.inner.active_device.write().await = Some(config_value.clone());
         {
             let mut status = state.inner.midi_device_status.write().await;
             *status = MidiDeviceStatus {
@@ -283,7 +292,7 @@ pub async fn set_midi_device(
             ir.primary_health = "active".to_string();
         }
     } else {
-        *state.inner.backup_device.write().await = Some(device_id.clone());
+        *state.inner.backup_device.write().await = Some(config_value.clone());
         // Update input redundancy secondary device and enable it
         {
             let mut ir = state.inner.input_redundancy.write().await;
@@ -304,12 +313,12 @@ pub async fn set_midi_device(
         }));
     }
 
-    info!(device = %device_id, role = %role, "MIDI device assigned via settings API");
+    info!(device = %config_value, role = %role, "MIDI device assigned via settings API");
 
     Json(json!({
         "success": true,
         "role": role,
-        "device": device_id,
+        "device": config_value,
         "status": if role == "active" { "switching" } else { "assigned" },
         "note": "Device change persisted. The host daemon will pick up the new device on its next config reload."
     }))
