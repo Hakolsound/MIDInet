@@ -72,15 +72,27 @@ else
     echo ""
 fi
 
-# Ensure cargo is on PATH (sudo doesn't inherit user PATH)
-for cargo_bin in /home/pi/.cargo/bin /root/.cargo/bin /usr/local/cargo/bin; do
-    if [ -x "$cargo_bin/cargo" ]; then
-        export PATH="$cargo_bin:$PATH"
+# Ensure Rust toolchain is available under sudo.
+# rustup uses RUSTUP_HOME and CARGO_HOME to locate its config and binaries.
+# Under sudo, $HOME is /root so it can't find the pi user's installation.
+RUST_USER_HOME=""
+for candidate in /home/pi /root; do
+    if [ -d "$candidate/.cargo/bin" ] && [ -d "$candidate/.rustup" ]; then
+        RUST_USER_HOME="$candidate"
         break
     fi
 done
+
+if [ -n "$RUST_USER_HOME" ]; then
+    export CARGO_HOME="$RUST_USER_HOME/.cargo"
+    export RUSTUP_HOME="$RUST_USER_HOME/.rustup"
+    export PATH="$CARGO_HOME/bin:$PATH"
+fi
+
 if ! command -v cargo &>/dev/null; then
-    echo -e "${RED}cargo not found. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+    echo -e "${RED}cargo not found. Install Rust as the pi user:${NC}"
+    echo -e "${RED}  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+    echo -e "${RED}  rustup default stable${NC}"
     exit 1
 fi
 
