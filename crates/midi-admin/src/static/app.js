@@ -79,7 +79,7 @@ const INIT = {
     traffic: { midi_in_per_sec: 0, midi_out_per_sec: 0, osc_per_sec: 0, api_per_sec: 0, ws_connections: 0 },
     input_redundancy: { enabled: false, active_input: 0, active_label: 'primary', primary_health: 'unknown', secondary_health: 'unknown', primary_device: '', secondary_device: '', switch_count: 0, auto_switch_enabled: true, last_switch: null },
     host_count: 0, client_count: 0, active_alerts: 0,
-    settings: { midi_device_status: 'disconnected', osc_port: 8000, osc_status: 'stopped', active_preset: null },
+    settings: { midi_device_status: 'disconnected', osc_port: 9000, osc_status: 'stopped', active_preset: null },
   },
   hosts: [], clients: [], devices: [], alerts: [],
   designatedPrimary: null, designatedFocus: null,

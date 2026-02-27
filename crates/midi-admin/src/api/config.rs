@@ -69,7 +69,7 @@ pub struct OscConfig {
 }
 
 fn default_osc_port() -> u16 {
-    8000
+    9000
 }
 
 impl Default for OscConfig {
