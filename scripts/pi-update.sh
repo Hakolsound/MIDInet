@@ -153,8 +153,11 @@ if [ "$NEED_BUILD" = true ]; then
     echo "$AFTER" > /usr/local/bin/.midinet-version
 fi
 
-# Write source directory marker so the admin service can find it for update checks
+# Write markers so the admin service can check for updates without repo access.
+# src-dir: path to git repo (for run_update to find the update script)
+# git-remote: origin URL so ls-remote works without traversing the repo
 echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
+git -C "$MIDINET_DIR" remote get-url origin > /var/lib/midinet/git-remote 2>/dev/null || true
 
 # Ensure the midi user (admin service) can read the repo for update checks.
 # Allow traversal into the parent dir (e.g. /home/pi) without listing permission,

@@ -28,21 +28,27 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
     let midi_rate = midi.messages_in_per_sec;
     drop(midi);
 
-    // Return safety info so the frontend can display warnings,
-    // but don't block — the frontend handles confirmation
-    let src_dir = find_src_dir();
-    let script = src_dir
-        .as_ref()
-        .map(|d| d.join("scripts").join("pi-update.sh"));
-
-    if script.as_ref().map_or(true, |s| !s.exists()) {
+    // Use the installed midinet-update command (installed by pi-update.sh / pi-provision.sh).
+    // Falls back to locating the script in the source tree if the command isn't installed yet.
+    let script_path = if std::path::Path::new("/usr/local/bin/midinet-update").exists() {
+        std::path::PathBuf::from("/usr/local/bin/midinet-update")
+    } else if let Some(src_dir) = find_src_dir() {
+        let script = src_dir.join("scripts").join("pi-update.sh");
+        if script.exists() {
+            script
+        } else {
+            return Json(json!({
+                "success": false,
+                "error": "Update script not found. Run: sudo install -m 755 <repo>/scripts/pi-update.sh /usr/local/bin/midinet-update",
+            }));
+        }
+    } else {
         return Json(json!({
             "success": false,
-            "error": "Update script not found",
+            "error": "Update script not found. Run: sudo install -m 755 <repo>/scripts/pi-update.sh /usr/local/bin/midinet-update",
         }));
-    }
+    };
 
-    let script_path = script.unwrap();
     info!(script = %script_path.display(), "Launching host update");
 
     // Spawn the update script as a detached background process
@@ -76,23 +82,45 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
 }
 
 fn git_update_check() -> Value {
-    let src_dir = match find_src_dir() {
-        Some(d) => d,
-        None => {
-            return json!({
-                "available": false,
-                "error": "Source directory not found",
-            })
+    let branch = midi_protocol::GIT_BRANCH;
+
+    // Current hash: version stamp written by pi-update.sh, or compiled-in fallback
+    let current = std::fs::read_to_string("/usr/local/bin/.midinet-version")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| midi_protocol::GIT_HASH.to_string());
+
+    // Remote URL: marker written by pi-update.sh (no repo access needed)
+    let remote_url = match std::fs::read_to_string("/var/lib/midinet/git-remote") {
+        Ok(url) if !url.trim().is_empty() => url.trim().to_string(),
+        _ => {
+            // Try reading from repo if accessible
+            find_src_dir()
+                .and_then(|d| {
+                    std::process::Command::new("git")
+                        .args(["remote", "get-url", "origin"])
+                        .current_dir(&d)
+                        .output()
+                        .ok()
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+                .unwrap_or_default()
         }
     };
 
-    let branch = midi_protocol::GIT_BRANCH;
+    if remote_url.is_empty() {
+        return json!({
+            "available": false,
+            "error": "Git remote URL not found. Run sudo midinet-update once to set it up.",
+        });
+    }
 
-    // Query remote using ls-remote (read-only — no write access to .git needed).
-    // This avoids permission issues when the admin service runs as a different user.
+    // Query remote using ls-remote with the URL directly (no repo access needed)
     let latest = match std::process::Command::new("git")
-        .args(["ls-remote", "--heads", "origin", &format!("refs/heads/{}", branch)])
-        .current_dir(&src_dir)
+        .args(["ls-remote", "--heads", &remote_url, &format!("refs/heads/{}", branch)])
         .output()
     {
         Err(e) => {
@@ -120,8 +148,6 @@ fn git_update_check() -> Value {
         }
     };
 
-    let current = git_rev_parse(&src_dir, "HEAD");
-
     if current.is_empty() || latest.is_empty() {
         return json!({
             "available": false,
@@ -137,21 +163,10 @@ fn git_update_check() -> Value {
         });
     }
 
-    // Try to collect changelog from locally-cached refs (may be stale, that's OK)
-    let changelog: Vec<String> = std::process::Command::new("git")
-        .args(["log", "--oneline", &format!("HEAD..origin/{}", branch)])
-        .current_dir(&src_dir)
-        .output()
-        .ok()
-        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
-        .map(|s| s.lines().take(10).map(|l| l.to_string()).collect())
-        .unwrap_or_default();
-
     json!({
         "available": true,
         "current_hash": current,
         "latest_hash": latest,
-        "changelog": changelog,
     })
 }
 
@@ -195,13 +210,3 @@ fn find_src_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-fn git_rev_parse(dir: &std::path::Path, rev: &str) -> String {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--short", rev])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
