@@ -72,6 +72,21 @@ else
     echo ""
 fi
 
+# Ensure cargo is on PATH (rustup installs to pi user's home)
+if ! command -v cargo &>/dev/null; then
+    for env_file in /home/pi/.cargo/env /root/.cargo/env; do
+        if [ -f "$env_file" ]; then
+            # shellcheck disable=SC1090
+            source "$env_file"
+            break
+        fi
+    done
+fi
+if ! command -v cargo &>/dev/null; then
+    echo -e "${RED}cargo not found. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+    exit 1
+fi
+
 # Build
 echo -e "${CYAN}[2/4]${NC} Building release..."
 cargo build --release 2>&1 | tail -3
