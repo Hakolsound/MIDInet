@@ -156,6 +156,13 @@ fi
 # Write source directory marker so the admin service can find it for update checks
 echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
 
+# Ensure the midi user (admin service) can read the repo for update checks.
+# Allow traversal into the parent dir (e.g. /home/pi) without listing permission,
+# and make the repo itself world-readable.
+chmod o+x "$(dirname "$MIDINET_DIR")"
+find "$MIDINET_DIR" -type d -exec chmod o+rx {} + 2>/dev/null || true
+find "$MIDINET_DIR" -type f -exec chmod o+r {} + 2>/dev/null || true
+
 # Ensure midinet-update command exists (may be missing on manually-set-up Pis)
 install -m 755 "$MIDINET_DIR/scripts/pi-update.sh" /usr/local/bin/midinet-update
 

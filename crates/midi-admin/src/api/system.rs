@@ -88,30 +88,39 @@ fn git_update_check() -> Value {
 
     let branch = midi_protocol::GIT_BRANCH;
 
-    // Fetch latest
-    match std::process::Command::new("git")
-        .args(["fetch", "origin"])
+    // Query remote using ls-remote (read-only — no write access to .git needed).
+    // This avoids permission issues when the admin service runs as a different user.
+    let latest = match std::process::Command::new("git")
+        .args(["ls-remote", "--heads", "origin", &format!("refs/heads/{}", branch)])
         .current_dir(&src_dir)
         .output()
     {
         Err(e) => {
             return json!({
                 "available": false,
-                "error": format!("git fetch failed: {}", e),
+                "error": format!("git ls-remote failed: {}", e),
             });
         }
         Ok(output) if !output.status.success() => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return json!({
                 "available": false,
-                "error": format!("git fetch failed (exit {}): {}", output.status, stderr.trim()),
+                "error": format!("git ls-remote failed (exit {}): {}", output.status, stderr.trim()),
             });
         }
-        _ => {}
-    }
+        Ok(output) => {
+            // Output format: "<full-hash>\trefs/heads/<branch>"
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(7)
+                .collect::<String>()
+        }
+    };
 
     let current = git_rev_parse(&src_dir, "HEAD");
-    let latest = git_rev_parse(&src_dir, &format!("origin/{}", branch));
 
     if current.is_empty() || latest.is_empty() {
         return json!({
@@ -128,13 +137,13 @@ fn git_update_check() -> Value {
         });
     }
 
-    // Collect changelog
+    // Try to collect changelog from locally-cached refs (may be stale, that's OK)
     let changelog: Vec<String> = std::process::Command::new("git")
-        .args(["log", "--oneline", &format!("{}..{}", current, latest)])
+        .args(["log", "--oneline", &format!("HEAD..origin/{}", branch)])
         .current_dir(&src_dir)
         .output()
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
         .map(|s| s.lines().take(10).map(|l| l.to_string()).collect())
         .unwrap_or_default();
 
@@ -150,9 +159,11 @@ fn find_src_dir() -> Option<std::path::PathBuf> {
     // Check marker file written by pi-update.sh / pi-provision.sh
     // This is the most reliable method since the update scripts know the exact path
     // and the marker is in a directory the admin service always has access to.
+    // We trust the marker without checking .git — the admin user may not have
+    // traversal permission to the parent dir until pi-update.sh fixes permissions.
     if let Ok(path) = std::fs::read_to_string("/var/lib/midinet/src-dir") {
         let dir = std::path::PathBuf::from(path.trim());
-        if dir.join(".git").exists() {
+        if dir.as_os_str().len() > 1 {
             return Some(dir);
         }
     }
