@@ -324,8 +324,18 @@ async fn main() -> anyhow::Result<()> {
 
     let (unicast_tx, unicast_rx) = watch::channel(Vec::<SocketAddrV4>::new());
 
+    // Resolve "auto" / "auto:NAME" to a concrete hw: device path
+    let resolved_device = usb_detector::resolve_device(&config.midi.device);
+    if resolved_device != config.midi.device {
+        info!(
+            configured = %config.midi.device,
+            resolved = %resolved_device,
+            "Resolved MIDI device"
+        );
+    }
+
     // Read device identity from ALSA before creating shared state
-    let device_identity = usb_detector::read_device_identity(&config.midi.device);
+    let device_identity = usb_detector::read_device_identity(&resolved_device);
     info!(device_name = %device_identity.name, "Device identity loaded");
 
     let state = Arc::new(SharedState {
@@ -352,7 +362,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn primary MIDI reader
     let reader_primary_handle = {
-        let device = config.midi.device.clone();
+        let device = resolved_device.clone();
         let tx = health_tx.clone();
         tokio::spawn(async move {
             let tagged_tx = TaggedHealthTx::new(0, tx);
@@ -472,7 +482,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create MIDI output writer — sends feedback to ALL connected controllers
     let midi_output = {
-        let mut devices: Vec<&str> = vec![&config.midi.device];
+        let mut devices: Vec<&str> = vec![&resolved_device];
         if dual_input {
             devices.push(&config.midi.secondary_device);
         }

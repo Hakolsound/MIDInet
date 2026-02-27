@@ -307,7 +307,11 @@ function Footer() {
     try {
       const res = await apiFetch('/api/system/update-check');
       if (!res.available) {
-        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Host is up to date (' + (res.current_hash || '') + ')') });
+        if (res.error) {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Update check failed: ' + res.error) });
+        } else {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Host is up to date (' + (res.current_hash || '') + ')') });
+        }
         return;
       }
       const clientCount = state.clients.length;

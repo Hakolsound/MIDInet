@@ -89,15 +89,25 @@ fn git_update_check() -> Value {
     let branch = midi_protocol::GIT_BRANCH;
 
     // Fetch latest
-    if let Err(e) = std::process::Command::new("git")
+    match std::process::Command::new("git")
         .args(["fetch", "origin"])
         .current_dir(&src_dir)
         .output()
     {
-        return json!({
-            "available": false,
-            "error": format!("git fetch failed: {}", e),
-        });
+        Err(e) => {
+            return json!({
+                "available": false,
+                "error": format!("git fetch failed: {}", e),
+            });
+        }
+        Ok(output) if !output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return json!({
+                "available": false,
+                "error": format!("git fetch failed (exit {}): {}", output.status, stderr.trim()),
+            });
+        }
+        _ => {}
     }
 
     let current = git_rev_parse(&src_dir, "HEAD");

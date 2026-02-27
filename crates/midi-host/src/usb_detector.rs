@@ -3,39 +3,144 @@
 
 use midi_protocol::identity::DeviceIdentity;
 #[cfg(target_os = "linux")]
-use tracing::info;
+use tracing::{info, warn};
 
-/// List all available MIDI devices on the system.
-/// Returns a vector of (device_path, device_name) pairs.
-#[allow(dead_code)]
+/// A discovered MIDI card from /proc/asound/cards.
 #[cfg(target_os = "linux")]
-pub fn list_midi_devices() -> Vec<(String, String)> {
-    // Read from /proc/asound/cards or use ALSA APIs
-    // For now, return a placeholder
-    let mut devices = Vec::new();
-
-    // Try to enumerate ALSA rawmidi devices
-    if let Ok(entries) = std::fs::read_dir("/dev/snd") {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("midi") {
-                let path = entry.path().to_string_lossy().to_string();
-                devices.push((path, name));
-            }
-        }
-    }
-
-    devices
+struct MidiCard {
+    card_num: u32,
+    /// Short name from the first line (e.g., "APC40 mkII")
+    name: String,
+    /// Whether /proc/asound/cardN/usbid exists (USB device vs built-in)
+    is_usb: bool,
 }
 
-#[allow(dead_code)]
+/// Scan /proc/asound/cards for cards that have MIDI ports.
+/// Returns only cards where /proc/asound/cardN/midi0 exists.
+#[cfg(target_os = "linux")]
+fn scan_midi_cards() -> Vec<MidiCard> {
+    let cards_content = match std::fs::read_to_string("/proc/asound/cards") {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+
+    for line in cards_content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.as_bytes()[0].is_ascii_digit() {
+            continue;
+        }
+
+        let card_num: u32 = match trimmed.split_whitespace().next().and_then(|s| s.parse().ok()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        // Only include cards that have actual MIDI ports
+        let midi_path = format!("/proc/asound/card{}/midi0", card_num);
+        if !std::path::Path::new(&midi_path).exists() {
+            continue;
+        }
+
+        // Extract name from "USB-Audio - APC40 mkII"
+        let name = if let Some(pos) = trimmed.find(" - ") {
+            trimmed[pos + 3..].trim().to_string()
+        } else {
+            format!("Card {}", card_num)
+        };
+
+        let is_usb = std::path::Path::new(&format!("/proc/asound/card{}/usbid", card_num)).exists();
+
+        result.push(MidiCard { card_num, name, is_usb });
+    }
+
+    result
+}
+
+/// Resolve a device config string to a concrete ALSA hw: device path.
+///
+/// Supported formats:
+///   - `"hw:3,0,0"` — passed through as-is
+///   - `"auto"`      — first USB MIDI device found (skips HDMI/built-in)
+///   - `"auto:APC40"` — first USB MIDI device whose name contains "APC40" (case-insensitive)
+///
+/// Returns the resolved device string (e.g., `"hw:3,0,0"`), or the original
+/// string unchanged if it's already a concrete path or resolution fails.
+#[cfg(target_os = "linux")]
+pub fn resolve_device(device: &str) -> String {
+    // Already a concrete device path — pass through
+    if device.starts_with("hw:") || device.starts_with("/dev/") {
+        return device.to_string();
+    }
+
+    // Parse "auto" or "auto:PATTERN"
+    if !device.starts_with("auto") {
+        return device.to_string();
+    }
+
+    let pattern = device.strip_prefix("auto:").or_else(|| device.strip_prefix("auto"));
+    let pattern = pattern.unwrap_or("").trim();
+    let has_pattern = !pattern.is_empty() && pattern != "auto";
+
+    let cards = scan_midi_cards();
+    if cards.is_empty() {
+        warn!("No MIDI devices found in /proc/asound/cards");
+        return device.to_string();
+    }
+
+    // If a name pattern is given, match against it (case-insensitive)
+    if has_pattern {
+        let pat_lower = pattern.to_lowercase();
+        if let Some(card) = cards.iter().find(|c| c.name.to_lowercase().contains(&pat_lower)) {
+            let resolved = format!("hw:{},0,0", card.card_num);
+            info!(
+                pattern = %pattern,
+                resolved = %resolved,
+                name = %card.name,
+                "Auto-detected MIDI device by name"
+            );
+            return resolved;
+        }
+        warn!(
+            pattern = %pattern,
+            available = ?cards.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            "No MIDI device matched pattern — falling back to first USB device"
+        );
+    }
+
+    // No pattern or pattern didn't match — prefer first USB MIDI device
+    if let Some(card) = cards.iter().find(|c| c.is_usb) {
+        let resolved = format!("hw:{},0,0", card.card_num);
+        info!(
+            resolved = %resolved,
+            name = %card.name,
+            "Auto-detected USB MIDI device"
+        );
+        return resolved;
+    }
+
+    // Last resort: first MIDI device of any kind
+    let card = &cards[0];
+    let resolved = format!("hw:{},0,0", card.card_num);
+    warn!(
+        resolved = %resolved,
+        name = %card.name,
+        "No USB MIDI device found — using first available MIDI device"
+    );
+    resolved
+}
+
 #[cfg(not(target_os = "linux"))]
-pub fn list_midi_devices() -> Vec<(String, String)> {
-    Vec::new()
+pub fn resolve_device(device: &str) -> String {
+    device.to_string()
 }
 
 /// Read device identity from an ALSA device.
 /// Extracts name, manufacturer, VID/PID from the ALSA card info.
+///
+/// The device string should already be resolved (e.g., "hw:3,0,0").
+/// Call `resolve_device()` first if the input may be "auto".
 #[cfg(target_os = "linux")]
 pub fn read_device_identity(device: &str) -> DeviceIdentity {
     info!(device = %device, "Reading device identity");
