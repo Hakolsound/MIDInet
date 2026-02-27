@@ -6,17 +6,17 @@
 # before replacing binaries to prevent stale versions.
 #
 # Usage (one-liner - run in PowerShell as Administrator):
-#   powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-windows.ps1 | iex"
+#   powershell -NoExit -Command "irm https://raw.githubusercontent.com/Hakolsound/MIDInet/v3.1/scripts/client-install-windows.ps1 | iex"
 #
 # Or clone first:
 #   git clone https://github.com/Hakolsound/MIDInet.git
 #   cd MIDInet; .\scripts\client-install-windows.ps1
 #
 # Environment variables:
-#   $env:MIDINET_BRANCH  - git branch (default: main)
+#   $env:MIDINET_BRANCH  - git branch (default: v3.1)
 # ──────────────────────────────────────────────────────────────
 
-$Branch = if ($env:MIDINET_BRANCH) { $env:MIDINET_BRANCH } else { "main" }
+$Branch = if ($env:MIDINET_BRANCH) { $env:MIDINET_BRANCH } else { "v3.1" }
 $RepoUrl = "https://github.com/Hakolsound/MIDInet.git"
 $InstallDir = "$env:LOCALAPPDATA\MIDInet"
 $SrcDir = "$InstallDir\src"

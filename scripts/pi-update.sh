@@ -11,7 +11,7 @@
 set -euo pipefail
 
 MIDINET_DIR="${MIDINET_DIR:-/opt/midinet/src}"
-BRANCH="${MIDINET_BRANCH:-main}"
+BRANCH="${MIDINET_BRANCH:-v3.1}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

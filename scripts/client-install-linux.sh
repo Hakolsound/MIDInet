@@ -4,18 +4,18 @@
 # Clones from GitHub, builds natively, and installs as a systemd user service.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/client-install-linux.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/v3.1/scripts/client-install-linux.sh | bash
 #
 # Or clone first:
 #   git clone https://github.com/Hakolsound/MIDInet.git
 #   cd MIDInet && bash scripts/client-install-linux.sh
 #
 # Environment variables:
-#   MIDINET_BRANCH  — git branch (default: main)
+#   MIDINET_BRANCH  — git branch (default: v3.1)
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
-BRANCH="${MIDINET_BRANCH:-main}"
+BRANCH="${MIDINET_BRANCH:-v3.1}"
 REPO_URL="https://github.com/Hakolsound/MIDInet.git"
 INSTALL_DIR="$HOME/.midinet"
 SRC_DIR="$INSTALL_DIR/src"

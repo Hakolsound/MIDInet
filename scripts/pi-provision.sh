@@ -4,20 +4,20 @@
 # Clones the repo from GitHub, builds natively, and installs.
 #
 # Usage (run on the Pi over SSH):
-#   curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/main/scripts/pi-provision.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/Hakolsound/MIDInet/v3.1/scripts/pi-provision.sh | sudo bash
 #
 # Or clone first, then run:
 #   git clone https://github.com/Hakolsound/MIDInet.git
 #   cd MIDInet && sudo bash scripts/pi-provision.sh
 #
 # Environment variables:
-#   MIDINET_BRANCH  — git branch to build (default: main)
+#   MIDINET_BRANCH  — git branch to build (default: v3.1)
 #   MIDINET_DIR     — clone directory (default: /opt/midinet/src)
 #   SKIP_SETUP      — set to 1 to skip system tuning (for re-deploys)
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
-BRANCH="${MIDINET_BRANCH:-main}"
+BRANCH="${MIDINET_BRANCH:-v3.1}"
 MIDINET_DIR="${MIDINET_DIR:-/opt/midinet/src}"
 REPO_URL="https://github.com/Hakolsound/MIDInet.git"
 
