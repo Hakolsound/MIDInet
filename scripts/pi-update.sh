@@ -86,8 +86,8 @@ if ! command -v cargo &>/dev/null; then
 fi
 
 # Build
-echo -e "${CYAN}[2/4]${NC} Building release..."
-cargo build --release -p midi-host -p midi-admin -p midi-cli 2>&1 | tail -3
+echo -e "${CYAN}[2/4]${NC} Building release (first build may take 15+ min on ARM)..."
+cargo build --release -p midi-host -p midi-admin -p midi-cli
 echo -e "    ${GREEN}✓${NC} Build complete"
 
 # Stop services
