@@ -1,9 +1,11 @@
 use axum::extract::State;
 use axum::Json;
 use serde_json::{json, Value};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::state::AppState;
+
+pub(crate) const UPDATE_LOG_PATH: &str = "/var/lib/midinet/update.log";
 
 /// GET /api/system/update-check — check if a newer version is available on origin.
 pub async fn check_update() -> Json<Value> {
@@ -49,24 +51,55 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
         }));
     };
 
-    info!(script = %script_path.display(), "Launching host update");
+    // Create/truncate the log file for output capture
+    let log_file = match std::fs::File::create(UPDATE_LOG_PATH) {
+        Ok(f) => f,
+        Err(e) => {
+            error!(error = %e, "Cannot create update log file");
+            return Json(json!({
+                "success": false,
+                "error": format!("Cannot create log file: {}", e),
+            }));
+        }
+    };
+    let log_err = match log_file.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            error!(error = %e, "Cannot clone log file handle");
+            return Json(json!({
+                "success": false,
+                "error": format!("Cannot clone log file handle: {}", e),
+            }));
+        }
+    };
 
-    // Spawn the update script as a detached background process
+    info!(script = %script_path.display(), "Launching host update with log capture");
+
+    // Spawn the update script with output redirected to the log file.
+    // The file persists across admin restarts so the frontend can fetch
+    // the final output after reconnecting.
     match std::process::Command::new("sudo")
         .args(["bash", &script_path.to_string_lossy(), "--force"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(log_file)
+        .stderr(log_err)
         .spawn()
     {
         Ok(_) => {
             info!(
                 clients = client_count,
                 midi_rate = midi_rate,
-                "Update script launched — services will restart"
+                "Update script launched — streaming progress"
             );
+
+            // Spawn background task to tail the log file and broadcast lines
+            tokio::spawn({
+                let tx = state.inner.update_log_tx.clone();
+                async move { tail_update_log(tx).await }
+            });
+
             Json(json!({
                 "success": true,
-                "message": "Update started. Services will restart momentarily.",
+                "message": "Update started. Progress will be streamed.",
                 "clients": client_count,
                 "midi_rate": midi_rate,
             }))
@@ -79,6 +112,154 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
             }))
         }
     }
+}
+
+/// GET /api/system/update-status — check update progress and return the log.
+/// Used by the frontend to backfill after reconnecting (admin restart mid-update).
+pub async fn update_status() -> Json<Value> {
+    let log_content = std::fs::read_to_string(UPDATE_LOG_PATH).unwrap_or_default();
+
+    let lines: Vec<String> = log_content
+        .lines()
+        .map(|l| strip_ansi(l))
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let step = parse_update_step(&log_content);
+    let complete = log_content.contains("MIDInet updated and running");
+    let failed = !complete
+        && !log_content.is_empty()
+        && (log_content.contains("exit 1")
+            || log_content.contains("Build failed")
+            || log_content.contains("error[E")
+            || is_stale_log());
+
+    let version = std::fs::read_to_string("/usr/local/bin/.midinet-version")
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    Json(json!({
+        "complete": complete,
+        "failed": failed,
+        "step": step,
+        "total_steps": 4,
+        "lines": lines,
+        "version": version,
+    }))
+}
+
+/// Check if the update log file is stale (no writes in 5 minutes).
+/// If so, the update script likely exited without the success marker.
+fn is_stale_log() -> bool {
+    std::fs::metadata(UPDATE_LOG_PATH)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| t.elapsed().unwrap_or_default().as_secs() > 300)
+        .unwrap_or(false)
+}
+
+/// Parse the highest [N/4] step marker from update log output.
+fn parse_update_step(log: &str) -> u8 {
+    let mut step = 0u8;
+    for line in log.lines() {
+        // Match patterns like [1/4], [2/4], etc.
+        if let Some(bracket) = line.find('[') {
+            let rest = &line[bracket + 1..];
+            if let Some(slash) = rest.find('/') {
+                if let Ok(n) = rest[..slash].parse::<u8>() {
+                    if n > step && n <= 4 {
+                        step = n;
+                    }
+                }
+            }
+        }
+    }
+    step
+}
+
+/// Background task that tails the update log file and broadcasts new lines.
+async fn tail_update_log(tx: tokio::sync::broadcast::Sender<String>) {
+    use tokio::time::{sleep, Duration};
+
+    let mut pos: usize = 0;
+
+    loop {
+        sleep(Duration::from_millis(200)).await;
+
+        let content = match tokio::fs::read_to_string(UPDATE_LOG_PATH).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        if content.len() <= pos {
+            // No new data — check if script finished
+            if pos > 0 && is_stale_log() {
+                debug!("Update log stale, stopping tail");
+                break;
+            }
+            continue;
+        }
+
+        let new_text = &content[pos..];
+        for line in new_text.lines() {
+            let stripped = strip_ansi(line);
+            if !stripped.is_empty() {
+                let _ = tx.send(stripped);
+            }
+        }
+        pos = content.len();
+
+        // Check for completion
+        if content.contains("MIDInet updated and running") {
+            let _ = tx.send("__UPDATE_COMPLETE__".to_string());
+            info!("Update completed successfully");
+            break;
+        }
+        if content.contains("exit 1")
+            || content.contains("Build failed")
+            || content.contains("error[E")
+        {
+            let _ = tx.send("__UPDATE_FAILED__".to_string());
+            warn!("Update script failed");
+            break;
+        }
+    }
+}
+
+/// Strip ANSI escape sequences from a string.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    // CSI sequence — skip until terminator letter
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch.is_ascii_alphabetic() || ch == '~' || ch == '@' {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    // OSC sequence — skip until BEL
+                    while let Some(&ch) = chars.peek() {
+                        chars.next();
+                        if ch == '\x07' {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 fn git_update_check() -> Value {

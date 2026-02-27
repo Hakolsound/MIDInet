@@ -154,6 +154,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         // System management
         .route("/api/system/update-check", get(system::check_update))
         .route("/api/system/update", post(system::run_update))
+        .route("/api/system/update-status", get(system::update_status))
         // Settings
         .route("/api/settings", get(settings::get_settings))
         .route("/api/settings/midi-device", put(settings::set_midi_device))
@@ -172,6 +173,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/ws/device-activity", get(websocket::ws_device_activity_handler))
         .route("/ws/alerts", get(websocket::ws_alerts_handler))
         .route("/ws/traffic", get(websocket::ws_traffic_handler))
+        .route("/ws/update", get(websocket::ws_update_handler))
         // Auth middleware (only checks /api/* paths, static + ws are exempt)
         .layer(middleware::from_fn(require_auth))
         .layer(Extension(ApiToken(api_token)))

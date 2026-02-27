@@ -87,7 +87,7 @@ const INIT = {
   sparkData: [], toasts: [], warningPopups: [],
   trafficLastSeen: { midi_in: 0, midi_out: 0, osc: 0, api: 0 },
   snifferOpen: false, snifferEntries: [], snifferFilter: 'all',
-  modal: null,
+  modal: null, updateModal: null,
   deviceActivity: {}, identifyActive: {},
   mutedAlerts: {},  // { [source]: true } — cleared on page reload
 };
@@ -162,6 +162,35 @@ function reducer(state, action) {
       const next = { ...state.identifyActive }; delete next[action.deviceId];
       return { ...state, identifyActive: next };
     }
+    // ── Update progress modal ──
+    case 'UPDATE_OPEN': return { ...state, updateModal: { phase: 'streaming', lines: [], step: 0, totalSteps: 4 } };
+    case 'UPDATE_LINE': {
+      const um = state.updateModal; if (!um) return state;
+      const lines = [...um.lines, action.text];
+      let step = um.step;
+      const m = action.text.match(/\[(\d+)\/4\]/);
+      if (m) step = parseInt(m[1]);
+      return { ...state, updateModal: { ...um, lines, step } };
+    }
+    case 'UPDATE_BACKFILL': {
+      const um = state.updateModal; if (!um) return state;
+      let step = um.step;
+      action.lines.forEach(l => { const m = l.match(/\[(\d+)\/4\]/); if (m) step = Math.max(step, parseInt(m[1])); });
+      return { ...state, updateModal: { ...um, lines: action.lines, step } };
+    }
+    case 'UPDATE_PHASE': {
+      const um = state.updateModal; if (!um) return state;
+      return { ...state, updateModal: { ...um, phase: action.phase } };
+    }
+    case 'UPDATE_COMPLETE': {
+      const um = state.updateModal; if (!um) return state;
+      return { ...state, updateModal: { ...um, phase: 'complete', step: um.totalSteps } };
+    }
+    case 'UPDATE_FAILED': {
+      const um = state.updateModal; if (!um) return state;
+      return { ...state, updateModal: { ...um, phase: 'failed' } };
+    }
+    case 'UPDATE_CLOSE': return { ...state, updateModal: null };
     default: return state;
   }
 }
@@ -336,7 +365,7 @@ function Footer() {
         onConfirm: async () => {
           const r = await apiFetch('/api/system/update', { method: 'POST' });
           if (r.success) {
-            dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Update started — services will restart') });
+            dispatch({ type: 'UPDATE_OPEN' });
           } else {
             dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Update failed') });
           }
@@ -393,6 +422,122 @@ function ConfirmModal() {
       <div class="modal-footer">
         <button class="btn" onClick=${close}>Cancel</button>
         <button class="btn ${m.cls || 'btn-accent'}" onClick=${confirm}>${m.ok || 'Confirm'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Update Progress Modal ────────────────────────────────────
+function UpdateProgressModal() {
+  const { state, dispatch } = useContext(AppContext);
+  const um = state.updateModal;
+  if (!um) return null;
+
+  const termRef = useRef(null);
+  const wsRef = useRef(null);
+  const pollRef = useRef(null);
+
+  // Auto-scroll terminal
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
+  }, [um.lines.length]);
+
+  // WebSocket for live streaming
+  useEffect(() => {
+    if (um.phase !== 'streaming') return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/update`);
+    wsRef.current = ws;
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'line') dispatch({ type: 'UPDATE_LINE', text: msg.text });
+        else if (msg.type === 'complete') dispatch({ type: 'UPDATE_COMPLETE' });
+        else if (msg.type === 'failed') dispatch({ type: 'UPDATE_FAILED' });
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      // Admin probably died during service restart
+      dispatch({ type: 'UPDATE_PHASE', phase: 'disconnected' });
+    };
+    ws.onerror = () => ws.close();
+    return () => { ws.onclose = null; ws.close(); };
+  }, [um.phase === 'streaming']);
+
+  // Transition from disconnected to reconnecting after a short pause
+  useEffect(() => {
+    if (um.phase !== 'disconnected') return;
+    const t = setTimeout(() => dispatch({ type: 'UPDATE_PHASE', phase: 'reconnecting' }), 2000);
+    return () => clearTimeout(t);
+  }, [um.phase === 'disconnected']);
+
+  // Poll for reconnection
+  useEffect(() => {
+    if (um.phase !== 'reconnecting') return;
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch('/api/system/update-status');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.lines && data.lines.length) dispatch({ type: 'UPDATE_BACKFILL', lines: data.lines });
+        if (data.complete) dispatch({ type: 'UPDATE_COMPLETE' });
+        else if (data.failed) dispatch({ type: 'UPDATE_FAILED' });
+      } catch { /* admin not back yet */ }
+    }, 2000);
+    pollRef.current = poll;
+    return () => clearInterval(poll);
+  }, [um.phase === 'reconnecting']);
+
+  const progress = um.phase === 'complete' ? 100 : Math.round((um.step / um.totalSteps) * 100);
+  const statusColor = um.phase === 'complete' ? 'var(--green)'
+    : um.phase === 'failed' ? 'var(--red)' : 'var(--accent)';
+  const statusText = { streaming: 'Updating...', disconnected: 'Services restarting...', reconnecting: 'Reconnecting...', complete: 'Update complete!', failed: 'Update failed' }[um.phase] || '';
+
+  const steps = [
+    { n: 1, label: 'Pull' },
+    { n: 2, label: 'Build' },
+    { n: 3, label: 'Stop' },
+    { n: 4, label: 'Restart' },
+  ];
+
+  return html`<div class="modal-backdrop open" style="z-index:500">
+    <div class="update-modal" onClick=${(e) => e.stopPropagation()}>
+      <div class="update-modal-header">
+        <span>Updating MIDInet</span>
+        <span class="update-status" style="color:${statusColor}">${statusText}</span>
+      </div>
+      <div class="update-progress-bar">
+        <div class="update-progress-fill" style="width:${progress}%;background:${statusColor}" />
+      </div>
+      <div class="update-steps">
+        ${steps.map(s => html`<div class="update-step ${um.step > s.n ? 'done' : um.step === s.n ? 'active' : ''}" key=${s.n}>
+          <span class="update-step-num">${um.step > s.n ? '\u2713' : s.n}</span>
+          <span class="update-step-label">${s.label}</span>
+        </div>`)}
+      </div>
+      <div class="update-terminal" ref=${termRef}>
+        ${um.lines.length === 0 && html`<div class="update-terminal-line" style="color:var(--text-3)">Waiting for output...</div>`}
+        ${um.lines.map((line, i) => html`<div class="update-terminal-line" key=${i}>${line}</div>`)}
+        ${(um.phase === 'disconnected' || um.phase === 'reconnecting') && html`
+          <div class="update-terminal-line update-terminal-system">--- Admin service restarting ---</div>
+          <div class="update-terminal-line update-terminal-system">Waiting for reconnection...</div>
+        `}
+        ${um.phase === 'complete' && html`
+          <div class="update-terminal-line" style="color:var(--green);font-weight:600">Update complete!</div>
+        `}
+      </div>
+      <div class="update-modal-footer">
+        ${(um.phase === 'complete' || um.phase === 'failed') ? html`
+          <button class="btn ${um.phase === 'complete' ? 'btn-accent' : 'btn-danger'}"
+            onClick=${() => { dispatch({ type: 'UPDATE_CLOSE' }); if (um.phase === 'complete') window.location.reload(); }}>
+            ${um.phase === 'complete' ? 'Done' : 'Close'}
+          </button>
+        ` : html`
+          <div class="update-spinner" />
+          <span style="font-size:11px;color:var(--text-3)">Do not close this tab</span>
+        `}
       </div>
     </div>
   </div>`;
@@ -1361,6 +1506,7 @@ function App() {
     </main>
     <${Footer} />
     <${ConfirmModal} />
+    <${UpdateProgressModal} />
     <${ToastContainer} />
     <${WarningPopupContainer} />
     <${SnifferDrawer} />

@@ -291,6 +291,8 @@ pub struct AppStateInner {
     pub designated_primary: RwLock<Option<u8>>,
     /// Designated focus client ID (user-selected focus holder)
     pub designated_focus: RwLock<Option<u32>>,
+    /// Broadcast channel for update log lines (streamed to /ws/update)
+    pub update_log_tx: broadcast::Sender<String>,
 }
 
 impl AppState {
@@ -327,6 +329,7 @@ impl AppState {
                 identify_requests: RwLock::new(HashMap::new()),
                 designated_primary: RwLock::new(None),
                 designated_focus: RwLock::new(None),
+                update_log_tx: broadcast::channel(256).0,
             }),
         }
     }

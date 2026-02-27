@@ -1343,6 +1343,113 @@ a { color: var(--accent); text-decoration: none; }
     gap: 8px;
 }
 
+/* ── Update Progress Modal ── */
+.update-modal {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    width: 560px;
+    max-width: 95vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    transform: scale(.96);
+    animation: update-modal-in .2s var(--ease-out) forwards;
+}
+@keyframes update-modal-in { to { transform: scale(1); } }
+.update-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 10px;
+    font-weight: 600;
+    font-size: 15px;
+}
+.update-status { font-size: 12px; font-weight: 500; }
+.update-progress-bar {
+    height: 3px;
+    background: var(--surface-hi);
+    margin: 0 20px;
+    border-radius: 2px;
+    overflow: hidden;
+}
+.update-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width .5s var(--ease), background .3s;
+}
+.update-steps {
+    display: flex;
+    gap: 0;
+    padding: 12px 20px;
+    border-bottom: 0.5px solid var(--border);
+}
+.update-step {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-3);
+    transition: color .3s;
+}
+.update-step.active { color: var(--accent); }
+.update-step.done { color: var(--green); }
+.update-step-num {
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    font-size: 10px; font-weight: 700;
+    background: var(--surface-hi);
+    flex-shrink: 0;
+}
+.update-step.active .update-step-num {
+    background: rgba(var(--accent-rgb, 59,130,246), 0.15);
+    color: var(--accent);
+    animation: pulse-step 2s ease infinite;
+}
+.update-step.done .update-step-num {
+    background: rgba(var(--green-rgb, 34,197,94), 0.15);
+    color: var(--green);
+}
+@keyframes pulse-step { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.update-step-label { font-weight: 500; white-space: nowrap; }
+.update-terminal {
+    flex: 1;
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.6;
+    background: rgba(0,0,0,0.3);
+    padding: 8px 0;
+}
+.update-terminal-line {
+    padding: 1px 16px;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.update-terminal-line:hover { background: rgba(255,255,255,0.02); }
+.update-terminal-system { color: var(--orange); font-style: italic; }
+.update-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 12px 20px;
+    border-top: 0.5px solid var(--border);
+}
+.update-spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--surface-hi);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: update-spin .8s linear infinite;
+}
+@keyframes update-spin { to { transform: rotate(360deg); } }
+
 /* ── Toast ── */
 .toast-container {
     position: fixed;

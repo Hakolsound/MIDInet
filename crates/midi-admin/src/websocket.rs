@@ -339,3 +339,80 @@ async fn handle_device_activity_ws(mut socket: WebSocket, state: AppState) {
     log_ws_event(&state, "device-activity client disconnected");
     debug!("WebSocket device-activity client disconnected");
 }
+
+// ── Update progress stream ──
+
+/// Handler for /ws/update — live update log stream
+pub async fn ws_update_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_update_ws(socket, state))
+}
+
+async fn handle_update_ws(mut socket: WebSocket, state: AppState) {
+    info!("WebSocket update client connected");
+
+    // Backfill: send any existing log lines so the client catches up
+    if let Ok(content) = std::fs::read_to_string(crate::api::system::UPDATE_LOG_PATH) {
+        for line in content.lines() {
+            let stripped = crate::api::system::strip_ansi(line);
+            if stripped.is_empty() {
+                continue;
+            }
+            let msg = json!({ "type": "line", "text": stripped });
+            if socket
+                .send(Message::Text(msg.to_string().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    // Subscribe to live updates from the tail task
+    let mut rx = state.inner.update_log_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(line) => {
+                        let msg_type = if line == "__UPDATE_COMPLETE__" {
+                            "complete"
+                        } else if line == "__UPDATE_FAILED__" {
+                            "failed"
+                        } else {
+                            "line"
+                        };
+                        let msg = json!({ "type": msg_type, "text": line });
+                        if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                            break;
+                        }
+                        if msg_type != "line" {
+                            break; // Update finished
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!("update ws lagged by {n} messages");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    debug!("WebSocket update client disconnected");
+}
