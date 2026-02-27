@@ -14,8 +14,7 @@ Environment=RUST_LOG=info
 
 # Security hardening
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/midinet /etc/midinet /opt/midinet/src
+ReadWritePaths=/var/lib/midinet /etc/midinet
 NoNewPrivileges=true
 PrivateTmp=true
 
