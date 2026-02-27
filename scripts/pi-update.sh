@@ -4,13 +4,12 @@
 # Pulls latest code from GitHub, rebuilds, and restarts services.
 #
 # Usage:  sudo midinet-update
-#    or:  sudo bash /opt/midinet/src/scripts/pi-update.sh
+#    or:  sudo bash scripts/pi-update.sh  (from repo root)
 #
 # This is installed as /usr/local/bin/midinet-update by pi-provision.sh
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
-MIDINET_DIR="${MIDINET_DIR:-/opt/midinet/src}"
 BRANCH="${MIDINET_BRANCH:-v3.1}"
 FORCE=false
 if [ "${1:-}" = "--force" ]; then
@@ -27,8 +26,16 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-if [ ! -d "$MIDINET_DIR/.git" ]; then
-    echo -e "${RED}Source not found at $MIDINET_DIR. Run pi-provision.sh first.${NC}"
+# Auto-detect source directory
+if [ -n "${MIDINET_DIR:-}" ] && [ -d "$MIDINET_DIR/.git" ]; then
+    : # explicit override, use as-is
+elif [ -d "/opt/midinet/src/.git" ]; then
+    MIDINET_DIR="/opt/midinet/src"
+elif [ -d "/home/pi/MIDInet/.git" ]; then
+    MIDINET_DIR="/home/pi/MIDInet"
+else
+    echo -e "${RED}Source not found. Checked /opt/midinet/src and /home/pi/MIDInet.${NC}"
+    echo -e "${RED}Set MIDINET_DIR or run pi-provision.sh first.${NC}"
     exit 1
 fi
 
