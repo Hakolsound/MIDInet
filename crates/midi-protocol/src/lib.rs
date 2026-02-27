@@ -9,6 +9,16 @@ pub mod ringbuf;
 /// Protocol version
 pub const PROTOCOL_VERSION: u8 = 1;
 
+/// Build info (set by build.rs from git)
+pub const GIT_HASH: &str = env!("MIDINET_GIT_HASH");
+pub const GIT_BRANCH: &str = env!("MIDINET_GIT_BRANCH");
+pub const BUILD_TIME: &str = env!("MIDINET_BUILD_TIME");
+
+/// Human-readable version string: "v3.1 (abc1234)"
+pub fn version_string() -> String {
+    format!("{} ({})", GIT_BRANCH, GIT_HASH)
+}
+
 /// mDNS service type for MIDInet discovery
 pub const MDNS_SERVICE_TYPE: &str = "_midinet._udp.local.";
 

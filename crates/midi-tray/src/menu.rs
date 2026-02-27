@@ -90,6 +90,14 @@ pub fn build_initial_menu() -> Menu {
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
 
+    let _ = menu.append(&MenuItem::with_id(
+        "version_line",
+        &format!("MIDInet {}", midi_protocol::version_string()),
+        false,
+        None::<Accelerator>,
+    ));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+
     let quit_label = if cfg!(target_os = "windows") {
         "Quit MIDInet"
     } else {
@@ -210,6 +218,14 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
 
+    let _ = menu.append(&MenuItem::with_id(
+        "version_line",
+        &format!("MIDInet {}", midi_protocol::version_string()),
+        false,
+        None::<Accelerator>,
+    ));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+
     let quit_label = if cfg!(target_os = "windows") {
         "Quit MIDInet"
     } else {
@@ -261,6 +277,14 @@ pub fn build_disconnected_menu() -> Menu {
         ));
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
+
+    let _ = menu.append(&MenuItem::with_id(
+        "version_line",
+        &format!("MIDInet {}", midi_protocol::version_string()),
+        false,
+        None::<Accelerator>,
+    ));
+    let _ = menu.append(&PredefinedMenuItem::separator());
 
     let quit_label = if cfg!(target_os = "windows") {
         "Quit MIDInet"

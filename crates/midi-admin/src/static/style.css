@@ -393,6 +393,7 @@ a { color: var(--accent); text-decoration: none; }
 .footer-val[data-lv="crit"] { color: var(--red); }
 .footer-val[data-lv="data"] { color: var(--accent); }
 .footer-spacer { flex: 1; }
+.footer-ver { font-family: var(--mono); font-weight: 500; opacity: .7; font-size: 10px; }
 
 /* ── Cards ── */
 .card {

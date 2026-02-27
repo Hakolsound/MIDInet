@@ -16,6 +16,9 @@ pub async fn get_status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
+        "git_hash": midi_protocol::GIT_HASH,
+        "git_branch": midi_protocol::GIT_BRANCH,
+        "build_time": midi_protocol::BUILD_TIME,
         "uptime_seconds": state.uptime_secs(),
         "health_score": sys.health_score,
         "cpu_percent": sys.cpu_percent,
