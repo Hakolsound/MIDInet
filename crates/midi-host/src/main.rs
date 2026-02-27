@@ -326,6 +326,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Resolve "auto" / "auto:NAME" to a concrete hw: device path
     let resolved_device = usb_detector::resolve_device(&config.midi.device);
+    let resolved_secondary = if dual_input {
+        let r = usb_detector::resolve_device(&config.midi.secondary_device);
+        if r != config.midi.secondary_device {
+            info!(
+                configured = %config.midi.secondary_device,
+                resolved = %r,
+                "Resolved secondary MIDI device"
+            );
+        }
+        r
+    } else {
+        String::new()
+    };
     if resolved_device != config.midi.device {
         info!(
             configured = %config.midi.device,
@@ -376,7 +389,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn secondary MIDI reader (only if configured)
     let reader_secondary_handle = if dual_input {
-        let device = config.midi.secondary_device.clone();
+        let device = resolved_secondary.clone();
         let tx = health_tx.clone();
         info!(device = %device, "Input redundancy enabled — spawning secondary MIDI reader");
         Some(tokio::spawn(async move {
@@ -484,7 +497,7 @@ async fn main() -> anyhow::Result<()> {
     let midi_output = {
         let mut devices: Vec<&str> = vec![&resolved_device];
         if dual_input {
-            devices.push(&config.midi.secondary_device);
+            devices.push(&resolved_secondary);
         }
         Arc::new(midi_output::platform::MidiOutputWriter::open(&devices))
     };

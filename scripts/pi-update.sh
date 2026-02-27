@@ -156,6 +156,9 @@ fi
 # Write source directory marker so the admin service can find it for update checks
 echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
 
+# Ensure midinet-update command exists (may be missing on manually-set-up Pis)
+install -m 755 "$MIDINET_DIR/scripts/pi-update.sh" /usr/local/bin/midinet-update
+
 # Update systemd units in case they changed
 install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"  /etc/systemd/system/
 install -m 644 "$MIDINET_DIR/deploy/midinet-admin.service" /etc/systemd/system/
