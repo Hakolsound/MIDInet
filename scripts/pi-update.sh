@@ -87,7 +87,7 @@ fi
 
 # Build
 echo -e "${CYAN}[2/4]${NC} Building release..."
-cargo build --release 2>&1 | tail -3
+cargo build --release -p midi-host -p midi-admin -p midi-cli 2>&1 | tail -3
 echo -e "    ${GREEN}✓${NC} Build complete"
 
 # Stop services
