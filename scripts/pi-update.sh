@@ -52,18 +52,7 @@ git reset --hard "origin/$BRANCH"
 AFTER=$(git rev-parse --short HEAD)
 
 if [ "$BEFORE" = "$AFTER" ]; then
-    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER)"
-    if [ "$FORCE" = true ]; then
-        echo "  --force: rebuilding anyway"
-    else
-        echo ""
-        read -p "  Rebuild anyway? [y/N] " -n 1 -r
-        echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "  Aborted."
-            exit 0
-        fi
-    fi
+    echo -e "    ${GREEN}✓${NC} Already up-to-date ($AFTER) — rebuilding anyway"
 else
     echo -e "    ${GREEN}✓${NC} Updated $BEFORE → $AFTER"
     echo ""
