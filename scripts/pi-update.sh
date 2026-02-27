@@ -72,16 +72,13 @@ else
     echo ""
 fi
 
-# Ensure cargo is on PATH (rustup installs to pi user's home)
-if ! command -v cargo &>/dev/null; then
-    for env_file in /home/pi/.cargo/env /root/.cargo/env; do
-        if [ -f "$env_file" ]; then
-            # shellcheck disable=SC1090
-            source "$env_file"
-            break
-        fi
-    done
-fi
+# Ensure cargo is on PATH (sudo doesn't inherit user PATH)
+for cargo_bin in /home/pi/.cargo/bin /root/.cargo/bin /usr/local/cargo/bin; do
+    if [ -x "$cargo_bin/cargo" ]; then
+        export PATH="$cargo_bin:$PATH"
+        break
+    fi
+done
 if ! command -v cargo &>/dev/null; then
     echo -e "${RED}cargo not found. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
     exit 1
