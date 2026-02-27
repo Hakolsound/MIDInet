@@ -47,8 +47,9 @@ echo -e "${CYAN}[1/4]${NC} Pulling latest from origin/$BRANCH..."
 cd "$MIDINET_DIR"
 BEFORE=$(git rev-parse --short HEAD)
 git fetch origin
-git checkout "$BRANCH"
-git reset --hard "origin/$BRANCH"
+# Use -B to force branch checkout (avoids checking out tag when both tag + branch
+# exist with the same name, which causes detached HEAD)
+git checkout -B "$BRANCH" "origin/$BRANCH"
 AFTER=$(git rev-parse --short HEAD)
 
 NEED_BUILD=true

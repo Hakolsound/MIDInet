@@ -253,8 +253,9 @@ try {
     if (Test-Path "$SrcDir\.git") {
         Set-Location $SrcDir
         git fetch origin
-        git checkout $Branch
-        git reset --hard "origin/$Branch"
+        # Use -B to force branch checkout (avoids checking out tag when both tag + branch
+        # exist with the same name, which causes detached HEAD)
+        git checkout -B $Branch "origin/$Branch"
         Write-Ok "Updated to latest $Branch"
     } else {
         git clone --branch $Branch $RepoUrl $SrcDir
