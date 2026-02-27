@@ -86,8 +86,26 @@ impl ProcessManager {
                     .creation_flags(CREATE_NO_WINDOW)
                     .output();
             }
-            // Brief pause for handles to release
-            std::thread::sleep(Duration::from_millis(500));
+
+            // Wait for the health port to become available (up to 3 seconds).
+            // Killed processes may hold the port briefly while the OS reclaims the socket.
+            let port = midi_protocol::health::DEFAULT_HEALTH_PORT;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    Ok(_listener) => {
+                        // Port is free — drop the listener and proceed
+                        break;
+                    }
+                    Err(_) => {
+                        if Instant::now() >= deadline {
+                            warn!(port = port, "Health port still in use after 3s — proceeding anyway");
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
         }
     }
 

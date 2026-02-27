@@ -1,9 +1,12 @@
 /// Windows virtual MIDI device — orchestrator with dual-backend fallback.
 ///
-/// Strategy:
-/// 1. Try teVirtualMIDI (works on Windows 10 + 11, requires driver install)
-/// 2. If that fails AND we're on Windows 11 → try Windows MIDI Services
-/// 3. If both fail → actionable error message
+/// Strategy (Windows 11+):
+/// 1. Try Windows MIDI Services first (native, no driver install needed)
+/// 2. If that fails → try teVirtualMIDI (requires driver install)
+///
+/// Strategy (Windows 10 and below):
+/// 1. Try teVirtualMIDI (requires driver install)
+/// 2. No MIDI Services fallback available
 ///
 /// The selected backend is transparent to the rest of the codebase —
 /// `WindowsVirtualDevice` implements `VirtualMidiDevice` regardless of which
@@ -83,47 +86,32 @@ impl WindowsVirtualDevice {
     }
 }
 
-impl VirtualMidiDevice for WindowsVirtualDevice {
-    fn create(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
-        // ── Step 1: Try teVirtualMIDI ──
-        info!(name = %identity.name, "Attempting teVirtualMIDI backend...");
-        let mut te_device = TeVirtualMidiDevice::new();
-        match te_device.create(identity) {
+impl WindowsVirtualDevice {
+    /// Windows 11+: try MIDI Services first, fall back to teVirtualMIDI.
+    fn create_win11(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
+        info!(name = %identity.name, "Windows 11 — attempting Windows MIDI Services backend...");
+        let mut ms_device = MidiServicesDevice::new();
+        match ms_device.create(identity) {
             Ok(()) => {
-                info!(name = %identity.name, "Using teVirtualMIDI backend");
-                self.backend = Backend::TeVirtualMidi(te_device);
+                info!(name = %identity.name, "Using Windows MIDI Services backend");
+                self.backend = Backend::MidiServices(ms_device);
                 return Ok(());
             }
             Err(e) => {
                 warn!(
                     name = %identity.name,
                     error = %e,
-                    "teVirtualMIDI failed, checking for fallback..."
+                    "Windows MIDI Services failed, trying teVirtualMIDI..."
                 );
             }
         }
 
-        // ── Step 2: Check if Windows 11 ──
-        if !is_windows_11() {
-            error!(
-                name = %identity.name,
-                "teVirtualMIDI unavailable and not on Windows 11. \
-                 Install the teVirtualMIDI driver from: \
-                 https://www.tobias-erichsen.de/software/virtualmidi.html"
-            );
-            return Err(anyhow::anyhow!(
-                "Virtual MIDI device creation failed. \
-                 Install teVirtualMIDI from https://www.tobias-erichsen.de/software/virtualmidi.html"
-            ));
-        }
-
-        // ── Step 3: Try Windows MIDI Services ──
-        info!(name = %identity.name, "Windows 11 detected — attempting Windows MIDI Services backend...");
-        let mut ms_device = MidiServicesDevice::new();
-        match ms_device.create(identity) {
+        // Fallback: teVirtualMIDI
+        let mut te_device = TeVirtualMidiDevice::new();
+        match te_device.create(identity) {
             Ok(()) => {
-                info!(name = %identity.name, "Using Windows MIDI Services backend");
-                self.backend = Backend::MidiServices(ms_device);
+                info!(name = %identity.name, "Using teVirtualMIDI backend (fallback)");
+                self.backend = Backend::TeVirtualMidi(te_device);
                 Ok(())
             }
             Err(e) => {
@@ -131,14 +119,52 @@ impl VirtualMidiDevice for WindowsVirtualDevice {
                     name = %identity.name,
                     error = %e,
                     "Both backends failed. Options:\n\
-                     1. Install teVirtualMIDI: https://www.tobias-erichsen.de/software/virtualmidi.html\n\
-                     2. Install Windows MIDI Services: winget install Microsoft.WindowsMIDIServicesSDK"
+                     1. Install Windows MIDI Services: winget install Microsoft.WindowsMIDIServicesSDK\n\
+                     2. Install teVirtualMIDI: https://www.tobias-erichsen.de/software/virtualmidi.html"
                 );
                 Err(anyhow::anyhow!(
                     "No virtual MIDI backend available. \
-                     Install teVirtualMIDI or Windows MIDI Services SDK."
+                     Install Windows MIDI Services SDK or teVirtualMIDI."
                 ))
             }
+        }
+    }
+
+    /// Windows 10 and below: teVirtualMIDI only (no MIDI Services available).
+    fn create_win10(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
+        info!(name = %identity.name, "Attempting teVirtualMIDI backend...");
+        let mut te_device = TeVirtualMidiDevice::new();
+        match te_device.create(identity) {
+            Ok(()) => {
+                info!(name = %identity.name, "Using teVirtualMIDI backend");
+                self.backend = Backend::TeVirtualMidi(te_device);
+                Ok(())
+            }
+            Err(e) => {
+                error!(
+                    name = %identity.name,
+                    error = %e,
+                    "teVirtualMIDI unavailable. \
+                     Install the driver from: \
+                     https://www.tobias-erichsen.de/software/virtualmidi.html"
+                );
+                Err(anyhow::anyhow!(
+                    "Virtual MIDI device creation failed. \
+                     Install teVirtualMIDI from https://www.tobias-erichsen.de/software/virtualmidi.html"
+                ))
+            }
+        }
+    }
+}
+
+impl VirtualMidiDevice for WindowsVirtualDevice {
+    fn create(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
+        if is_windows_11() {
+            // Windows 11+: prefer MIDI Services (native, no driver needed)
+            self.create_win11(identity)
+        } else {
+            // Windows 10 and below: teVirtualMIDI only
+            self.create_win10(identity)
         }
     }
 

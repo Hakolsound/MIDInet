@@ -71,6 +71,7 @@ pub async fn register_client(
 
     let mut clients = state.inner.clients.write().await;
     if let Some(existing) = clients.iter_mut().find(|c| c.id == body.id) {
+        // Same ID — update in place
         existing.ip = body.ip;
         existing.hostname = body.hostname;
         existing.os = body.os;
@@ -80,6 +81,24 @@ pub async fn register_client(
         existing.git_hash = body.git_hash;
         existing.last_heartbeat_ms = now_ms;
     } else {
+        // New ID — check if a stale entry from the same machine exists.
+        // This handles the case where a client process restarted with a new ID
+        // (e.g. tray restart, crash recovery) but the old entry is still lingering.
+        if !body.hostname.is_empty() && !body.ip.is_empty() {
+            clients.retain(|c| {
+                let stale = !c.manual && c.hostname == body.hostname && c.ip == body.ip;
+                if stale {
+                    info!(
+                        old_id = c.id,
+                        new_id = body.id,
+                        hostname = %body.hostname,
+                        "Replacing stale client entry"
+                    );
+                }
+                !stale
+            });
+        }
+
         info!(id = body.id, ip = %body.ip, hostname = %body.hostname, "Client registered");
         clients.push(ClientInfo {
             id: body.id,
