@@ -44,7 +44,11 @@ echo ""
 
 # Allow root to operate on the repo (owned by pi).
 # Git 2.35.2+ blocks this by default with "dubious ownership".
-git config --global --add safe.directory "$MIDINET_DIR" 2>/dev/null || true
+# Use an env var so every git command in this script inherits the setting,
+# even under systemd where HOME may not be /root.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0="$MIDINET_DIR"
 
 # Pull latest
 echo -e "${CYAN}[1/4]${NC} Pulling latest from origin/$BRANCH..."
