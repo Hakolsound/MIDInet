@@ -1462,16 +1462,54 @@ function HelpPage() {
         <tr><td class="mono">Esc</td><td>Close overlay</td></tr>
       </tbody></table>
     </div>
-    <div class="support-cta">
-      <div class="support-icon">♥</div>
-      <div class="support-text">
-        <div class="support-heading">Support MIDInet</div>
-        <div class="support-body">MIDInet is free and open-source. If it's saving you time on gigs or in the studio, consider supporting development.</div>
+  </div>`;
+}
+
+// ── Support Popup (once per day, random delay) ───────────────
+const SUPPORT_MESSAGES = [
+  { heading: 'Enjoying MIDInet?', body: 'This project is built and maintained independently. If MIDInet is part of your live rig or studio setup, a small contribution keeps development going.' },
+  { heading: 'MIDInet is free. Keeping it alive isn\'t.', body: 'Server costs, hardware testing, late-night debugging sessions — your support makes a real difference.' },
+  { heading: 'Help keep MIDInet growing', body: 'Every contribution funds new features, better reliability, and more supported hardware. Even a coffee helps.' },
+  { heading: 'Built for the stage. Funded by users.', body: 'No VC money, no ads, no telemetry. Just a tool that works — backed by people who use it.' },
+];
+
+function SupportPopup() {
+  const [visible, setVisible] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => {
+    const KEY = 'midinet_support_last';
+    const last = parseInt(localStorage.getItem(KEY) || '0', 10);
+    const now = Date.now();
+    if (now - last < 86400000) return; // 24h cooldown
+
+    // Random delay between 2–8 minutes after load
+    const delay = (120 + Math.random() * 360) * 1000;
+    const t = setTimeout(() => {
+      // Re-check in case another tab set it
+      const fresh = parseInt(localStorage.getItem(KEY) || '0', 10);
+      if (Date.now() - fresh < 86400000) return;
+      localStorage.setItem(KEY, String(Date.now()));
+      setMsg(SUPPORT_MESSAGES[Math.floor(Math.random() * SUPPORT_MESSAGES.length)]);
+      setVisible(true);
+    }, delay);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (!visible || !msg) return null;
+  const close = () => setVisible(false);
+
+  return html`<div class="modal-backdrop open" onClick=${close}>
+    <div class="support-popup" onClick=${(e) => e.stopPropagation()}>
+      <button class="support-popup-close" onClick=${close}>${ICO.x()}</button>
+      <div class="support-popup-heart">♥</div>
+      <div class="support-popup-heading">${msg.heading}</div>
+      <div class="support-popup-body">${msg.body}</div>
+      <div class="support-popup-actions">
+        <a class="btn btn-support-popup" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">One-time donation</a>
+        <a class="btn btn-support-popup btn-support-popup-primary" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Support monthly</a>
       </div>
-      <div class="support-buttons">
-        <a class="btn btn-support" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">One-time</a>
-        <a class="btn btn-support btn-support-recurring" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Monthly</a>
-      </div>
+      <button class="support-popup-dismiss" onClick=${close}>Maybe later</button>
     </div>
   </div>`;
 }
@@ -1521,6 +1559,7 @@ function App() {
     <${ToastContainer} />
     <${WarningPopupContainer} />
     <${SnifferDrawer} />
+    <${SupportPopup} />
   <//>`;
 }
 

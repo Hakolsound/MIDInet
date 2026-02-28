@@ -1658,55 +1658,77 @@ a { color: var(--accent); text-decoration: none; }
 .ref-tbl th { font-size: 10px; }
 .ref-tbl td { font-family: var(--mono); font-size: 11px; }
 
-/* ── Support CTA ── */
-.support-cta {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-top: 36px;
-    padding: 18px 22px;
-    background: rgba(255,255,255,0.025);
+/* ── Support Popup ── */
+.support-popup {
+    background: var(--surface);
     border: 0.5px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius);
+    width: min(400px, 90vw);
+    padding: 32px 28px 24px;
+    text-align: center;
+    position: relative;
+    animation: support-enter .3s var(--ease-out);
 }
-.support-icon {
-    font-size: 22px;
+@keyframes support-enter {
+    from { transform: scale(.9) translateY(12px); opacity: 0; }
+    to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+.support-popup-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: none;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 4px;
+}
+.support-popup-close:hover { color: var(--text-1); }
+.support-popup-heart {
+    font-size: 36px;
     color: var(--red);
-    flex-shrink: 0;
-    opacity: .7;
+    margin-bottom: 14px;
 }
-.support-text { flex: 1; min-width: 0; }
-.support-heading {
-    font-size: 13px;
+.support-popup-heading {
+    font-size: 17px;
     font-weight: 700;
     color: var(--text-1);
-    margin-bottom: 3px;
+    margin-bottom: 8px;
 }
-.support-body {
-    font-size: 11.5px;
+.support-popup-body {
+    font-size: 13px;
     color: var(--text-2);
-    line-height: 1.45;
+    line-height: 1.55;
+    margin-bottom: 22px;
 }
-.support-buttons {
+.support-popup-actions {
     display: flex;
-    gap: 8px;
-    flex-shrink: 0;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 14px;
 }
-.btn-support {
-    font-size: 11px;
+.btn-support-popup {
+    font-size: 13px;
     font-weight: 600;
-    padding: 7px 16px;
+    padding: 10px 22px;
+    border-radius: var(--radius-sm);
     text-decoration: none;
-    border-radius: var(--radius-xs);
-    white-space: nowrap;
+    cursor: pointer;
 }
-.btn-support-recurring {
+.btn-support-popup-primary {
     background: var(--accent);
     color: #fff;
 }
-.btn-support-recurring:hover {
-    background: var(--accent-dim);
+.btn-support-popup-primary:hover { background: var(--accent-dim); }
+.support-popup-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-3);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 4px 8px;
 }
+.support-popup-dismiss:hover { color: var(--text-2); }
 
 /* ── Page Transitions ── */
 .page-active {
