@@ -313,7 +313,12 @@ fn main() {
         {
             Ok(file) => file,
             Err(_) => {
-                // Another instance holds the lock
+                // Another instance holds the lock — notify and exit
+                let _ = notify_rust::Notification::new()
+                    .summary("MIDInet")
+                    .body("MIDInet tray is already running.")
+                    .timeout(notify_rust::Timeout::Milliseconds(3000))
+                    .show();
                 std::process::exit(0);
             }
         }
