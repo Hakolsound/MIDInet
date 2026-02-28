@@ -27,6 +27,7 @@ open = "5"
 # Desktop notifications
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = "4"

@@ -319,6 +319,44 @@ fn main() {
         }
     };
 
+    // ── Single-instance guard (macOS / Linux) ──
+    // Prevents duplicate tray instances from running simultaneously.
+    // Uses flock(2) for advisory locking — released automatically when the process exits.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _instance_lock = {
+        use std::os::unix::io::AsRawFd;
+        let lock_dir = std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".midinet"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&lock_dir);
+        let lock_path = lock_dir.join(".tray.lock");
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap_or_else(|_| {
+                eprintln!("Cannot open lock file");
+                std::process::exit(1);
+            });
+
+        let fd = file.as_raw_fd();
+        let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+
+        if result != 0 {
+            // Another instance holds the lock — notify and exit
+            let _ = notify_rust::Notification::new()
+                .summary("MIDInet")
+                .body("MIDInet tray is already running.")
+                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                .show();
+            std::process::exit(0);
+        }
+
+        file // keep alive — lock released on drop
+    };
+
     // ── File-based logging ──
     // On Windows with windows_subsystem="windows", stderr is /dev/null.
     // macOS: ~/.midinet/logs/ (exe in /usr/local/bin is not writable)

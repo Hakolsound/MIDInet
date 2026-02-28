@@ -126,8 +126,9 @@ $SUDO mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 # Copy icon
 $SUDO cp "$SRC_DIR/assets/icons/midinet.icns" "$APP_RESOURCES/midinet.icns"
 
-# Symlink to the installed binary (shell script wrappers lose macOS GUI context)
-$SUDO ln -sf "$BIN_DIR/midinet-tray" "$APP_MACOS/MIDInet"
+# Copy the binary into the bundle (symlinks break when the target is replaced
+# during updates, and shell script wrappers lose macOS GUI context)
+$SUDO cp "$BIN_DIR/midinet-tray" "$APP_MACOS/MIDInet"
 
 # Create Info.plist
 GIT_HASH=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
