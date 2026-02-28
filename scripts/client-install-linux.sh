@@ -27,7 +27,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-step() { echo -e "\n${CYAN}[$1/8]${NC} $2"; }
+step() { echo -e "\n${CYAN}[$1/9]${NC} $2"; }
 ok()   { echo -e "    ${GREEN}✓${NC} $1"; }
 warn() { echo -e "    ${YELLOW}!${NC} $1"; }
 fail() { echo -e "    ${RED}✗${NC} $1"; exit 1; }
@@ -116,8 +116,44 @@ ln -sf "$INSTALL_DIR/bin/midinet-cli"    "$HOME/.local/bin/midinet-cli"
 ln -sf "$INSTALL_DIR/bin/midinet-tray"   "$HOME/.local/bin/midinet-tray"
 ok "Installed to $INSTALL_DIR/bin/ (symlinked to ~/.local/bin/)"
 
+# ── Desktop Launcher & Icon ──────────────────────────────────
+step 5 "Installing desktop launcher and icon..."
+
+# Install icon to standard hicolor location
+ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+mkdir -p "$ICON_DIR"
+cp "$SRC_DIR/assets/icons/midinet-256.png" "$ICON_DIR/midinet.png"
+
+# Also install smaller sizes for panel/tray
+for SIZE in 48 64 128; do
+    SDIR="$HOME/.local/share/icons/hicolor/${SIZE}x${SIZE}/apps"
+    mkdir -p "$SDIR"
+    cp "$SRC_DIR/assets/icons/midinet-${SIZE}.png" "$SDIR/midinet.png"
+done
+ok "Icon installed to ~/.local/share/icons/"
+
+# Create application menu .desktop entry (for app launcher / Activities)
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/midinet.desktop" << DESKTOP
+[Desktop Entry]
+Type=Application
+Name=MIDInet
+GenericName=MIDI Network Client
+Comment=Real-time MIDI over network — system tray monitor
+Exec=$INSTALL_DIR/bin/midinet-tray
+Icon=midinet
+Terminal=false
+Categories=Audio;AudioVideo;Multimedia;
+Keywords=MIDI;network;music;audio;
+StartupNotify=false
+DESKTOP
+ok "Desktop launcher installed (visible in app menu / Activities)"
+
+# Update icon cache if available
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
 # ── Config ────────────────────────────────────────────────────
-step 5 "Setting up configuration..."
+step 6 "Setting up configuration..."
 mkdir -p "$INSTALL_DIR/config"
 
 if [ ! -f "$INSTALL_DIR/config/client.toml" ]; then
@@ -128,7 +164,7 @@ else
 fi
 
 # ── Add to audio group ────────────────────────────────────────
-step 6 "Configuring ALSA access..."
+step 7 "Configuring ALSA access..."
 if groups "$USER" | grep -q '\baudio\b'; then
     ok "User already in audio group"
 else
@@ -137,7 +173,7 @@ else
 fi
 
 # ── Systemd User Service ─────────────────────────────────────
-step 7 "Installing systemd user service..."
+step 8 "Installing systemd user service..."
 
 # Stop existing service if running
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
@@ -169,7 +205,7 @@ ok "Systemd user service installed and started"
 loginctl enable-linger "$USER" 2>/dev/null || true
 
 # ── Tray Autostart ───────────────────────────────────────────
-step 8 "Installing tray application (autostart on login)..."
+step 9 "Installing tray application (autostart on login)..."
 
 mkdir -p "$HOME/.config/autostart"
 cat > "$HOME/.config/autostart/midinet-tray.desktop" << DESKTOP
@@ -178,7 +214,7 @@ Type=Application
 Name=MIDInet Tray
 Comment=MIDInet system tray health monitor
 Exec=$INSTALL_DIR/bin/midinet-tray
-Icon=midi
+Icon=midinet
 Terminal=false
 StartupNotify=false
 X-GNOME-Autostart-enabled=true

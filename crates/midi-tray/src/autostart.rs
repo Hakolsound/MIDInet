@@ -152,13 +152,85 @@ mod macos_impl {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub use linux_impl::*;
+
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use tracing::{info, warn};
+
+    fn desktop_entry_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.config/autostart/midinet-tray.desktop", home)
+    }
+
+    fn midinet_bin_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.midinet/bin/midinet-tray", home)
+    }
+
+    /// Check if auto-start is currently enabled (desktop entry exists).
+    pub fn is_enabled() -> bool {
+        std::path::Path::new(&desktop_entry_path()).exists()
+    }
+
+    /// Enable auto-start (create desktop entry).
+    pub fn enable() -> Result<(), String> {
+        let path = desktop_entry_path();
+        let dir = std::path::Path::new(&path)
+            .parent()
+            .expect("desktop entry path has parent");
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Cannot create autostart dir: {}", e))?;
+        let content = format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=MIDInet Tray\n\
+             Comment=MIDInet system tray health monitor\n\
+             Exec={}\n\
+             Terminal=false\n\
+             StartupNotify=false\n\
+             X-GNOME-Autostart-enabled=true\n",
+            midinet_bin_path()
+        );
+        std::fs::write(&path, content)
+            .map_err(|e| format!("Cannot write desktop entry: {}", e))?;
+        info!("Auto-start enabled (desktop entry created)");
+        Ok(())
+    }
+
+    /// Disable auto-start (remove desktop entry).
+    pub fn disable() -> Result<(), String> {
+        let path = desktop_entry_path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!("Auto-start disabled (desktop entry removed)"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!("Desktop entry not found (already disabled?)");
+            }
+            Err(e) => return Err(format!("Cannot remove desktop entry: {}", e)),
+        }
+        Ok(())
+    }
+
+    /// Toggle auto-start. Returns the new state.
+    pub fn toggle() -> Result<bool, String> {
+        if is_enabled() {
+            disable()?;
+            Ok(false)
+        } else {
+            enable()?;
+            Ok(true)
+        }
+    }
+}
+
 // No-op on unsupported platforms
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub fn is_enabled() -> bool {
     false
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 #[allow(dead_code)]
 pub fn toggle() -> Result<bool, String> {
     Ok(false)

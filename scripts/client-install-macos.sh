@@ -29,7 +29,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-step() { echo -e "\n${CYAN}[$1/7]${NC} $2"; }
+step() { echo -e "\n${CYAN}[$1/8]${NC} $2"; }
 ok()   { echo -e "    ${GREEN}✓${NC} $1"; }
 warn() { echo -e "    ${YELLOW}!${NC} $1"; }
 fail() { echo -e "    ${RED}✗${NC} $1"; exit 1; }
@@ -105,8 +105,82 @@ else
 fi
 ok "Installed midinet-client, midinet-cli, and midinet-tray to $BIN_DIR"
 
+# ── App Bundle (.app for Spotlight / Launchpad / Finder) ─────
+step 5 "Creating MIDInet.app application bundle..."
+
+APP_DIR="/Applications/MIDInet.app"
+APP_CONTENTS="$APP_DIR/Contents"
+APP_MACOS="$APP_CONTENTS/MacOS"
+APP_RESOURCES="$APP_CONTENTS/Resources"
+
+# Determine if we need sudo for /Applications
+SUDO=""
+if [ ! -w "/Applications" ]; then
+    SUDO="sudo"
+fi
+
+$SUDO rm -rf "$APP_DIR" 2>/dev/null || true
+$SUDO mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+
+# Copy icon
+$SUDO cp "$SRC_DIR/assets/icons/midinet.icns" "$APP_RESOURCES/midinet.icns"
+
+# Create launcher script (delegates to installed binary, with single-instance guard)
+LAUNCHER_TMP=$(mktemp)
+cat > "$LAUNCHER_TMP" << 'LAUNCHER'
+#!/bin/bash
+if pgrep -x "midinet-tray" > /dev/null 2>&1; then
+    exit 0
+fi
+exec /usr/local/bin/midinet-tray "$@"
+LAUNCHER
+$SUDO cp "$LAUNCHER_TMP" "$APP_MACOS/MIDInet"
+$SUDO chmod +x "$APP_MACOS/MIDInet"
+rm -f "$LAUNCHER_TMP"
+
+# Create Info.plist
+GIT_HASH=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+PLIST_TMP=$(mktemp)
+cat > "$PLIST_TMP" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>MIDInet</string>
+    <key>CFBundleDisplayName</key>
+    <string>MIDInet</string>
+    <key>CFBundleIdentifier</key>
+    <string>co.hakol.midinet</string>
+    <key>CFBundleVersion</key>
+    <string>$GIT_HASH</string>
+    <key>CFBundleShortVersionString</key>
+    <string>3.1</string>
+    <key>CFBundleExecutable</key>
+    <string>MIDInet</string>
+    <key>CFBundleIconFile</key>
+    <string>midinet</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+$SUDO cp "$PLIST_TMP" "$APP_CONTENTS/Info.plist"
+rm -f "$PLIST_TMP"
+
+# Refresh Finder icon cache
+/usr/bin/touch "$APP_DIR"
+ok "MIDInet.app installed to /Applications/"
+ok "  Launch via Spotlight, Launchpad, or Finder"
+
 # ── Config ────────────────────────────────────────────────────
-step 5 "Setting up configuration..."
+step 6 "Setting up configuration..."
 mkdir -p "$INSTALL_DIR/config"
 
 if [ ! -f "$INSTALL_DIR/config/client.toml" ]; then
@@ -117,7 +191,7 @@ else
 fi
 
 # ── LaunchAgent (auto-start) ─────────────────────────────────
-step 6 "Installing launchd service..."
+step 7 "Installing launchd service..."
 
 # Stop existing service if running
 launchctl unload "$PLIST_PATH" 2>/dev/null || true
@@ -163,7 +237,7 @@ launchctl load "$PLIST_PATH"
 ok "LaunchAgent installed and started"
 
 # ── Tray LaunchAgent (auto-start at login) ───────────────────
-step 7 "Installing tray application..."
+step 8 "Installing tray application..."
 
 TRAY_PLIST_NAME="co.hakol.midinet-tray"
 TRAY_PLIST_PATH="$HOME/Library/LaunchAgents/$TRAY_PLIST_NAME.plist"

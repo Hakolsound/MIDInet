@@ -105,7 +105,7 @@ if (Test-Path "$BinDir\version.txt") {
 }
 Write-Host ""
 
-$TotalSteps = 11
+$TotalSteps = 12
 $IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # ── 1. Prerequisites ─────────────────────────────────────────
@@ -315,8 +315,49 @@ try {
     Write-Warn "Could not update PATH: $_"
 }
 
-# ── 8. Config ─────────────────────────────────────────────────
-Write-Step 8 $TotalSteps "Setting up configuration..."
+# Copy icon file for shortcuts
+try {
+    Copy-Item "$SrcDir\assets\icons\midinet.ico" "$BinDir\midinet.ico" -Force
+} catch {
+    Write-Warn "Could not copy icon file: $_"
+}
+
+# ── 8. Desktop Shortcuts ──────────────────────────────────────
+Write-Step 8 $TotalSteps "Creating desktop shortcuts..."
+
+try {
+    $WshShell = New-Object -ComObject WScript.Shell
+
+    # Start Menu shortcut
+    $StartMenuDir = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\MIDInet"
+    New-Item -ItemType Directory -Path $StartMenuDir -Force | Out-Null
+
+    $StartMenuLink = $WshShell.CreateShortcut("$StartMenuDir\MIDInet.lnk")
+    $StartMenuLink.TargetPath = "$BinDir\midinet-tray.exe"
+    $StartMenuLink.WorkingDirectory = $BinDir
+    $StartMenuLink.Description = "MIDInet - Real-time MIDI over network"
+    if (Test-Path "$BinDir\midinet.ico") {
+        $StartMenuLink.IconLocation = "$BinDir\midinet.ico"
+    }
+    $StartMenuLink.Save()
+    Write-Ok "Start Menu shortcut created"
+
+    # Desktop shortcut
+    $DesktopLink = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\MIDInet.lnk")
+    $DesktopLink.TargetPath = "$BinDir\midinet-tray.exe"
+    $DesktopLink.WorkingDirectory = $BinDir
+    $DesktopLink.Description = "MIDInet - Real-time MIDI over network"
+    if (Test-Path "$BinDir\midinet.ico") {
+        $DesktopLink.IconLocation = "$BinDir\midinet.ico"
+    }
+    $DesktopLink.Save()
+    Write-Ok "Desktop shortcut created"
+} catch {
+    Write-Warn "Could not create shortcuts: $_"
+}
+
+# ── 9. Config ─────────────────────────────────────────────────
+Write-Step 9 $TotalSteps "Setting up configuration..."
 
 try {
     New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
@@ -333,7 +374,7 @@ try {
 }
 
 # ── 9. Windows Firewall Rules ────────────────────────────────
-Write-Step 9 $TotalSteps "Configuring Windows Firewall rules..."
+Write-Step 10 $TotalSteps "Configuring Windows Firewall rules..."
 
 if ($IsAdmin) {
     $fwRules = @(
@@ -361,8 +402,8 @@ if ($IsAdmin) {
     Write-Warn "inbound UDP ports 5004, 5005, 5006, and 5353 in Windows Firewall."
 }
 
-# ── 10. Remove legacy scheduled task (tray now manages client)
-Write-Step 10 $TotalSteps "Cleaning up legacy startup..."
+# ── 11. Remove legacy scheduled task (tray now manages client)
+Write-Step 11 $TotalSteps "Cleaning up legacy startup..."
 
 # Remove the old standalone client task — the tray spawns the client now
 $oldTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -374,8 +415,8 @@ if ($oldTask) {
     Write-Ok "No legacy scheduled task to remove"
 }
 
-# ── 11. Tray Auto-Start ──────────────────────────────────────
-Write-Step 11 $TotalSteps "Installing tray application (auto-start at login)..."
+# ── 12. Tray Auto-Start ──────────────────────────────────────
+Write-Step 12 $TotalSteps "Installing tray application (auto-start at login)..."
 
 try {
     # Register tray in user startup via Registry Run key

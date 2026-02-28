@@ -70,8 +70,7 @@ pub fn build_initial_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Check for updates (Windows + macOS)
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Check for updates
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -82,7 +81,6 @@ pub fn build_initial_menu() -> Menu {
     }
 
     // Restart client
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
@@ -107,7 +105,7 @@ pub fn build_initial_menu() -> Menu {
             None::<Accelerator>,
         ));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let auto_label = if crate::autostart::is_enabled() {
             "Start at Login  [ON]"
@@ -122,7 +120,6 @@ pub fn build_initial_menu() -> Menu {
         ));
     }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(
@@ -144,7 +141,7 @@ pub fn build_initial_menu() -> Menu {
 }
 
 /// Build an updated menu reflecting the current health snapshot.
-pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_start: bool) -> Menu {
+pub fn build_status_menu(snapshot: &ClientHealthSnapshot, auto_start: bool) -> Menu {
     let menu = Menu::new();
 
     // ── Status line ──
@@ -259,8 +256,7 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
 
-    // Check for updates (Windows + macOS)
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Check for updates
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -271,7 +267,6 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
     }
 
     // Restart client
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
@@ -296,7 +291,7 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
             None::<Accelerator>,
         ));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let auto_label = if auto_start {
             "Start at Login  [ON]"
@@ -311,7 +306,6 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
         ));
     }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(
@@ -351,8 +345,7 @@ pub fn build_disconnected_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Check for updates (Windows + macOS)
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Check for updates
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -363,7 +356,6 @@ pub fn build_disconnected_menu() -> Menu {
     }
 
     // Restart client
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
@@ -388,7 +380,7 @@ pub fn build_disconnected_menu() -> Menu {
             None::<Accelerator>,
         ));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let auto_label = if crate::autostart::is_enabled() {
             "Start at Login  [ON]"
@@ -403,7 +395,6 @@ pub fn build_disconnected_menu() -> Menu {
         ));
     }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(

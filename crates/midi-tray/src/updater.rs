@@ -26,8 +26,8 @@ pub struct UpdateCheckResult {
 /// Windows: `%LOCALAPPDATA%\MIDInet\src\` (cloned by the install script).
 /// macOS: `~/.midinet/src/` (cloned by the install script).
 fn find_src_dir() -> Option<PathBuf> {
-    // macOS: ~/.midinet/src
-    #[cfg(target_os = "macos")]
+    // macOS / Linux: ~/.midinet/src
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         if let Ok(home) = std::env::var("HOME") {
             let src = PathBuf::from(home).join(".midinet").join("src");
@@ -93,13 +93,13 @@ pub fn check_for_update() -> UpdateCheckResult {
         Some(d) => d,
         None => {
             error!("Cannot find MIDInet source directory for update check");
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             return make_error(
                 "Source directory not found.\n\n\
                  Expected: ~/.midinet/src/\n\
                  Run the installer to set it up.",
             );
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             return make_error(
                 "Source directory not found.\n\n\
                  Expected: %LOCALAPPDATA%\\MIDInet\\src\\\n\
@@ -298,7 +298,18 @@ pub fn run_update() -> bool {
             .spawn()
     };
 
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    let result = {
+        let script = src_dir.join("scripts").join("client-install-linux.sh");
+        if !script.exists() {
+            error!(path = %script.display(), "Install script not found");
+            return false;
+        }
+        info!(script = %script.display(), "Launching update script in terminal");
+        find_terminal_and_run(&script)
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     let result: Result<std::process::Child, std::io::Error> = {
         error!("Update not supported on this platform");
         return false;
@@ -348,6 +359,42 @@ pub fn format_update_dialog(result: &UpdateCheckResult, admin_url: Option<&str>)
     text.push_str("\nProceed with client update?");
 
     text
+}
+
+/// Try to launch a script in a terminal emulator.
+/// Tries $TERMINAL, x-terminal-emulator, gnome-terminal, xterm in order.
+#[cfg(target_os = "linux")]
+fn find_terminal_and_run(script: &std::path::Path) -> Result<std::process::Child, std::io::Error> {
+    let script_str = script.to_string_lossy();
+
+    // 1. $TERMINAL env var
+    if let Ok(term) = std::env::var("TERMINAL") {
+        if let Ok(child) = Command::new(&term).args(["-e", &format!("bash {}", script_str)]).spawn()
+        {
+            return Ok(child);
+        }
+    }
+
+    // 2. x-terminal-emulator (Debian/Ubuntu alternatives system)
+    if let Ok(child) = Command::new("x-terminal-emulator")
+        .args(["-e", &format!("bash {}", script_str)])
+        .spawn()
+    {
+        return Ok(child);
+    }
+
+    // 3. gnome-terminal
+    if let Ok(child) = Command::new("gnome-terminal")
+        .args(["--", "bash", &*script_str])
+        .spawn()
+    {
+        return Ok(child);
+    }
+
+    // 4. xterm (widely available fallback)
+    Command::new("xterm")
+        .args(["-e", "bash", &*script_str])
+        .spawn()
 }
 
 fn git_rev_parse(dir: &PathBuf, rev: &str) -> String {

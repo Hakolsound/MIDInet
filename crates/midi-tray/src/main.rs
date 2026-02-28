@@ -188,11 +188,47 @@ fn show_yesno_dialog(title: &str, message: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Show an informational dialog on Linux using zenity (with kdialog fallback).
+#[cfg(target_os = "linux")]
+fn show_info_dialog(title: &str, message: &str) {
+    let _ = std::process::Command::new("zenity")
+        .args(["--info", "--title", title, "--text", message, "--width", "400"])
+        .output()
+        .or_else(|_| {
+            std::process::Command::new("kdialog")
+                .args(["--msgbox", message, "--title", title])
+                .output()
+        });
+}
+
+/// Show a Yes/No dialog on Linux using zenity (with kdialog fallback).
+#[cfg(target_os = "linux")]
+fn show_yesno_dialog(title: &str, message: &str) -> bool {
+    std::process::Command::new("zenity")
+        .args([
+            "--question",
+            "--title",
+            title,
+            "--text",
+            message,
+            "--width",
+            "400",
+        ])
+        .output()
+        .or_else(|_| {
+            std::process::Command::new("kdialog")
+                .args(["--yesno", message, "--title", title])
+                .output()
+        })
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Platform-appropriate log directory for the tray application.
-/// macOS: ~/.midinet/logs/ (exe lives in /usr/local/bin — not writable)
+/// macOS/Linux: ~/.midinet/logs/
 /// Windows: exe_dir/logs/ (exe lives in %LOCALAPPDATA%\MIDInet\bin)
 fn tray_log_dir() -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         if let Ok(home) = std::env::var("HOME") {
             return std::path::PathBuf::from(home)
@@ -403,7 +439,6 @@ fn main() {
 
     // Menu diffing state — only rebuild when snapshot fields change
     let mut last_menu_state: Option<MenuState> = None;
-    #[allow(unused_mut)]
     let mut auto_start_cached: bool = autostart::is_enabled();
 
     // Notification cooldown to prevent spam during flapping
@@ -583,9 +618,30 @@ fn main() {
                             }
                         }
                     }
+                    #[cfg(target_os = "linux")]
+                    {
+                        info!("Restart client requested via menu");
+                        match std::process::Command::new("systemctl")
+                            .args(["--user", "restart", "midinet-client"])
+                            .output()
+                        {
+                            Ok(o) if o.status.success() => {
+                                info!("Client restarted via systemctl");
+                            }
+                            Ok(o) => {
+                                let stderr = String::from_utf8_lossy(&o.stderr);
+                                tracing::warn!(stderr = %stderr.trim(), "systemctl restart failed");
+                                show_info_dialog("MIDInet", &format!("Failed to restart client:\n{}", stderr.trim()));
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to run systemctl");
+                                show_info_dialog("MIDInet", &format!("Failed to restart client:\n{}", e));
+                            }
+                        }
+                    }
                 }
                 ID_AUTO_START => {
-                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
                     {
                         match autostart::toggle() {
                             Ok(enabled) => {
