@@ -20,6 +20,10 @@ pub async fn check_update() -> Json<Value> {
 }
 
 /// POST /api/system/update — pull latest code, rebuild, and restart services.
+///
+/// Instead of spawning `sudo` directly (which is blocked by NoNewPrivileges=true
+/// in the systemd unit), we write a trigger file that `midinet-update.path`
+/// watches. Systemd then starts `midinet-update.service` as root.
 pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
     // Safety checks
     let clients = state.inner.clients.read().await;
@@ -30,68 +34,67 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
     let midi_rate = midi.messages_in_per_sec;
     drop(midi);
 
-    // Use the installed midinet-update command (installed by pi-update.sh / pi-provision.sh).
-    // Falls back to locating the script in the source tree if the command isn't installed yet.
-    let script_path = if std::path::Path::new("/usr/local/bin/midinet-update").exists() {
-        std::path::PathBuf::from("/usr/local/bin/midinet-update")
-    } else if let Some(src_dir) = find_src_dir() {
-        let script = src_dir.join("scripts").join("pi-update.sh");
-        if script.exists() {
-            script
-        } else {
-            return Json(json!({
-                "success": false,
-                "error": "Update script not found. Run: sudo install -m 755 <repo>/scripts/pi-update.sh /usr/local/bin/midinet-update",
-            }));
-        }
-    } else {
+    // The update script must be installed at the well-known path.
+    if !std::path::Path::new("/usr/local/bin/midinet-update").exists() {
         return Json(json!({
             "success": false,
-            "error": "Update script not found. Run: sudo install -m 755 <repo>/scripts/pi-update.sh /usr/local/bin/midinet-update",
+            "error": "Update script not installed. Run: sudo install -m 755 <repo>/scripts/pi-update.sh /usr/local/bin/midinet-update",
         }));
-    };
+    }
 
-    // Create/truncate the log file for output capture
-    let log_file = match std::fs::File::create(UPDATE_LOG_PATH) {
-        Ok(f) => f,
-        Err(e) => {
-            error!(error = %e, "Cannot create update log file");
-            return Json(json!({
-                "success": false,
-                "error": format!("Cannot create log file: {}", e),
-            }));
-        }
-    };
-    let log_err = match log_file.try_clone() {
-        Ok(f) => f,
-        Err(e) => {
-            error!(error = %e, "Cannot clone log file handle");
-            return Json(json!({
-                "success": false,
-                "error": format!("Cannot clone log file handle: {}", e),
-            }));
-        }
-    };
+    // Check if an update is already running.
+    let already_running = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "midinet-update.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
-    info!(script = %script_path.display(), "Launching host update with log capture");
+    if already_running {
+        return Json(json!({
+            "success": false,
+            "error": "An update is already in progress.",
+        }));
+    }
 
-    // Spawn the update script with output redirected to the log file.
-    // The file persists across admin restarts so the frontend can fetch
-    // the final output after reconnecting.
-    match std::process::Command::new("sudo")
-        .args(["bash", &script_path.to_string_lossy(), "--force"])
-        .stdout(log_file)
-        .stderr(log_err)
-        .spawn()
-    {
-        Ok(_) => {
+    // Verify the systemd path unit is active — required for web-triggered updates.
+    // Installed by pi-update.sh v3.1+. If missing, the user needs one manual update.
+    let path_unit_active = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "midinet-update.path"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !path_unit_active {
+        return Json(json!({
+            "success": false,
+            "error": "Update system not ready. Run 'sudo midinet-update' once from the terminal to install the required systemd units.",
+        }));
+    }
+
+    // Create/truncate the log file for output capture.
+    if let Err(e) = std::fs::File::create(UPDATE_LOG_PATH) {
+        error!(error = %e, "Cannot create update log file");
+        return Json(json!({
+            "success": false,
+            "error": format!("Cannot create log file: {}", e),
+        }));
+    }
+
+    info!("Triggering host update via systemd path unit");
+
+    // Write the trigger file. The midinet-update.path systemd unit watches
+    // this file and starts midinet-update.service (which runs as root).
+    // This avoids needing sudo from within the NoNewPrivileges=true sandbox.
+    let trigger = format!("{:?}\n", std::time::SystemTime::now());
+    match std::fs::write("/var/lib/midinet/update-trigger", trigger) {
+        Ok(()) => {
             info!(
                 clients = client_count,
                 midi_rate = midi_rate,
-                "Update script launched — streaming progress"
+                "Update triggered — streaming progress"
             );
 
-            // Spawn background task to tail the log file and broadcast lines
+            // Spawn background task to tail the log file and broadcast lines.
             tokio::spawn({
                 let tx = state.inner.update_log_tx.clone();
                 async move { tail_update_log(tx).await }
@@ -105,10 +108,10 @@ pub async fn run_update(State(state): State<AppState>) -> Json<Value> {
             }))
         }
         Err(e) => {
-            error!(error = %e, "Failed to launch update script");
+            error!(error = %e, "Failed to write update trigger file");
             Json(json!({
                 "success": false,
-                "error": format!("Failed to launch update: {}", e),
+                "error": format!("Failed to trigger update: {}", e),
             }))
         }
     }

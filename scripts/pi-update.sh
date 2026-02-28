@@ -171,9 +171,16 @@ find "$MIDINET_DIR" -type f -exec chmod o+r {} + 2>/dev/null || true
 install -m 755 "$MIDINET_DIR/scripts/pi-update.sh" /usr/local/bin/midinet-update
 
 # Update systemd units in case they changed
-install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"  /etc/systemd/system/
-install -m 644 "$MIDINET_DIR/deploy/midinet-admin.service" /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"   /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-admin.service"  /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-update.service" /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-update.path"    /etc/systemd/system/
 systemctl daemon-reload
+
+# Enable the path unit so the admin panel can trigger updates without sudo.
+# (The path unit watches /var/lib/midinet/update-trigger and starts
+# midinet-update.service as root when the file is modified.)
+systemctl enable --now midinet-update.path 2>/dev/null || true
 
 systemctl start midinet-host.service
 systemctl start midinet-admin.service

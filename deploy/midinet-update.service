@@ -1,0 +1,12 @@
+[Unit]
+Description=MIDInet self-update (triggered by admin panel)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/midinet-update --force
+StandardOutput=append:/var/lib/midinet/update.log
+StandardError=append:/var/lib/midinet/update.log
+# Clean up trigger file whether update succeeded or failed
+ExecStopPost=/bin/rm -f /var/lib/midinet/update-trigger
+# Allow long builds (up to 30 minutes on slow ARM)
+TimeoutStartSec=1800
