@@ -131,6 +131,7 @@ LAUNCHER_TMP=$(mktemp)
 cat > "$LAUNCHER_TMP" << 'LAUNCHER'
 #!/bin/bash
 if pgrep -x "midinet-tray" > /dev/null 2>&1; then
+    osascript -e 'display notification "MIDInet tray is already running — look for the status icon in your menu bar." with title "MIDInet"' 2>/dev/null
     exit 0
 fi
 exec /usr/local/bin/midinet-tray "$@"
