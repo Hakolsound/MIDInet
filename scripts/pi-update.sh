@@ -42,6 +42,10 @@ fi
 echo -e "${CYAN}MIDInet Update${NC}"
 echo ""
 
+# Allow root to operate on the repo (owned by pi).
+# Git 2.35.2+ blocks this by default with "dubious ownership".
+git config --global --add safe.directory "$MIDINET_DIR" 2>/dev/null || true
+
 # Pull latest
 echo -e "${CYAN}[1/4]${NC} Pulling latest from origin/$BRANCH..."
 cd "$MIDINET_DIR"
