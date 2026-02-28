@@ -101,8 +101,16 @@ elif [ "$BEFORE" != "$AFTER" ]; then
         NEED_BUILD=false
     fi
 else
-    # Source unchanged but binaries are stale (e.g. user ran git pull separately)
-    echo -e "    ${GREEN}✓${NC} Source up-to-date ($AFTER) — binaries stale, rebuilding"
+    # Source unchanged but binaries are stale (e.g. user ran git pull separately,
+    # or script re-exec'd after a non-Rust update).
+    # Check if there are actually Rust changes since the installed version.
+    RUST_CHANGES=$(git diff --name-only "$INSTALLED_HASH..$AFTER" -- 'crates/' 'Cargo.toml' 'Cargo.lock' 2>/dev/null | head -1)
+    if [ -n "$RUST_CHANGES" ] || [ "$INSTALLED_HASH" = "none" ]; then
+        echo -e "    ${GREEN}✓${NC} Source up-to-date ($AFTER) — binaries stale, rebuilding"
+    else
+        echo -e "    ${GREEN}✓${NC} Source up-to-date ($AFTER) — no Rust changes since $INSTALLED_HASH, skipping build"
+        NEED_BUILD=false
+    fi
 fi
 
 # Ensure Rust toolchain is available under sudo.
@@ -168,9 +176,9 @@ if [ "$NEED_BUILD" = true ]; then
     install -m 755 "$MIDINET_DIR/target/release/midi-host"  /usr/local/bin/midi-host
     install -m 755 "$MIDINET_DIR/target/release/midi-admin" /usr/local/bin/midi-admin
     install -m 755 "$MIDINET_DIR/target/release/midi-cli"   /usr/local/bin/midi-cli
-    # Stamp installed version so future runs can detect stale binaries
-    echo "$AFTER" > /usr/local/bin/.midinet-version
 fi
+# Always stamp the version so future runs don't re-trigger for non-Rust changes
+echo "$AFTER" > /usr/local/bin/.midinet-version
 
 # Write markers so the admin service can check for updates without repo access.
 # src-dir: path to git repo (for run_update to find the update script)
