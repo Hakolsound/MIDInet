@@ -126,19 +126,8 @@ $SUDO mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 # Copy icon
 $SUDO cp "$SRC_DIR/assets/icons/midinet.icns" "$APP_RESOURCES/midinet.icns"
 
-# Create launcher script (delegates to installed binary, with single-instance guard)
-LAUNCHER_TMP=$(mktemp)
-cat > "$LAUNCHER_TMP" << 'LAUNCHER'
-#!/bin/bash
-if pgrep -x "midinet-tray" > /dev/null 2>&1; then
-    osascript -e 'display notification "MIDInet tray is already running — look for the status icon in your menu bar." with title "MIDInet"' 2>/dev/null
-    exit 0
-fi
-exec /usr/local/bin/midinet-tray "$@"
-LAUNCHER
-$SUDO cp "$LAUNCHER_TMP" "$APP_MACOS/MIDInet"
-$SUDO chmod +x "$APP_MACOS/MIDInet"
-rm -f "$LAUNCHER_TMP"
+# Symlink to the installed binary (shell script wrappers lose macOS GUI context)
+$SUDO ln -sf "$BIN_DIR/midinet-tray" "$APP_MACOS/MIDInet"
 
 # Create Info.plist
 GIT_HASH=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
