@@ -160,6 +160,11 @@ fi
 echo "$MIDINET_DIR" > /var/lib/midinet/src-dir
 git -C "$MIDINET_DIR" remote get-url origin > /var/lib/midinet/git-remote 2>/dev/null || true
 
+# Restore repo ownership — git operations above run as root and create
+# root-owned files in .git/objects, preventing the normal user from pulling.
+REPO_OWNER=$(stat -c '%U:%G' "$MIDINET_DIR")
+chown -R "$REPO_OWNER" "$MIDINET_DIR"
+
 # Ensure the midi user (admin service) can read the repo for update checks.
 # Allow traversal into the parent dir (e.g. /home/pi) without listing permission,
 # and make the repo itself world-readable.
