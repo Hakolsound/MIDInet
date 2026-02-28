@@ -1462,6 +1462,17 @@ function HelpPage() {
         <tr><td class="mono">Esc</td><td>Close overlay</td></tr>
       </tbody></table>
     </div>
+    <div class="support-cta">
+      <div class="support-icon">♥</div>
+      <div class="support-text">
+        <div class="support-heading">Support MIDInet</div>
+        <div class="support-body">MIDInet is free and open-source. If it's saving you time on gigs or in the studio, consider supporting development.</div>
+      </div>
+      <div class="support-buttons">
+        <a class="btn btn-support" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">One-time</a>
+        <a class="btn btn-support btn-support-recurring" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Monthly</a>
+      </div>
+    </div>
   </div>`;
 }
 
