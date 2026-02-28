@@ -52,6 +52,16 @@ git fetch origin
 git checkout -B "$BRANCH" "origin/$BRANCH"
 AFTER=$(git rev-parse --short HEAD)
 
+# Re-exec with the freshly-pulled script if it changed.
+# This avoids the chicken-and-egg problem where the running copy is stale
+# and misses new install steps (e.g. new systemd units).
+NEW_SCRIPT="$MIDINET_DIR/scripts/pi-update.sh"
+if [ "${MIDINET_REEXEC:-}" != "1" ] && [ -f "$NEW_SCRIPT" ] && ! cmp -s "$0" "$NEW_SCRIPT"; then
+    echo -e "    ${CYAN}ℹ${NC}  Update script changed — re-executing with new version"
+    export MIDINET_REEXEC=1 MIDINET_DIR MIDINET_BRANCH="${BRANCH}"
+    exec bash "$NEW_SCRIPT" "$@"
+fi
+
 NEED_BUILD=true
 
 # Check if installed binaries match current HEAD
