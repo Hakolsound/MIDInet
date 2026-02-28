@@ -244,6 +244,58 @@ fn tray_log_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+/// Kill any other running midinet-tray processes so we can take over.
+/// Filters by PID to avoid killing ourselves.
+fn kill_other_tray_instances() {
+    let my_pid = std::process::id();
+
+    #[cfg(target_os = "windows")]
+    {
+        // Parse tasklist CSV to find other midinet-tray PIDs
+        if let Ok(output) = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq midinet-tray.exe", "/NH", "/FO", "CSV"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split(',').collect();
+                if parts.len() >= 2 {
+                    let pid_str = parts[1].trim_matches('"');
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if pid != my_pid {
+                            let _ = std::process::Command::new("taskkill")
+                                .args(["/F", "/PID", &pid.to_string()])
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        // Search for both "midinet-tray" (LaunchAgent) and "MIDInet" (.app bundle)
+        for name in &["midinet-tray", "MIDInet"] {
+            if let Ok(output) = std::process::Command::new("pgrep")
+                .args(["-x", name])
+                .output()
+            {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    if let Ok(pid) = line.trim().parse::<i32>() {
+                        if pid as u32 != my_pid {
+                            unsafe { libc::kill(pid, libc::SIGTERM); }
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 fn main() {
     // ── Panic hook: log + show dialog on crash ──
     // Must be first — catches panics in all subsequent initialization.
@@ -292,44 +344,38 @@ fn main() {
     }));
 
     // ── Single-instance guard (Windows) ──
-    // Prevents duplicate tray instances from fighting over the same client.
-    // Opens a lock file with share_mode(0) = exclusive access. If another
-    // instance already holds it, the open fails and we exit.
+    // Kill any other tray instance, then acquire an exclusive lock file.
+    // This ensures clicking the Start Menu shortcut always brings back the tray.
     #[cfg(target_os = "windows")]
     let _instance_lock = {
         use std::os::windows::fs::OpenOptionsExt;
+
+        kill_other_tray_instances();
+
         let lock_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("logs")))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let _ = std::fs::create_dir_all(&lock_dir);
         let lock_path = lock_dir.join(".tray.lock");
-        match std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .share_mode(0) // exclusive — no other process can open
             .open(&lock_path)
-        {
-            Ok(file) => file,
-            Err(_) => {
-                // Another instance holds the lock — notify and exit
-                let _ = notify_rust::Notification::new()
-                    .summary("MIDInet")
-                    .body("MIDInet tray is already running.")
-                    .timeout(notify_rust::Timeout::Milliseconds(3000))
-                    .show();
-                std::process::exit(0);
-            }
-        }
+            .expect("Cannot acquire tray lock file")
     };
 
     // ── Single-instance guard (macOS / Linux) ──
-    // Prevents duplicate tray instances from running simultaneously.
-    // Uses flock(2) for advisory locking — released automatically when the process exits.
+    // Kill any other tray instance, then acquire an advisory flock.
+    // This ensures clicking the .app or shortcut always brings back the tray.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _instance_lock = {
         use std::os::unix::io::AsRawFd;
+
+        kill_other_tray_instances();
+
         let lock_dir = std::env::var("HOME")
             .map(|h| std::path::PathBuf::from(h).join(".midinet"))
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -341,22 +387,15 @@ fn main() {
             .create(true)
             .truncate(false)
             .open(&lock_path)
-            .unwrap_or_else(|_| {
-                eprintln!("Cannot open lock file");
-                std::process::exit(1);
-            });
+            .expect("Cannot open tray lock file");
 
         let fd = file.as_raw_fd();
-        let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-
-        if result != 0 {
-            // Another instance holds the lock — notify and exit
-            let _ = notify_rust::Notification::new()
-                .summary("MIDInet")
-                .body("MIDInet tray is already running.")
-                .timeout(notify_rust::Timeout::Milliseconds(3000))
-                .show();
-            std::process::exit(0);
+        // Wait up to 1s for the killed process to release the lock
+        for _ in 0..10 {
+            if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         file // keep alive — lock released on drop
