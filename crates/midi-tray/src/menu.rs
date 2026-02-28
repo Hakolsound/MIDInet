@@ -130,12 +130,7 @@ pub fn build_initial_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    let quit_label = if cfg!(target_os = "windows") {
-        "Quit MIDInet"
-    } else {
-        "Quit Tray"
-    };
-    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, "Quit MIDInet", true, None::<Accelerator>));
 
     menu
 }
@@ -316,12 +311,7 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, auto_start: bool) -> M
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    let quit_label = if cfg!(target_os = "windows") {
-        "Quit MIDInet"
-    } else {
-        "Quit Tray"
-    };
-    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, "Quit MIDInet", true, None::<Accelerator>));
 
     menu
 }
@@ -405,12 +395,7 @@ pub fn build_disconnected_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    let quit_label = if cfg!(target_os = "windows") {
-        "Quit MIDInet"
-    } else {
-        "Quit Tray"
-    };
-    let _ = menu.append(&MenuItem::with_id(ID_QUIT, quit_label, true, None::<Accelerator>));
+    let _ = menu.append(&MenuItem::with_id(ID_QUIT, "Quit MIDInet", true, None::<Accelerator>));
 
     menu
 }
