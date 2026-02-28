@@ -87,8 +87,9 @@ mkdir -p "$INSTALL_DIR"
 if [ -d "$SRC_DIR/.git" ]; then
     cd "$SRC_DIR"
     git fetch origin
-    git checkout "$BRANCH"
-    git reset --hard "origin/$BRANCH"
+    # Use -B to force branch checkout (avoids checking out tag when both tag + branch
+    # exist with the same name, which causes detached HEAD)
+    git checkout -B "$BRANCH" "origin/$BRANCH"
     ok "Updated to latest $BRANCH"
 else
     git clone --branch "$BRANCH" "$REPO_URL" "$SRC_DIR"
