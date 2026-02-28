@@ -1,7 +1,7 @@
-/// Windows auto-start management via the Registry Run key.
+/// Auto-start management.
 ///
-/// Reads/writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MIDInet`
-/// to control whether midi-tray.exe launches on user login.
+/// Windows: Registry Run key (`HKCU\...\Run\MIDInet`).
+/// macOS: LaunchAgent plist (`~/Library/LaunchAgents/co.hakol.midinet-client.plist`).
 
 #[cfg(target_os = "windows")]
 pub use windows_impl::*;
@@ -69,13 +69,96 @@ mod windows_impl {
     }
 }
 
-// No-op on non-Windows platforms
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub use macos_impl::*;
+
+#[cfg(target_os = "macos")]
+mod macos_impl {
+    use std::process::Command;
+    use tracing::{info, warn};
+
+    const CLIENT_LABEL: &str = "co.hakol.midinet-client";
+
+    fn plist_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/Library/LaunchAgents/{}.plist", home, CLIENT_LABEL)
+    }
+
+    /// Check if the client LaunchAgent is loaded (i.e. auto-starts at login).
+    pub fn is_enabled() -> bool {
+        // If the plist exists and is loaded, `launchctl list` will find it
+        let path = plist_path();
+        if !std::path::Path::new(&path).exists() {
+            return false;
+        }
+        Command::new("launchctl")
+            .args(["list", CLIENT_LABEL])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Enable auto-start (load the LaunchAgent plist).
+    pub fn enable() -> Result<(), String> {
+        let path = plist_path();
+        if !std::path::Path::new(&path).exists() {
+            return Err(format!("LaunchAgent plist not found: {}", path));
+        }
+        let uid = unsafe { libc::getuid() };
+        let output = Command::new("launchctl")
+            .args(["bootstrap", &format!("gui/{}", uid), &path])
+            .output()
+            .map_err(|e| format!("Failed to run launchctl: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Error 37 = "already loaded" — treat as success
+            if !stderr.contains("37") {
+                warn!(stderr = %stderr.trim(), "launchctl bootstrap failed");
+                return Err(format!("launchctl bootstrap failed: {}", stderr.trim()));
+            }
+        }
+        info!("Auto-start enabled (LaunchAgent loaded)");
+        Ok(())
+    }
+
+    /// Disable auto-start (unload the LaunchAgent plist).
+    pub fn disable() -> Result<(), String> {
+        let uid = unsafe { libc::getuid() };
+        let target = format!("gui/{}/{}", uid, CLIENT_LABEL);
+        let output = Command::new("launchctl")
+            .args(["bootout", &target])
+            .output()
+            .map_err(|e| format!("Failed to run launchctl: {}", e))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Error 3 = "not loaded" — treat as success
+            if !stderr.contains("3:") {
+                warn!(stderr = %stderr.trim(), "launchctl bootout failed");
+            }
+        }
+        info!("Auto-start disabled (LaunchAgent unloaded)");
+        Ok(())
+    }
+
+    /// Toggle auto-start. Returns the new state.
+    pub fn toggle() -> Result<bool, String> {
+        if is_enabled() {
+            disable()?;
+            Ok(false)
+        } else {
+            enable()?;
+            Ok(true)
+        }
+    }
+}
+
+// No-op on unsupported platforms
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn is_enabled() -> bool {
     false
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 #[allow(dead_code)]
 pub fn toggle() -> Result<bool, String> {
     Ok(false)

@@ -70,8 +70,8 @@ pub fn build_initial_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Windows-only: restart, auto-start, check for updates
-    #[cfg(target_os = "windows")]
+    // Check for updates (Windows + macOS)
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -79,12 +79,22 @@ pub fn build_initial_menu() -> Menu {
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Restart client
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Auto-start toggle
+    #[cfg(target_os = "windows")]
+    {
         let auto_label = if crate::autostart::is_enabled() {
             "Start with Windows  [ON]"
         } else {
@@ -96,8 +106,24 @@ pub fn build_initial_menu() -> Menu {
             true,
             None::<Accelerator>,
         ));
-        let _ = menu.append(&PredefinedMenuItem::separator());
     }
+    #[cfg(target_os = "macos")]
+    {
+        let auto_label = if crate::autostart::is_enabled() {
+            "Start at Login  [ON]"
+        } else {
+            "Start at Login  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(
         "version_line",
@@ -233,8 +259,8 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
 
-    // Windows-only: check for updates, restart client, auto-start toggle
-    #[cfg(target_os = "windows")]
+    // Check for updates (Windows + macOS)
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -242,12 +268,22 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Restart client
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Auto-start toggle
+    #[cfg(target_os = "windows")]
+    {
         let auto_label = if auto_start {
             "Start with Windows  [ON]"
         } else {
@@ -259,8 +295,24 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, #[allow(unused)] auto_
             true,
             None::<Accelerator>,
         ));
-        let _ = menu.append(&PredefinedMenuItem::separator());
     }
+    #[cfg(target_os = "macos")]
+    {
+        let auto_label = if auto_start {
+            "Start at Login  [ON]"
+        } else {
+            "Start at Login  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(
         "version_line",
@@ -299,8 +351,8 @@ pub fn build_disconnected_menu() -> Menu {
     ));
     let _ = menu.append(&PredefinedMenuItem::separator());
 
-    // Windows-only: check for updates, restart, auto-start
-    #[cfg(target_os = "windows")]
+    // Check for updates (Windows + macOS)
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = menu.append(&MenuItem::with_id(
             ID_CHECK_UPDATE,
@@ -308,12 +360,22 @@ pub fn build_disconnected_menu() -> Menu {
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Restart client
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
         let _ = menu.append(&MenuItem::with_id(
             ID_RESTART_CLIENT,
             "Restart Client",
             true,
             None::<Accelerator>,
         ));
+    }
+
+    // Auto-start toggle
+    #[cfg(target_os = "windows")]
+    {
         let auto_label = if crate::autostart::is_enabled() {
             "Start with Windows  [ON]"
         } else {
@@ -325,8 +387,24 @@ pub fn build_disconnected_menu() -> Menu {
             true,
             None::<Accelerator>,
         ));
-        let _ = menu.append(&PredefinedMenuItem::separator());
     }
+    #[cfg(target_os = "macos")]
+    {
+        let auto_label = if crate::autostart::is_enabled() {
+            "Start at Login  [ON]"
+        } else {
+            "Start at Login  [OFF]"
+        };
+        let _ = menu.append(&MenuItem::with_id(
+            ID_AUTO_START,
+            auto_label,
+            true,
+            None::<Accelerator>,
+        ));
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let _ = menu.append(&PredefinedMenuItem::separator());
 
     let _ = menu.append(&MenuItem::with_id(
         "version_line",

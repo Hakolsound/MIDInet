@@ -1,9 +1,10 @@
-/// Self-update logic for the Windows tray.
+/// Self-update logic for the system tray.
 ///
 /// Checks for available updates by comparing the local git HEAD to the remote,
-/// and launches the PowerShell install script to perform the actual update.
+/// and launches the platform-specific install script to perform the actual update.
 ///
-/// Only compiled on Windows — macOS/Linux clients use their respective install scripts directly.
+/// Windows: launches PowerShell install script.
+/// macOS: launches bash install script in Terminal.app.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -22,13 +23,28 @@ pub struct UpdateCheckResult {
 }
 
 /// Find the MIDInet source directory.
-/// Layout: `%LOCALAPPDATA%\MIDInet\src\` (cloned by the install script).
+/// Windows: `%LOCALAPPDATA%\MIDInet\src\` (cloned by the install script).
+/// macOS: `~/.midinet/src/` (cloned by the install script).
 fn find_src_dir() -> Option<PathBuf> {
-    // Primary: %LOCALAPPDATA%\MIDInet\src
-    if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
-        let src = PathBuf::from(appdata).join("MIDInet").join("src");
-        if src.join(".git").exists() {
-            return Some(src);
+    // macOS: ~/.midinet/src
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let src = PathBuf::from(home).join(".midinet").join("src");
+            if src.join(".git").exists() {
+                return Some(src);
+            }
+        }
+    }
+
+    // Windows: %LOCALAPPDATA%\MIDInet\src
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+            let src = PathBuf::from(appdata).join("MIDInet").join("src");
+            if src.join(".git").exists() {
+                return Some(src);
+            }
         }
     }
 
@@ -77,6 +93,13 @@ pub fn check_for_update() -> UpdateCheckResult {
         Some(d) => d,
         None => {
             error!("Cannot find MIDInet source directory for update check");
+            #[cfg(target_os = "macos")]
+            return make_error(
+                "Source directory not found.\n\n\
+                 Expected: ~/.midinet/src/\n\
+                 Run the installer to set it up.",
+            );
+            #[cfg(not(target_os = "macos"))]
             return make_error(
                 "Source directory not found.\n\n\
                  Expected: %LOCALAPPDATA%\\MIDInet\\src\\\n\
@@ -231,7 +254,7 @@ fn wait_with_timeout(
     }
 }
 
-/// Launch the PowerShell install script and exit the current process.
+/// Launch the platform-specific install script and exit the current process.
 /// The script will stop the tray, rebuild, and restart it.
 pub fn run_update() -> bool {
     let src_dir = match find_src_dir() {
@@ -242,23 +265,44 @@ pub fn run_update() -> bool {
         }
     };
 
-    let script = src_dir.join("scripts").join("client-install-windows.ps1");
-    if !script.exists() {
-        error!(path = %script.display(), "Install script not found");
+    #[cfg(target_os = "windows")]
+    let result = {
+        let script = src_dir.join("scripts").join("client-install-windows.ps1");
+        if !script.exists() {
+            error!(path = %script.display(), "Install script not found");
+            return false;
+        }
+        info!(script = %script.display(), "Launching update script");
+        // Launch PowerShell in a new window so the user can see progress
+        Command::new("powershell")
+            .args([
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script.to_string_lossy(),
+            ])
+            .spawn()
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = {
+        let script = src_dir.join("scripts").join("client-install-macos.sh");
+        if !script.exists() {
+            error!(path = %script.display(), "Install script not found");
+            return false;
+        }
+        info!(script = %script.display(), "Launching update script in Terminal.app");
+        // Launch in Terminal.app so the user can see progress
+        Command::new("open")
+            .args(["-a", "Terminal", &script.to_string_lossy()])
+            .spawn()
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result: Result<std::process::Child, std::io::Error> = {
+        error!("Update not supported on this platform");
         return false;
-    }
-
-    info!(script = %script.display(), "Launching update script");
-
-    // Launch PowerShell in a new window so the user can see progress
-    let result = Command::new("powershell")
-        .args([
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &script.to_string_lossy(),
-        ])
-        .spawn();
+    };
 
     match result {
         Ok(_) => {

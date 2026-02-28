@@ -22,7 +22,6 @@ mod autostart;
 mod icons;
 mod menu;
 mod process_manager;
-#[cfg(target_os = "windows")]
 mod updater;
 mod ws_client;
 
@@ -46,17 +45,6 @@ use crate::menu::{
 use crate::process_manager::ProcessStatus;
 use crate::ws_client::{send_command, spawn_ws_thread, WsEvent};
 
-// ── macOS: raw FFI for CoreFoundation run loop ──
-#[cfg(target_os = "macos")]
-#[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
-    static kCFRunLoopDefaultMode: *const std::ffi::c_void;
-    fn CFRunLoopRunInMode(
-        mode: *const std::ffi::c_void,
-        seconds: f64,
-        return_after_source_handled: u8,
-    ) -> i32;
-}
 
 // ── Windows: atomic flag for system shutdown/logoff signals ──
 #[cfg(target_os = "windows")]
@@ -165,6 +153,61 @@ fn confirm_quit() -> bool {
     result == 6 // IDYES
 }
 
+/// Show an informational dialog on macOS using osascript (OK button only).
+#[cfg(target_os = "macos")]
+fn show_info_dialog(title: &str, message: &str) {
+    let escaped_msg = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display dialog \"{}\" with title \"{}\" buttons {{\"OK\"}} default button \"OK\"",
+        escaped_msg, escaped_title,
+    );
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+}
+
+/// Show a Yes/No dialog on macOS using osascript. Returns true if user clicked Yes.
+#[cfg(target_os = "macos")]
+fn show_yesno_dialog(title: &str, message: &str) -> bool {
+    let escaped_msg = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display dialog \"{}\" with title \"{}\" buttons {{\"No\", \"Yes\"}} default button \"No\"",
+        escaped_msg, escaped_title,
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map(|o| {
+            // osascript returns success if user clicks any button, but the stdout
+            // contains "button returned:Yes" or "button returned:No"
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            stdout.contains("Yes")
+        })
+        .unwrap_or(false)
+}
+
+/// Platform-appropriate log directory for the tray application.
+/// macOS: ~/.midinet/logs/ (exe lives in /usr/local/bin — not writable)
+/// Windows: exe_dir/logs/ (exe lives in %LOCALAPPDATA%\MIDInet\bin)
+fn tray_log_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return std::path::PathBuf::from(home)
+                .join(".midinet")
+                .join("logs");
+        }
+    }
+
+    // Windows / fallback: next to the executable
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("logs")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 fn main() {
     // ── Panic hook: log + show dialog on crash ──
     // Must be first — catches panics in all subsequent initialization.
@@ -186,15 +229,11 @@ fn main() {
 
         let msg = format!("MIDInet tray panicked at {}: {}", location, payload);
 
-        // Write to panic log file next to the executable
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let log_dir = dir.join("logs");
-                let _ = std::fs::create_dir_all(&log_dir);
-                let path = log_dir.join("tray-panic.log");
-                let _ = std::fs::write(&path, &msg);
-            }
-        }
+        // Write to panic log file
+        let log_dir = tray_log_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        let path = log_dir.join("tray-panic.log");
+        let _ = std::fs::write(&path, &msg);
 
         #[cfg(target_os = "windows")]
         {
@@ -246,11 +285,9 @@ fn main() {
 
     // ── File-based logging ──
     // On Windows with windows_subsystem="windows", stderr is /dev/null.
-    // Write to a rotating daily log file next to the executable.
-    let log_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("logs")))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // macOS: ~/.midinet/logs/ (exe in /usr/local/bin is not writable)
+    // Windows: exe_dir/logs/ (exe in %LOCALAPPDATA%\MIDInet\bin is writable)
+    let log_dir = tray_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
 
     let file_appender = tracing_appender::rolling::daily(&log_dir, "tray.log");
@@ -523,9 +560,32 @@ fn main() {
                             error!("Failed to restart client: {}", e);
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    {
+                        info!("Restart client requested via menu");
+                        let uid = unsafe { libc::getuid() };
+                        let target = format!("gui/{}/co.hakol.midinet-client", uid);
+                        match std::process::Command::new("launchctl")
+                            .args(["kickstart", "-k", &target])
+                            .output()
+                        {
+                            Ok(o) if o.status.success() => {
+                                info!("Client restarted via launchctl kickstart");
+                            }
+                            Ok(o) => {
+                                let stderr = String::from_utf8_lossy(&o.stderr);
+                                tracing::warn!(stderr = %stderr.trim(), "launchctl kickstart failed");
+                                show_info_dialog("MIDInet", &format!("Failed to restart client:\n{}", stderr.trim()));
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to run launchctl");
+                                show_info_dialog("MIDInet", &format!("Failed to restart client:\n{}", e));
+                            }
+                        }
+                    }
                 }
                 ID_AUTO_START => {
-                    #[cfg(target_os = "windows")]
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
                     {
                         match autostart::toggle() {
                             Ok(enabled) => {
@@ -535,7 +595,7 @@ fn main() {
                                 last_menu_state = None;
                             }
                             Err(e) => {
-                                error!("Failed to toggle auto-start: {}", e);
+                                tracing::error!("Failed to toggle auto-start: {}", e);
                             }
                         }
                     }
@@ -547,59 +607,59 @@ fn main() {
                             show_resolume_block_dialog();
                             continue;
                         }
-                        // Run update check in a background thread to avoid blocking the GUI
-                        let admin_url = last_snapshot
-                            .as_ref()
-                            .and_then(|s| s.admin_url.clone());
-                        let snapshot_for_update = last_snapshot.clone();
-                        std::thread::spawn(move || {
-                            let result = updater::check_for_update();
-                            if !result.error.is_empty() {
-                                show_info_dialog("MIDInet Update", &format!("Update check failed:\n\n{}", result.error));
-                                return;
-                            }
-                            if !result.available {
-                                // Client is up to date — check if host needs updating
-                                let host_mismatch = snapshot_for_update
-                                    .as_ref()
-                                    .map(|s| s.version_mismatch)
-                                    .unwrap_or(false);
-                                if host_mismatch {
-                                    let host_hash = snapshot_for_update
-                                        .as_ref()
-                                        .map(|s| s.host_git_hash.as_str())
-                                        .unwrap_or("unknown");
-                                    show_info_dialog(
-                                        "MIDInet Update",
-                                        &format!(
-                                            "Client is up to date ({}).\n\n\
-                                             Your host (Pi) is running an older version ({}).\n\
-                                             Update it from the Admin Dashboard or via SSH:\n\n\
-                                             sudo midinet-update",
-                                            result.current_hash, host_hash
-                                        ),
-                                    );
-                                } else {
-                                    show_info_dialog(
-                                        "MIDInet Update",
-                                        &format!("MIDInet is up to date ({})", result.current_hash),
-                                    );
-                                }
-                                return;
-                            }
-                            // Show confirmation dialog with changelog and cross-component warning
-                            let msg = updater::format_update_dialog(
-                                &result,
-                                admin_url.as_deref(),
-                            );
-                            if show_yesno_dialog("MIDInet Update", &msg) {
-                                if updater::run_update() {
-                                    // Script launched — exit tray so it can be replaced
-                                    std::process::exit(0);
-                                }
-                            }
-                        });
                     }
+                    // Run update check in a background thread to avoid blocking the GUI
+                    let admin_url = last_snapshot
+                        .as_ref()
+                        .and_then(|s| s.admin_url.clone());
+                    let snapshot_for_update = last_snapshot.clone();
+                    std::thread::spawn(move || {
+                        let result = updater::check_for_update();
+                        if !result.error.is_empty() {
+                            show_info_dialog("MIDInet Update", &format!("Update check failed:\n\n{}", result.error));
+                            return;
+                        }
+                        if !result.available {
+                            // Client is up to date — check if host needs updating
+                            let host_mismatch = snapshot_for_update
+                                .as_ref()
+                                .map(|s| s.version_mismatch)
+                                .unwrap_or(false);
+                            if host_mismatch {
+                                let host_hash = snapshot_for_update
+                                    .as_ref()
+                                    .map(|s| s.host_git_hash.as_str())
+                                    .unwrap_or("unknown");
+                                show_info_dialog(
+                                    "MIDInet Update",
+                                    &format!(
+                                        "Client is up to date ({}).\n\n\
+                                         Your host (Pi) is running an older version ({}).\n\
+                                         Update it from the Admin Dashboard or via SSH:\n\n\
+                                         sudo midinet-update",
+                                        result.current_hash, host_hash
+                                    ),
+                                );
+                            } else {
+                                show_info_dialog(
+                                    "MIDInet Update",
+                                    &format!("MIDInet is up to date ({})", result.current_hash),
+                                );
+                            }
+                            return;
+                        }
+                        // Show confirmation dialog with changelog and cross-component warning
+                        let msg = updater::format_update_dialog(
+                            &result,
+                            admin_url.as_deref(),
+                        );
+                        if show_yesno_dialog("MIDInet Update", &msg) {
+                            if updater::run_update() {
+                                // Script launched — exit tray so it can be replaced
+                                std::process::exit(0);
+                            }
+                        }
+                    });
                 }
                 ID_QUIT => {
                     #[cfg(target_os = "windows")]
@@ -627,12 +687,32 @@ fn main() {
         }
 
         // ── Pump the event loop ──
-        // On macOS: pump the native CFRunLoop for menu bar icon to render.
+        // On macOS: pump the NSApplication event queue for status item menus to work.
         // On Windows: pump the Win32 message queue for right-click context menu.
         // On Linux: a simple sleep suffices (GTK loop is implicit via tray-icon).
         #[cfg(target_os = "macos")]
-        unsafe {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.016, 0);
+        {
+            use objc2_app_kit::{NSApplication, NSEventMask};
+            use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+
+            let mtm = objc2::MainThreadMarker::new().unwrap();
+            let app = NSApplication::sharedApplication(mtm);
+            let until_date = NSDate::dateWithTimeIntervalSinceNow(0.016);
+
+            loop {
+                let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                    NSEventMask(u64::MAX),
+                    Some(&until_date),
+                    unsafe { NSDefaultRunLoopMode },
+                    true,
+                );
+                match event {
+                    Some(event) => {
+                        app.sendEvent(&event);
+                    }
+                    None => break,
+                }
+            }
         }
         #[cfg(target_os = "windows")]
         {
