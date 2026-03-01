@@ -282,6 +282,7 @@ function Header() {
           onClick=${() => { window.location.hash = '#' + t.id; }}>${t.label}</button>
       `)}
     </nav>
+    <a class="header-donate" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener" title="Support MIDInet">♥ Donate</a>
     <div class="header-spacer" />
     <div class="header-role" data-role=${role}>${role.toUpperCase()}</div>
     <div class="header-health">
@@ -1408,6 +1409,18 @@ function HelpPage() {
   const { dispatch } = useContext(AppContext);
   const cmd = (text) => html`<div class="cmd-block"><span class="cmd-text">${text}</span><button class="cmd-copy" onClick=${(e)=>{copyText(text,dispatch);e.target.textContent='OK';setTimeout(()=>e.target.textContent='COPY',1500)}}>COPY</button></div>`;
   return html`<div class="page-scroll">
+    <div class="help-support-banner">
+      <div class="help-support-banner-inner">
+        <span class="help-support-banner-heart">♥</span>
+        <div class="help-support-banner-text">
+          <strong>Support MIDInet</strong> — Free, open-source, and community-funded. No ads, no tracking.
+        </div>
+        <div class="help-support-banner-btns">
+          <a class="btn btn-support-banner" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">Donate</a>
+          <a class="btn btn-support-banner btn-support-banner-accent" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Support Monthly</a>
+        </div>
+      </div>
+    </div>
     <div class="help-section">
       <div class="help-title">Quick Start</div>
       <div class="help-subtitle">macOS</div>${cmd('curl -fsSL https://raw.githubusercontent.com/yourorg/midinet/main/scripts/client-install-macos.sh | bash')}
