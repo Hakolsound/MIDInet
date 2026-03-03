@@ -3,6 +3,8 @@ Description=MIDInet host restart (triggered by admin panel mode change)
 
 [Service]
 Type=oneshot
+# Reset rate-limit state first (crash-loops leave the service blocked)
+ExecStartPre=/bin/systemctl reset-failed midinet-host.service
 ExecStart=/bin/systemctl restart midinet-host.service
 # Clean up trigger file whether restart succeeded or failed
 ExecStopPost=/bin/rm -f /var/lib/midinet/restart-trigger

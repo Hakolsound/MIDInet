@@ -321,10 +321,28 @@ async fn main() -> anyhow::Result<()> {
         e
     })?;
 
-    let config: HostConfig = toml::from_str(&config_str).map_err(|e| {
+    let mut config: HostConfig = toml::from_str(&config_str).map_err(|e| {
         error!("Failed to parse config: {}", e);
         e
     })?;
+
+    // Multi-device mode: if no [[midi.devices]] entries, auto-populate from [midi].device
+    if config.host.mode == OperationalMode::MultiDevice && config.midi.devices.is_empty() {
+        // Extract a display name: "auto:APC40 mkII" → "APC40 mkII", else use raw string
+        let device_name = config.midi.device
+            .strip_prefix("auto:")
+            .unwrap_or(&config.midi.device)
+            .to_string();
+        info!(
+            device = %config.midi.device,
+            name = %device_name,
+            "No [[midi.devices]] configured — auto-creating highway from [midi].device"
+        );
+        config.midi.devices.push(DeviceConfig {
+            name: device_name,
+            device: config.midi.device.clone(),
+        });
+    }
 
     info!(
         host_id = config.host.id,
