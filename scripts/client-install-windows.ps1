@@ -128,10 +128,15 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     }
     # Fall back to direct download
     if (-not $gitInstalled) {
-        Write-Warn "Git not found. Downloading installer from git-scm.com..."
+        Write-Warn "Git not found. Downloading installer from GitHub..."
         try {
-            $gitInstallerUrl = "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe"
-            $gitInstaller = "$env:TEMP\git-installer.exe"
+            # Asset filenames include the version, so query the API for the actual URL
+            $gitRelease = Invoke-RestMethod "https://api.github.com/repos/git-for-windows/git/releases/latest"
+            $gitAsset = $gitRelease.assets | Where-Object { $_.name -match "^Git-.*-64-bit\.exe$" } | Select-Object -First 1
+            if (-not $gitAsset) { throw "Could not find 64-bit installer in latest release" }
+            $gitInstallerUrl = $gitAsset.browser_download_url
+            $gitInstaller = "$env:TEMP\$($gitAsset.name)"
+            Write-Warn "Downloading $($gitAsset.name)..."
             Invoke-WebRequest -Uri $gitInstallerUrl -OutFile $gitInstaller -UseBasicParsing
             Write-Warn "Running Git installer (silent)..."
             Start-Process -FilePath $gitInstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-" -Wait
