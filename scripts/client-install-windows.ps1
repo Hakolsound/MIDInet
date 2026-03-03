@@ -126,18 +126,20 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
             if (Get-Command git -ErrorAction SilentlyContinue) { $gitInstalled = $true }
         } catch {}
     }
-    # Fall back to direct download
+    # Fall back to direct download (WebClient is more reliable than Invoke-WebRequest on PS 5.1)
     if (-not $gitInstalled) {
         Write-Warn "Git not found. Downloading installer from GitHub..."
         try {
-            # Asset filenames include the version, so query the API for the actual URL
-            $gitRelease = Invoke-RestMethod "https://api.github.com/repos/git-for-windows/git/releases/latest"
+            $wc = New-Object System.Net.WebClient
+            $wc.Headers.Add("User-Agent", "MIDInet-Installer")
+            # Query API for the actual installer URL (asset names include the version)
+            $json = $wc.DownloadString("https://api.github.com/repos/git-for-windows/git/releases/latest")
+            $gitRelease = $json | ConvertFrom-Json
             $gitAsset = $gitRelease.assets | Where-Object { $_.name -match "^Git-.*-64-bit\.exe$" } | Select-Object -First 1
             if (-not $gitAsset) { throw "Could not find 64-bit installer in latest release" }
-            $gitInstallerUrl = $gitAsset.browser_download_url
             $gitInstaller = "$env:TEMP\$($gitAsset.name)"
             Write-Warn "Downloading $($gitAsset.name)..."
-            Invoke-WebRequest -Uri $gitInstallerUrl -OutFile $gitInstaller -UseBasicParsing
+            $wc.DownloadFile($gitAsset.browser_download_url, $gitInstaller)
             Write-Warn "Running Git installer (silent)..."
             Start-Process -FilePath $gitInstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-" -Wait
             Remove-Item $gitInstaller -Force -ErrorAction SilentlyContinue
@@ -158,7 +160,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Write-Warn "Rust not found. Installing via rustup..."
     try {
         $rustupInit = "$env:TEMP\rustup-init.exe"
-        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustupInit
+        (New-Object System.Net.WebClient).DownloadFile("https://win.rustup.rs/x86_64", $rustupInit)
         & $rustupInit -y --default-toolchain stable
         $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
     } catch {}
@@ -196,7 +198,7 @@ if ($HasVsCpp) {
         Write-Warn "winget not available. Downloading VS Build Tools installer directly..."
         try {
             $vsbtInstaller = "$env:TEMP\vs_BuildTools.exe"
-            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $vsbtInstaller -UseBasicParsing
+            (New-Object System.Net.WebClient).DownloadFile("https://aka.ms/vs/17/release/vs_BuildTools.exe", $vsbtInstaller)
             Write-Warn "Running VS Build Tools installer (this may take several minutes)..."
             Start-Process -FilePath $vsbtInstaller -ArgumentList `
                 "--wait", "--passive", "--norestart", `
@@ -254,7 +256,7 @@ if ($HasTeVirtualMidi) {
     $teVmDir = "$env:TEMP\teVirtualMIDISDK"
     $teVmUrl = "https://www.tobias-erichsen.de/wp-content/uploads/2020/01/teVirtualMIDISDKSetup_1_3_0_43.zip"
     try {
-        Invoke-WebRequest -Uri $teVmUrl -OutFile $teVmZip -UseBasicParsing
+        (New-Object System.Net.WebClient).DownloadFile($teVmUrl, $teVmZip)
         Expand-Archive -Path $teVmZip -DestinationPath $teVmDir -Force
         $teVmSetup = Get-ChildItem -Path $teVmDir -Filter "*.exe" -Recurse | Select-Object -First 1
         if ($teVmSetup) {
