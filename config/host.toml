@@ -5,6 +5,7 @@
 [host]
 id = 1                              # Lower ID = higher priority for primary
 name = "host-a"                     # Human-readable name (used in mDNS)
+# mode = "single"                  # "single" (default), "redundant", or "multi"
 
 [network]
 multicast_group = "239.69.83.1"     # Unique per host (primary: .1, standby: .2)
@@ -33,6 +34,20 @@ device = "auto"                     # ALSA device: "auto" to detect, "hw:1,0,0" 
 # input_failover_timeout_s = 0    # Switch if active controller silent for N seconds
                                     # 0 = disabled (only switch on disconnect/error)
                                     # Recommended: 5-10s for live performance
+
+# --- Multi-Device Highways (mode = "multi") ---
+# Each [[midi.devices]] entry creates an independent MIDI highway with its own
+# device_id. Clients create one virtual device per highway. All highways share
+# the same multicast group (packets are distinguished by device_id in the header).
+# Up to 16 devices per host (limited by the device_mask bitmask).
+#
+# [[midi.devices]]
+# name = "APC40"
+# device = "auto:APC40"
+#
+# [[midi.devices]]
+# name = "nanoKONTROL2"
+# device = "auto:nanoKONTROL"
 
 [failover]
 auto_enabled = true                 # Auto-switch on primary failure

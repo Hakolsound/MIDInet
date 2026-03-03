@@ -55,6 +55,18 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
         );
     }
 
+    // Operational mode
+    properties.insert("mode".to_string(), state.mode.to_string());
+
+    // Extra device names (multi-device mode): semicolon-separated list
+    {
+        let identities = state.device_identities.read().await;
+        if identities.len() > 1 {
+            let extra: Vec<&str> = identities.iter().skip(1).map(|id| id.name.as_str()).collect();
+            properties.insert("extra".to_string(), extra.join(";"));
+        }
+    }
+
     let service_info = ServiceInfo::new(
         MDNS_SERVICE_TYPE,
         &instance_name,

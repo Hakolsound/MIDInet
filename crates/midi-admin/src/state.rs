@@ -417,7 +417,18 @@ pub struct HostInfo {
     pub data_port: u16,
     #[serde(default)]
     pub heartbeat_port: u16,
+    /// Operational mode: "single", "redundant", "multi"
+    #[serde(default)]
+    pub operational_mode: String,
+    /// Total device count (1 for single/redundant, N for multi)
+    #[serde(default = "default_device_count")]
+    pub device_count: u8,
+    /// Additional device names beyond the primary (multi-device mode)
+    #[serde(default)]
+    pub extra_device_names: Vec<String>,
 }
+
+fn default_device_count() -> u8 { 1 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {

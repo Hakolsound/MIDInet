@@ -154,6 +154,7 @@ pub async fn run(
             sequence,
             timestamp_us: now_us(),
             host_id: state.config.host.id,
+            device_id: 0,
             midi_data: processed_buf.clone(),
             journal,
         };
@@ -222,6 +223,7 @@ pub async fn run_heartbeat(state: Arc<SharedState>) -> anyhow::Result<()> {
             role,
             sequence,
             timestamp_us: now_us(),
+            device_mask: state.device_mask.load(std::sync::atomic::Ordering::Relaxed),
         };
 
         packet.serialize(&mut buf);
@@ -246,7 +248,7 @@ pub async fn run_heartbeat(state: Arc<SharedState>) -> anyhow::Result<()> {
 
 /// Determine the length of a MIDI message starting at the given position.
 /// Returns (message_length, status_byte).
-fn midi_message_length(data: &[u8]) -> (usize, u8) {
+pub(crate) fn midi_message_length(data: &[u8]) -> (usize, u8) {
     if data.is_empty() {
         return (0, 0);
     }

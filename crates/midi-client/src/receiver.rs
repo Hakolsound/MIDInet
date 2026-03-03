@@ -130,18 +130,34 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                     // Update MIDI state model with processed data
                     midi_state.process_message(&forward_data);
 
-                    // Forward to virtual MIDI device if it's ready
-                    let device_ready = *state.device_ready.read().await;
-                    if device_ready {
-                        let vdev = state.virtual_device.read().await;
-                        if let Err(e) = vdev.send(&forward_data) {
-                            error!("Failed to send MIDI to virtual device: {}", e);
+                    // Forward to the correct virtual MIDI device based on device_id.
+                    // Multi-device mode: route by device_id.
+                    // Single mode: all packets go to the primary virtual device (device_id=0).
+                    let multi_devs = state.multi_devices.read().await;
+                    if !multi_devs.is_empty() {
+                        // Multi-device mode
+                        let did = packet.device_id as usize;
+                        if did < multi_devs.len() && multi_devs[did].ready {
+                            if let Err(e) = multi_devs[did].device.send(&forward_data) {
+                                error!(device_id = packet.device_id, "Failed to send MIDI to multi-device: {}", e);
+                            }
+                        }
+                    } else {
+                        // Single device mode (backward compat)
+                        drop(multi_devs);
+                        let device_ready = *state.device_ready.read().await;
+                        if device_ready {
+                            let vdev = state.virtual_device.read().await;
+                            if let Err(e) = vdev.send(&forward_data) {
+                                error!("Failed to send MIDI to virtual device: {}", e);
+                            }
                         }
                     }
 
                     debug!(
                         seq = packet.sequence,
                         host = packet.host_id,
+                        device_id = packet.device_id,
                         bytes = forward_data.len(),
                         from = %addr,
                         "Received and forwarded MIDI data"

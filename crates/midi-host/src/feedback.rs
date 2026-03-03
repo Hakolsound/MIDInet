@@ -229,6 +229,7 @@ async fn handle_focus_packet(
                     sequence: packet.sequence,
                     timestamp_us: now_us(),
                     mode: packet.mode,
+                    device_id: packet.device_id,
                 };
                 let mut ack_buf = [0u8; FocusPacket::SIZE];
                 ack.serialize(&mut ack_buf);

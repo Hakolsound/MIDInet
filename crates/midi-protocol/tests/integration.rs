@@ -23,6 +23,7 @@ fn midi_data_packet_roundtrip_no_journal() {
         sequence: 1023,
         timestamp_us: 123_456_789_012,
         host_id: 2,
+        device_id: 0,
         midi_data: vec![0x90, 0x3C, 0x7F], // Note On C4 vel 127
         journal: None,
     };
@@ -47,6 +48,7 @@ fn midi_data_packet_roundtrip_with_journal() {
         sequence: 65535,
         timestamp_us: u64::MAX,
         host_id: 0,
+        device_id: 0,
         midi_data: vec![0xB0, 0x07, 0x64], // CC7 (Volume) = 100
         journal: Some(journal_data.clone()),
     };
@@ -75,6 +77,7 @@ fn midi_data_packet_with_large_midi_payload() {
         sequence: 500,
         timestamp_us: 999,
         host_id: 1,
+        device_id: 0,
         midi_data: sysex.clone(),
         journal: None,
     };
@@ -97,6 +100,7 @@ fn heartbeat_packet_roundtrip_primary() {
         role: HostRole::Primary,
         sequence: 12345,
         timestamp_us: 7_777_777,
+        device_mask: 0x0001,
     };
 
     let mut buf = [0u8; HeartbeatPacket::SIZE];
@@ -118,6 +122,7 @@ fn heartbeat_packet_roundtrip_standby() {
         role: HostRole::Standby,
         sequence: 0,
         timestamp_us: 0,
+        device_mask: 0x0001,
     };
 
     let mut buf = [0u8; HeartbeatPacket::SIZE];
@@ -139,6 +144,7 @@ fn heartbeat_packet_boundary_values() {
         role: HostRole::Primary,
         sequence: u16::MAX,
         timestamp_us: u64::MAX,
+        device_mask: 0xFFFF,
     };
 
     let mut buf = [0u8; HeartbeatPacket::SIZE];
@@ -545,6 +551,7 @@ fn identity_bincode_roundtrip() {
         ],
         port_count_in: 1,
         port_count_out: 2,
+        device_id: 0,
     };
 
     let encoded = bincode::serialize(&identity)
@@ -588,6 +595,7 @@ fn identity_sysex_reply_format() {
         ],
         port_count_in: 1,
         port_count_out: 1,
+        device_id: 0,
     };
 
     let reply = identity.sysex_identity_reply();
@@ -723,6 +731,7 @@ fn journal_inside_midi_data_packet_roundtrip() {
         sequence: 42,
         timestamp_us: 1_000_000,
         host_id: 1,
+        device_id: 0,
         midi_data: vec![0x90, 65, 90], // A new Note On in this packet
         journal: Some(journal_bytes.clone()),
     };
@@ -806,6 +815,7 @@ fn pipeline_default_config_is_passthrough() {
 fn identity_packet_roundtrip() {
     let packet = IdentityPacket {
         host_id: 1,
+        device_id: 0,
         device_name: "Novation Launchpad Pro".to_string(),
         manufacturer: "Novation".to_string(),
         vendor_id: 0x1235,

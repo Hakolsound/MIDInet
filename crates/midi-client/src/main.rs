@@ -117,6 +117,8 @@ pub struct DiscoveredHost {
     pub device_name: String,
     pub protocol_version: Option<u8>,
     pub admin_url: Option<String>,
+    /// Extra device names (multi-device mode). Does not include the primary device_name.
+    pub extra_device_names: Vec<String>,
 }
 
 /// Commands the tray or health API can send to the focus task.
@@ -126,10 +128,18 @@ pub enum FocusCommand {
     Release,
 }
 
+/// A single device slot in multi-device mode.
+/// Each slot holds a virtual MIDI device cloned from one of the host's physical controllers.
+pub struct MultiDeviceSlot {
+    pub identity: DeviceIdentity,
+    pub device: Box<dyn VirtualMidiDevice>,
+    pub ready: bool,
+}
+
 /// Client shared state
 pub struct ClientState {
     pub config: ClientConfig,
-    /// Device identity received from the active host
+    /// Device identity received from the active host (device_id=0 / single mode)
     pub identity: RwLock<DeviceIdentity>,
     /// Discovered hosts from mDNS
     pub discovered_hosts: RwLock<Vec<DiscoveredHost>>,
@@ -137,9 +147,9 @@ pub struct ClientState {
     pub active_host_id: RwLock<Option<u8>>,
     /// Client unique ID (randomly generated on startup)
     pub client_id: u32,
-    /// Virtual MIDI device (thread-safe)
+    /// Virtual MIDI device (thread-safe) — device_id=0 / single mode
     pub virtual_device: RwLock<Box<dyn VirtualMidiDevice>>,
-    /// Whether the virtual device has been initialized
+    /// Whether the virtual device has been initialized (device_id=0)
     pub device_ready: RwLock<bool>,
     /// MIDI processing pipeline config (hot-reloadable via admin API)
     pub pipeline_config: RwLock<PipelineConfig>,
@@ -153,6 +163,10 @@ pub struct ClientState {
     pub focus_rx: std::sync::Mutex<Option<mpsc::Receiver<FocusCommand>>>,
     /// Cancellation token for graceful shutdown (set by Ctrl+C or /shutdown API)
     pub cancel: CancellationToken,
+    /// Multi-device slots (populated when host is in multi-device mode).
+    /// Indexed by device_id. When non-empty, the receiver routes packets by device_id.
+    /// When empty, falls through to the single `virtual_device` (backward compat).
+    pub multi_devices: RwLock<Vec<MultiDeviceSlot>>,
 }
 
 #[tokio::main]
@@ -223,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
         focus_tx,
         focus_rx: std::sync::Mutex::new(Some(focus_rx)),
         cancel: cancel.clone(),
+        multi_devices: RwLock::new(Vec::new()),
     });
 
     info!(client_id = client_id, "MIDInet client starting");

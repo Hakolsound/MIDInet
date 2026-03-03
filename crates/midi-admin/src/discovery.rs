@@ -77,6 +77,19 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         .unwrap_or(midi_protocol::DEFAULT_PRIMARY_GROUP)
         .to_string();
 
+    let operational_mode = properties
+        .get_property_val_str("mode")
+        .unwrap_or("single")
+        .to_string();
+
+    let extra_device_names: Vec<String> = properties
+        .get_property_val_str("extra")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(';').map(|n| n.to_string()).collect())
+        .unwrap_or_default();
+
+    let device_count = 1 + extra_device_names.len() as u8;
+
     // Pick first IPv4 address
     let ip = info
         .get_addresses()
@@ -103,6 +116,9 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         multicast_group: multicast_group.clone(),
         data_port: info.get_port(),
         heartbeat_port: info.get_port().saturating_add(1),
+        operational_mode: operational_mode.clone(),
+        device_count,
+        extra_device_names: extra_device_names.clone(),
     };
 
     info!(
@@ -111,6 +127,8 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         role = %role,
         ip = %ip,
         device = %device_name,
+        mode = %operational_mode,
+        device_count,
         "Discovered MIDInet host"
     );
 
@@ -123,6 +141,9 @@ async fn handle_resolved(state: &AppState, info: &mdns_sd::ServiceInfo) {
         existing.device_name = host.device_name;
         existing.heartbeat_ok = true;
         existing.last_heartbeat_ms = now_ms;
+        existing.operational_mode = host.operational_mode;
+        existing.device_count = host.device_count;
+        existing.extra_device_names = host.extra_device_names;
     } else {
         hosts.push(host);
     }

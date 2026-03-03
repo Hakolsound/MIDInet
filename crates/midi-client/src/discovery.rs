@@ -23,8 +23,11 @@ use tracing::{debug, error, info, warn};
 use midi_protocol::packets::{DiscoverRequest, DiscoverResponse};
 use midi_protocol::{DEFAULT_DISCOVERY_PORT, MDNS_SERVICE_TYPE, PROTOCOL_VERSION};
 
+use midi_protocol::identity::DeviceIdentity;
+
 use crate::health::TaskPulse;
-use crate::{ClientState, DiscoveredHost};
+use crate::virtual_device::create_virtual_device;
+use crate::{ClientState, DiscoveredHost, MultiDeviceSlot};
 
 pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
     let mdns = ServiceDaemon::new()?;
@@ -137,6 +140,7 @@ async fn handle_service_resolved(
         device_name: device_name.clone(),
         protocol_version,
         admin_url: admin_url.clone(),
+        extra_device_names: vec![],
     };
 
     info!(
@@ -321,6 +325,7 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                 device_name: host.device_name.clone(),
                 protocol_version: None,
                 admin_url: Some(admin_url.clone()),
+                extra_device_names: vec![],
             };
 
             // Upsert into discovered hosts
@@ -476,6 +481,7 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
         device_name: resp.device_name.clone(),
         protocol_version: Some(resp.protocol_version),
         admin_url: Some(admin_url),
+        extra_device_names: resp.extra_device_names.clone(),
     };
 
     // Upsert into discovered hosts
@@ -549,6 +555,72 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
             );
             identity.name = resp.device_name.clone();
         }
+    }
+
+    // Multi-device: if host reports extra devices, create virtual devices for them
+    if !resp.extra_device_names.is_empty() {
+        init_multi_devices(state, &resp.device_name, &resp.extra_device_names).await;
+    }
+}
+
+/// Initialize multi-device virtual MIDI devices when a host reports multiple controllers.
+/// Creates one virtual device per device_id (including device_id=0 for the primary).
+async fn init_multi_devices(
+    state: &Arc<ClientState>,
+    primary_name: &str,
+    extra_names: &[String],
+) {
+    let mut multi = state.multi_devices.write().await;
+    let total = 1 + extra_names.len();
+
+    // Already initialized with the right count — skip
+    if multi.len() == total {
+        return;
+    }
+
+    info!(
+        device_count = total,
+        primary = %primary_name,
+        "Initializing multi-device virtual MIDI devices"
+    );
+
+    multi.clear();
+
+    // Device 0 = primary
+    let all_names: Vec<&str> = std::iter::once(primary_name)
+        .chain(extra_names.iter().map(|s| s.as_str()))
+        .collect();
+
+    for (idx, name) in all_names.iter().enumerate() {
+        let mut identity = DeviceIdentity::default();
+        identity.name = name.to_string();
+        identity.device_id = idx as u8;
+
+        let mut vdev = create_virtual_device();
+        let ready = match vdev.create(&identity) {
+            Ok(()) => {
+                info!(
+                    device_id = idx,
+                    name = %name,
+                    "Multi-device virtual MIDI device created"
+                );
+                true
+            }
+            Err(e) => {
+                error!(
+                    device_id = idx,
+                    name = %name,
+                    "Failed to create multi-device virtual MIDI device: {}", e
+                );
+                false
+            }
+        };
+
+        multi.push(MultiDeviceSlot {
+            identity,
+            device: vdev,
+            ready,
+        });
     }
 }
 

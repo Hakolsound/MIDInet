@@ -6,6 +6,7 @@ mod feedback;
 mod input_mux;
 mod metrics;
 mod midi_output;
+mod multi_device;
 mod osc_listener;
 mod pipeline;
 mod unicast_relay;
@@ -26,6 +27,7 @@ use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::midi_state::MidiState;
 use midi_protocol::packets::HostRole;
 use midi_protocol::ringbuf;
+use midi_protocol::OperationalMode;
 
 use crate::failover::FailoverManager;
 use crate::feedback::FocusState;
@@ -57,6 +59,9 @@ pub struct HostConfig {
 pub struct HostSection {
     pub id: u8,
     pub name: String,
+    /// Operational mode: "single", "redundant", or "multi"
+    #[serde(default)]
+    pub mode: OperationalMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +92,19 @@ pub struct MidiSection {
     /// Activity timeout in seconds for input failover (0 = disabled)
     #[serde(default)]
     pub input_failover_timeout_s: u64,
+    /// Multi-device highway definitions (only used in "multi" mode).
+    /// Each entry creates an independent MIDI highway with its own device_id.
+    #[serde(default)]
+    pub devices: Vec<DeviceConfig>,
+}
+
+/// Configuration for a single device highway in multi-device mode.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceConfig {
+    /// Display name for this device highway
+    pub name: String,
+    /// ALSA device path: "auto", "auto:NAME", or "hw:X,Y,Z"
+    pub device: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -240,7 +258,7 @@ pub struct SharedState {
     pub metrics: RwLock<metrics::HostMetrics>,
     /// Pipeline config (hot-reloadable via admin API)
     pub pipeline_config: RwLock<pipeline::PipelineConfig>,
-    /// Current MIDI state for journal snapshots
+    /// Current MIDI state for journal snapshots (device 0 / single mode)
     pub midi_state: RwLock<MidiState>,
     /// Currently active input controller (0 = primary, 1 = secondary).
     /// Kept in sync by the health monitor.
@@ -251,6 +269,12 @@ pub struct SharedState {
     pub input_redundancy_enabled: bool,
     /// Unicast relay target addresses (populated by unicast_relay task)
     pub unicast_targets: watch::Receiver<Vec<SocketAddrV4>>,
+    /// Operational mode
+    pub mode: OperationalMode,
+    /// Multi-device identities (indexed by device_id, only populated in MultiDevice mode)
+    pub device_identities: RwLock<Vec<DeviceIdentity>>,
+    /// Bitmask of active devices (bit N = device N alive). Updated by multi_device highway.
+    pub device_mask: Arc<std::sync::atomic::AtomicU16>,
 }
 
 /// Adapter that tags InputHealth events with an input index
@@ -351,6 +375,16 @@ async fn main() -> anyhow::Result<()> {
     let device_identity = usb_detector::read_device_identity(&resolved_device);
     info!(device_name = %device_identity.name, "Device identity loaded");
 
+    let mode = config.host.mode;
+    let device_mask = Arc::new(std::sync::atomic::AtomicU16::new(0x0001));
+
+    // Create FailoverManager for manual switch triggers (OSC, MIDI, API)
+    let (failover_role_tx, _) = watch::channel(initial_role);
+    let failover_mgr = Arc::new(FailoverManager::new(
+        config.failover.lockout_seconds,
+        failover_role_tx,
+    ));
+
     let state = Arc::new(SharedState {
         config: config.clone(),
         identity: RwLock::new(device_identity),
@@ -362,133 +396,159 @@ async fn main() -> anyhow::Result<()> {
         input_switch_count: Arc::clone(&input_switch_count),
         input_redundancy_enabled: dual_input,
         unicast_targets: unicast_rx,
+        mode,
+        device_identities: RwLock::new(Vec::new()),
+        device_mask: Arc::clone(&device_mask),
     });
 
-    // --- Dual-controller input setup ---
-    // Primary ring buffer (always created)
-    let (primary_producer, primary_consumer) = ringbuf::midi_ring_buffer(1024);
-    // Secondary ring buffer (always created — dummy if no secondary device)
-    let (secondary_producer, secondary_consumer) = ringbuf::midi_ring_buffer(1024);
+    // --- Task handles collector for clean shutdown ---
+    let mut task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // Health channel: readers report (input_index, health) events
-    let (health_tx, health_rx) = mpsc::channel::<(u8, usb_reader::InputHealth)>(16);
+    match mode {
+        OperationalMode::MultiDevice => {
+            // ═══ Multi-Device Highway Mode ═══
+            // Each configured device gets its own independent MIDI pipeline.
+            info!(
+                device_count = config.midi.devices.len(),
+                "Starting in MultiDevice mode"
+            );
 
-    // Spawn primary MIDI reader
-    let reader_primary_handle = {
-        let device = resolved_device.clone();
-        let tx = health_tx.clone();
-        tokio::spawn(async move {
-            let tagged_tx = TaggedHealthTx::new(0, tx);
-            if let Err(e) = usb_reader::platform::run_midi_reader(
-                &device, primary_producer, tagged_tx.into_sender(),
-            ).await {
-                error!("Primary MIDI reader error: {}", e);
+            if config.midi.devices.is_empty() {
+                error!("MultiDevice mode requires [[midi.devices]] entries in config");
+                return Err(anyhow::anyhow!("No devices configured for MultiDevice mode"));
             }
-        })
-    };
 
-    // Spawn secondary MIDI reader (only if configured)
-    let reader_secondary_handle = if dual_input {
-        let device = resolved_secondary.clone();
-        let tx = health_tx.clone();
-        info!(device = %device, "Input redundancy enabled — spawning secondary MIDI reader");
-        Some(tokio::spawn(async move {
-            let tagged_tx = TaggedHealthTx::new(1, tx);
-            if let Err(e) = usb_reader::platform::run_midi_reader(
-                &device, secondary_producer, tagged_tx.into_sender(),
-            ).await {
-                error!("Secondary MIDI reader error: {}", e);
+            let handles = multi_device::run_highways(
+                Arc::clone(&state),
+            ).await?;
+
+            task_handles.extend(handles);
+        }
+        _ => {
+            // ═══ Single / Redundant Mode ═══
+            // Existing code path: one device (optionally with dual-controller redundancy)
+
+            // --- Dual-controller input setup ---
+            // Primary ring buffer (always created)
+            let (primary_producer, primary_consumer) = ringbuf::midi_ring_buffer(1024);
+            // Secondary ring buffer (always created — dummy if no secondary device)
+            let (secondary_producer, secondary_consumer) = ringbuf::midi_ring_buffer(1024);
+
+            // Health channel: readers report (input_index, health) events
+            let (health_tx, health_rx) = mpsc::channel::<(u8, usb_reader::InputHealth)>(16);
+
+            // Spawn primary MIDI reader
+            task_handles.push({
+                let device = resolved_device.clone();
+                let tx = health_tx.clone();
+                tokio::spawn(async move {
+                    let tagged_tx = TaggedHealthTx::new(0, tx);
+                    if let Err(e) = usb_reader::platform::run_midi_reader(
+                        &device, primary_producer, tagged_tx.into_sender(),
+                    ).await {
+                        error!("Primary MIDI reader error: {}", e);
+                    }
+                })
+            });
+
+            // Spawn secondary MIDI reader (only if configured)
+            if dual_input {
+                let device = resolved_secondary.clone();
+                let tx = health_tx.clone();
+                info!(device = %device, "Input redundancy enabled — spawning secondary MIDI reader");
+                task_handles.push(tokio::spawn(async move {
+                    let tagged_tx = TaggedHealthTx::new(1, tx);
+                    if let Err(e) = usb_reader::platform::run_midi_reader(
+                        &device, secondary_producer, tagged_tx.into_sender(),
+                    ).await {
+                        error!("Secondary MIDI reader error: {}", e);
+                    }
+                }));
+            } else {
+                drop(secondary_producer); // Not needed
             }
-        }))
-    } else {
-        drop(secondary_producer); // Not needed
-        None
-    };
 
-    // Create InputMux (handles dual-controller failover)
-    let mux = Arc::new(input_mux::InputMux::new(primary_consumer, secondary_consumer));
+            // Create InputMux (handles dual-controller failover)
+            let mux = Arc::new(input_mux::InputMux::new(primary_consumer, secondary_consumer));
 
-    // Auto-switch flag — shared between health monitor, OSC listener, and admin API
-    let auto_switch_enabled = Arc::new(AtomicBool::new(true));
+            // Auto-switch flag — shared between health monitor, OSC listener, and admin API
+            let auto_switch_enabled = Arc::new(AtomicBool::new(true));
 
-    // Spawn health monitor (handles input failover decisions)
-    let health_monitor_handle = {
-        let mux = Arc::clone(&mux);
-        let switch_count = Arc::clone(&input_switch_count);
-        let shared_input_active = Arc::clone(&input_active);
-        let auto_switch = Arc::clone(&auto_switch_enabled);
-        let activity_timeout = if config.midi.input_failover_timeout_s > 0 {
-            Duration::from_secs(config.midi.input_failover_timeout_s)
-        } else {
-            Duration::ZERO
-        };
-        tokio::spawn(async move {
-            input_mux::run_health_monitor(
-                mux,
-                health_rx,
-                switch_count,
-                shared_input_active,
-                dual_input,
-                activity_timeout,
-                auto_switch,
-            ).await;
-        })
-    };
+            // Spawn health monitor (handles input failover decisions)
+            task_handles.push({
+                let mux = Arc::clone(&mux);
+                let switch_count = Arc::clone(&input_switch_count);
+                let shared_input_active = Arc::clone(&input_active);
+                let auto_switch = Arc::clone(&auto_switch_enabled);
+                let activity_timeout = if config.midi.input_failover_timeout_s > 0 {
+                    Duration::from_secs(config.midi.input_failover_timeout_s)
+                } else {
+                    Duration::ZERO
+                };
+                tokio::spawn(async move {
+                    input_mux::run_health_monitor(
+                        mux,
+                        health_rx,
+                        switch_count,
+                        shared_input_active,
+                        dual_input,
+                        activity_timeout,
+                        auto_switch,
+                    ).await;
+                })
+            });
 
-    // Spawn broadcaster — reads from InputMux, applies pipeline, sends via multicast
-    let broadcaster_handle = {
-        let state = Arc::clone(&state);
-        let mux = Arc::clone(&mux);
-        tokio::spawn(async move {
-            if let Err(e) = broadcaster::run(state, mux).await {
-                error!("Broadcaster error: {}", e);
+            // Spawn broadcaster — reads from InputMux, applies pipeline, sends via multicast
+            task_handles.push({
+                let state = Arc::clone(&state);
+                let mux = Arc::clone(&mux);
+                tokio::spawn(async move {
+                    if let Err(e) = broadcaster::run(state, mux).await {
+                        error!("Broadcaster error: {}", e);
+                    }
+                })
+            });
+
+            // Spawn OSC listener (handles both host failover and input switching)
+            {
+                let osc_ctx = Arc::new(osc_listener::OscContext {
+                    state: Arc::clone(&state),
+                    failover_mgr: Arc::clone(&failover_mgr),
+                    mux: if dual_input { Some(Arc::clone(&mux)) } else { None },
+                    input_switch_count: Arc::clone(&input_switch_count),
+                    shared_input_active: Arc::clone(&input_active),
+                });
+                info!(port = config.osc.listen_port, "Spawning OSC listener");
+                task_handles.push(tokio::spawn(async move {
+                    if let Err(e) = osc_listener::run(osc_ctx).await {
+                        error!("OSC listener error: {}", e);
+                    }
+                }));
             }
-        })
-    };
+        }
+    }
+
+    // ═══ Shared tasks (all modes) ═══
 
     // Spawn discovery
-    let discovery_handle = {
+    task_handles.push({
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = discovery::run(state).await {
                 error!("Discovery error: {}", e);
             }
         })
-    };
+    });
 
     // Spawn heartbeat
-    let heartbeat_handle = {
+    task_handles.push({
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = broadcaster::run_heartbeat(state).await {
                 error!("Heartbeat error: {}", e);
             }
         })
-    };
-
-    // Create FailoverManager for manual switch triggers (OSC, MIDI, API)
-    let (failover_role_tx, _) = watch::channel(initial_role);
-    let failover_mgr = Arc::new(FailoverManager::new(
-        config.failover.lockout_seconds,
-        failover_role_tx,
-    ));
-
-    // Spawn OSC listener (always — handles both host failover and input switching)
-    let osc_handle = {
-        let osc_ctx = Arc::new(osc_listener::OscContext {
-            state: Arc::clone(&state),
-            failover_mgr: Arc::clone(&failover_mgr),
-            mux: if dual_input { Some(Arc::clone(&mux)) } else { None },
-            input_switch_count: Arc::clone(&input_switch_count),
-            shared_input_active: Arc::clone(&input_active),
-        });
-        info!(port = config.osc.listen_port, "Spawning OSC listener");
-        Some(tokio::spawn(async move {
-            if let Err(e) = osc_listener::run(osc_ctx).await {
-                error!("OSC listener error: {}", e);
-            }
-        }))
-    };
+    });
 
     // Create focus state for bidirectional MIDI feedback
     let focus_state = Arc::new(RwLock::new(FocusState::default()));
@@ -503,7 +563,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Spawn feedback receiver (focus management + bidirectional MIDI)
-    let feedback_handle = {
+    task_handles.push({
         let state = Arc::clone(&state);
         let focus_state = Arc::clone(&focus_state);
         let midi_output = Arc::clone(&midi_output);
@@ -512,53 +572,38 @@ async fn main() -> anyhow::Result<()> {
                 error!("Feedback receiver error: {}", e);
             }
         })
-    };
+    });
 
     // Spawn unicast relay target fetcher (if enabled)
-    let unicast_handle = if config.unicast.enabled {
+    if config.unicast.enabled {
         let admin_url = config.unicast.admin_url.clone();
         let data_port = config.network.data_port;
         info!(admin_url = %admin_url, "Unicast relay enabled, fetching client targets from admin API");
-        Some(tokio::spawn(async move {
+        task_handles.push(tokio::spawn(async move {
             unicast_relay::run(admin_url, data_port, unicast_tx).await;
-        }))
-    } else {
-        None
-    };
+        }));
+    }
 
     // Spawn broadcast discovery responder (always — complements mDNS)
-    let broadcast_discovery_handle = {
+    task_handles.push({
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(e) = broadcast_discovery::run(state).await {
                 error!("Broadcast discovery error: {}", e);
             }
         })
-    };
+    });
 
-    info!(role = ?initial_role, "Host daemon running");
+    info!(role = ?initial_role, mode = %mode, "Host daemon running");
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
 
     // Abort all tasks
-    reader_primary_handle.abort();
-    if let Some(handle) = reader_secondary_handle {
+    for handle in &task_handles {
         handle.abort();
     }
-    health_monitor_handle.abort();
-    broadcaster_handle.abort();
-    discovery_handle.abort();
-    heartbeat_handle.abort();
-    if let Some(handle) = osc_handle {
-        handle.abort();
-    }
-    feedback_handle.abort();
-    if let Some(handle) = unicast_handle {
-        handle.abort();
-    }
-    broadcast_discovery_handle.abort();
 
     Ok(())
 }

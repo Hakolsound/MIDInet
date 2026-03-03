@@ -837,15 +837,27 @@ function NetworkCard() {
         <div class="ctrl-section-label">Hosts</div>
         ${state.hosts.map(h => {
           const isMaster = state.designatedPrimary === h.id;
-          return html`<div class="host-row" key=${h.id}>
-            <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
-            <span class="host-name">${h.device_name || h.name || h.ip}</span>
-            <span class="host-role-badge" data-role=${isMaster ? 'primary' : h.role}>${isMaster ? 'master' : h.role}</span>
-            <span class="host-detail">${h.ip}</span>
-            <button class="btn btn-xs ${isMaster ? 'btn-active' : ''}" onClick=${() =>
-              apiFetch('/api/hosts/' + h.id + '/role', { method: 'PUT', body: JSON.stringify({ role: 'primary' }) })
-                .then(() => dispatch({ type: 'SET_DESIGNATED_PRIMARY', id: h.id }))
-            }>${isMaster ? '\u2605 Master' : 'Set Master'}</button>
+          const isMulti = h.operational_mode === 'multi';
+          const allDevices = isMulti ? [h.device_name, ...(h.extra_device_names || [])] : null;
+          return html`<div class="host-row-wrap" key=${h.id}>
+            <div class="host-row">
+              <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
+              <span class="host-name">${h.device_name || h.name || h.ip}</span>
+              <span class="host-role-badge" data-role=${isMaster ? 'primary' : h.role}>${isMaster ? 'master' : h.role}</span>
+              ${h.operational_mode && h.operational_mode !== 'single' && html`
+                <span class="mode-badge" data-mode=${h.operational_mode}>${h.operational_mode}${isMulti ? ' \u00d7' + h.device_count : ''}</span>
+              `}
+              <span class="host-detail">${h.ip}</span>
+              <button class="btn btn-xs ${isMaster ? 'btn-active' : ''}" onClick=${() =>
+                apiFetch('/api/hosts/' + h.id + '/role', { method: 'PUT', body: JSON.stringify({ role: 'primary' }) })
+                  .then(() => dispatch({ type: 'SET_DESIGNATED_PRIMARY', id: h.id }))
+              }>${isMaster ? '\u2605 Master' : 'Set Master'}</button>
+            </div>
+            ${isMulti && allDevices && html`
+              <div class="host-devices">
+                ${allDevices.map((name, i) => html`<span class="host-device-tag" key=${i}>#${i} ${name}</span>`)}
+              </div>
+            `}
           </div>`;
         })}
       `}
@@ -954,10 +966,18 @@ function SignalFlowDiagram() {
   const hasFocus = s.focus_holder != null;
   const focusClient = hasFocus ? state.clients.find(c => c.id === s.focus_holder) : null;
 
+  // Multi-device: gather all device names from the first host
+  const activeHost = state.hosts.length > 0 ? state.hosts[0] : null;
+  const isMultiMode = activeHost?.operational_mode === 'multi';
+  const multiDevices = isMultiMode ? [activeHost.device_name, ...(activeHost.extra_device_names || [])] : [];
+
   return html`<div class="sf-diagram">
     <div class="sf-header">
       <span class="card-header-icon">${ICO.sliders()}</span>
       Signal Flow
+      ${activeHost?.operational_mode && activeHost.operational_mode !== 'single' && html`
+        <span class="mode-badge" data-mode=${activeHost.operational_mode} style="margin-left:8px">${activeHost.operational_mode}</span>
+      `}
       <div class="card-header-right">
         <button class="btn btn-sm" onClick=${() => dispatch({ type: 'SNIFFER_OPEN' })}>${ICO.search()} Sniffer</button>
       </div>
@@ -967,24 +987,34 @@ function SignalFlowDiagram() {
 
         <!-- Controllers Stage -->
         <div class="sf-stage">
-          <div class="sf-stage-label">Controllers</div>
+          <div class="sf-stage-label">Controllers${isMultiMode ? ' (' + multiDevices.length + ')' : ''}</div>
           <div class="sf-stage-nodes">
-            <div class="sf-node" data-health=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')}>
-              <span class="sf-node-dot" data-s=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')} />
-              <div class="sf-node-info">
-                <span class="sf-node-name">${ir.primary_device || 'Primary'}</span>
-                <span class="sf-node-meta">${devOk ? fmtRate(midi.messages_per_sec || 0) + '/s' : ir.primary_health || 'disconnected'}</span>
+            ${isMultiMode ? multiDevices.map((name, i) => html`
+              <div class="sf-node" data-health=${devOk ? 'ok' : 'warn'} key=${i}>
+                <span class="sf-node-dot" data-s=${devOk ? 'ok' : 'warn'} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${name}</span>
+                  <span class="sf-node-meta">Highway #${i}</span>
+                </div>
               </div>
-              ${ir.active_input === 0 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
-            </div>
-            <div class="sf-node" data-health=${hMap[ir.secondary_health] || 'off'}>
-              <span class="sf-node-dot" data-s=${hMap[ir.secondary_health] || 'off'} />
-              <div class="sf-node-info">
-                <span class="sf-node-name">${ir.secondary_device || 'Secondary'}</span>
-                <span class="sf-node-meta">${ir.secondary_health || 'standby'}</span>
+            `) : html`
+              <div class="sf-node" data-health=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')}>
+                <span class="sf-node-dot" data-s=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${ir.primary_device || 'Primary'}</span>
+                  <span class="sf-node-meta">${devOk ? fmtRate(midi.messages_per_sec || 0) + '/s' : ir.primary_health || 'disconnected'}</span>
+                </div>
+                ${ir.active_input === 0 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
               </div>
-              ${ir.active_input === 1 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
-            </div>
+              <div class="sf-node" data-health=${hMap[ir.secondary_health] || 'off'}>
+                <span class="sf-node-dot" data-s=${hMap[ir.secondary_health] || 'off'} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${ir.secondary_device || 'Secondary'}</span>
+                  <span class="sf-node-meta">${ir.secondary_health || 'standby'}</span>
+                </div>
+                ${ir.active_input === 1 && html`<span class="sf-node-badge" data-role="active">Active</span>`}
+              </div>
+            `}
           </div>
         </div>
 

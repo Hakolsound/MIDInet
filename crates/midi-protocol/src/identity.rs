@@ -21,6 +21,10 @@ pub struct DeviceIdentity {
     pub port_count_in: u8,
     /// Number of MIDI output ports
     pub port_count_out: u8,
+    /// Device slot index on the host (0-based, assigned at runtime).
+    /// In Single/Redundant modes this is always 0.
+    #[serde(default)]
+    pub device_id: u8,
 }
 
 impl Default for DeviceIdentity {
@@ -33,6 +37,7 @@ impl Default for DeviceIdentity {
             sysex_identity: [0; 15],
             port_count_in: 1,
             port_count_out: 1,
+            device_id: 0,
         }
     }
 }
@@ -86,6 +91,7 @@ mod tests {
             ],
             port_count_in: 1,
             port_count_out: 1,
+            device_id: 0,
         };
 
         let reply = id.sysex_identity_reply();

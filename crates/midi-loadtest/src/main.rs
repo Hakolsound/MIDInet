@@ -190,6 +190,7 @@ async fn test_latency(count: u64, interface: Ipv4Addr) -> anyhow::Result<bool> {
             sequence: 0,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: vec![0x90, 60, 127],
             journal: None,
         };
@@ -209,6 +210,7 @@ async fn test_latency(count: u64, interface: Ipv4Addr) -> anyhow::Result<bool> {
             sequence: seq as u16,
             timestamp_us: send_time,
             host_id: 1,
+            device_id: 0,
             midi_data: vec![0x90, 60, 127],
             journal: None,
         };
@@ -298,6 +300,7 @@ async fn test_throughput(duration_secs: u64, interface: Ipv4Addr) -> anyhow::Res
             sequence: seq,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: midi.clone(),
             journal: None,
         };
@@ -379,6 +382,7 @@ async fn test_burst(interface: Ipv4Addr) -> anyhow::Result<bool> {
             sequence: i,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: vec![0x99, note, 100 + (i % 28) as u8], // Ch 10, varying velocity
             journal: None,
         };
@@ -405,6 +409,7 @@ async fn test_burst(interface: Ipv4Addr) -> anyhow::Result<bool> {
                 sequence: 100 + stab * 12 + j as u16,
                 timestamp_us: now_us(),
                 host_id: 1,
+                device_id: 0,
                 midi_data: vec![0x90, note, 110],
                 journal: None,
             };
@@ -419,6 +424,7 @@ async fn test_burst(interface: Ipv4Addr) -> anyhow::Result<bool> {
                 sequence: 100 + stab * 12 + 6 + j as u16,
                 timestamp_us: now_us(),
                 host_id: 1,
+                device_id: 0,
                 midi_data: vec![0x80, note, 0],
                 journal: None,
             };
@@ -443,6 +449,7 @@ async fn test_burst(interface: Ipv4Addr) -> anyhow::Result<bool> {
             sequence: 300 + val as u16,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: vec![0xB0, 7, val], // CC7 Volume
             journal: None,
         };
@@ -466,6 +473,7 @@ async fn test_burst(interface: Ipv4Addr) -> anyhow::Result<bool> {
             sequence: 500 + i,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: vec![0x90, 36 + (i as u8 % 48), 127],
             journal: None,
         };
@@ -522,6 +530,7 @@ async fn test_heartbeat(count: u64, interface: Ipv4Addr) -> anyhow::Result<bool>
                 role: HostRole::Primary,
                 sequence: seq,
                 timestamp_us: now_us(),
+                device_mask: 0x0001,
             };
             pkt.serialize(&mut buf);
             let _ = sender.send_to(&buf, dest).await;
@@ -614,6 +623,7 @@ async fn test_failover(interface: Ipv4Addr) -> anyhow::Result<bool> {
                     role: HostRole::Primary,
                     sequence: seq,
                     timestamp_us: now_us(),
+                    device_mask: 0x0001,
                 };
                 pkt.serialize(&mut buf);
                 let _ = primary_sender.send_to(&buf, dest).await;
@@ -635,6 +645,7 @@ async fn test_failover(interface: Ipv4Addr) -> anyhow::Result<bool> {
                 role: HostRole::Standby,
                 sequence: seq,
                 timestamp_us: now_us(),
+                device_mask: 0x0001,
             };
             pkt.serialize(&mut buf);
             let _ = standby_sender.send_to(&buf, dest).await;
@@ -830,6 +841,7 @@ async fn test_soak(duration_secs: u64, rate: u64, interface: Ipv4Addr) -> anyhow
             sequence: seq,
             timestamp_us: now_us(),
             host_id: 1,
+            device_id: 0,
             midi_data: midi,
             journal: None,
         };

@@ -1036,6 +1036,41 @@ a { color: var(--accent); text-decoration: none; }
     font-variant-numeric: tabular-nums;
 }
 
+/* ── Mode Badge (operational mode pill) ── */
+.mode-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 2px 8px;
+    border-radius: 20px;
+    white-space: nowrap;
+}
+.mode-badge[data-mode="multi"] { background: rgba(10,132,255,0.15); color: var(--blue); }
+.mode-badge[data-mode="redundant"] { background: rgba(48,209,88,0.12); color: var(--green); }
+.mode-badge[data-mode="single"] { background: rgba(255,255,255,0.05); color: var(--text-3); }
+
+/* ── Host device tags (multi-device mode) ── */
+.host-row-wrap { border-bottom: 0.5px solid var(--border); }
+.host-row-wrap:last-child { border-bottom: none; }
+.host-row-wrap .host-row { border-bottom: none; }
+.host-devices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 0 8px 8px 28px;
+}
+.host-device-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-2);
+    background: rgba(255,255,255,0.04);
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
 /* ── Traffic Row ── */
 .traffic-row {
     display: flex;

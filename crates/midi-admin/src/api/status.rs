@@ -11,7 +11,14 @@ pub async fn get_status(State(state): State<AppState>) -> Json<Value> {
     let midi = state.inner.midi_metrics.read().await;
     let failover = state.inner.failover_state.read().await;
     let clients = state.inner.clients.read().await;
+    let hosts = state.inner.hosts.read().await;
     let alerts = state.inner.alert_manager.active_alerts();
+
+    // Determine operational mode from the first discovered host (or default)
+    let operational_mode = hosts.first()
+        .map(|h| h.operational_mode.as_str())
+        .unwrap_or("single");
+    let device_count = hosts.first().map(|h| h.device_count).unwrap_or(1);
 
     Json(json!({
         "status": "ok",
@@ -28,6 +35,8 @@ pub async fn get_status(State(state): State<AppState>) -> Json<Value> {
         "connected_clients": clients.len(),
         "midi_messages_per_sec": midi.messages_in_per_sec,
         "active_alerts": alerts.len(),
+        "operational_mode": operational_mode,
+        "device_count": device_count,
     }))
 }
 

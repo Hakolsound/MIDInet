@@ -243,6 +243,7 @@ async fn run_inner(
                                         sequence: feedback_sequence,
                                         timestamp_us: now_us(),
                                         host_id: 0,
+                                        device_id: 0,
                                         midi_data: send_data.clone(),
                                         journal: None,
                                     };
@@ -290,6 +291,7 @@ async fn send_focus_claim(
         sequence: *sequence,
         timestamp_us: now_us(),
         mode,
+        device_id: 0,
     };
 
     let mut buf = [0u8; FocusPacket::SIZE];
@@ -316,6 +318,7 @@ async fn send_focus_release(
         sequence: *sequence,
         timestamp_us: now_us(),
         mode: FocusClaimMode::Auto,
+        device_id: 0,
     };
 
     let mut buf = [0u8; FocusPacket::SIZE];

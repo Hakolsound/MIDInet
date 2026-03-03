@@ -88,6 +88,16 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
         let role = *state.role.borrow();
         let device_name = state.identity.read().await.name.clone();
 
+        // In multi-device mode, include extra device names
+        let extra_device_names = {
+            let identities = state.device_identities.read().await;
+            if identities.len() > 1 {
+                identities.iter().skip(1).map(|id| id.name.clone()).collect()
+            } else {
+                vec![]
+            }
+        };
+
         let response = DiscoverResponse {
             host_id: state.config.host.id,
             role,
@@ -97,6 +107,7 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
             admin_port,
             multicast_group: mcast_octets,
             device_name,
+            extra_device_names,
         };
 
         response.serialize(&mut resp_buf);
