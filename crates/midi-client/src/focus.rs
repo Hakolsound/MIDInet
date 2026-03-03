@@ -17,7 +17,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
-use midi_protocol::packets::{FocusAction, FocusPacket, MidiDataPacket};
+use midi_protocol::packets::{FocusAction, FocusClaimMode, FocusPacket, MidiDataPacket};
 
 use crate::health::TaskPulse;
 use crate::{ClientState, FocusCommand};
@@ -106,10 +106,14 @@ async fn run_inner(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    // Track whether this client's focus was obtained manually (operator override).
+    // Manual focus re-claims stay manual so auto-release timeout doesn't downgrade them.
+    let mut active_mode = FocusClaimMode::Auto;
+
     // Auto-claim focus if configured
     if state.config.focus.auto_claim {
         info!("Auto-claiming focus");
-        send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+        send_focus_claim(&send_socket, dest, state.client_id, &mut sequence, FocusClaimMode::Auto).await;
     }
 
     let mut buf = [0u8; 512]; // Large enough for focus and MIDI data packets
@@ -128,15 +132,17 @@ async fn run_inner(
 
     loop {
         tokio::select! {
-            // External focus commands from tray / health API
+            // External focus commands from tray / health API (always Manual mode)
             Some(cmd) = focus_rx.recv() => {
                 match cmd {
                     FocusCommand::Claim => {
-                        info!("Focus claim requested via API");
-                        send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+                        info!("Manual focus claim requested via API");
+                        active_mode = FocusClaimMode::Manual;
+                        send_focus_claim(&send_socket, dest, state.client_id, &mut sequence, FocusClaimMode::Manual).await;
                     }
                     FocusCommand::Release => {
                         info!("Focus release requested via API");
+                        active_mode = FocusClaimMode::Auto;
                         send_focus_release(&send_socket, dest, state.client_id, &mut sequence).await;
                         HAS_FOCUS.store(false, Ordering::SeqCst);
                     }
@@ -152,25 +158,36 @@ async fn run_inner(
                                 FocusAction::Ack => {
                                     if packet.client_id == state.client_id {
                                         HAS_FOCUS.store(true, Ordering::SeqCst);
-                                        info!(client_id = state.client_id, "Focus granted");
+                                        info!(
+                                            client_id = state.client_id,
+                                            mode = ?packet.mode,
+                                            "Focus granted"
+                                        );
                                     } else {
+                                        let had_focus = is_focused();
                                         HAS_FOCUS.store(false, Ordering::SeqCst);
-                                        debug!(client_id = packet.client_id, "Focus granted to another client");
+                                        if had_focus {
+                                            // We lost focus — reset to auto mode for future re-claims
+                                            active_mode = FocusClaimMode::Auto;
+                                            info!(
+                                                new_holder = packet.client_id,
+                                                mode = ?packet.mode,
+                                                "Focus taken by another client"
+                                            );
+                                        } else {
+                                            debug!(client_id = packet.client_id, "Focus granted to another client");
+                                        }
                                     }
                                 }
                                 FocusAction::Release => {
                                     if packet.client_id == state.client_id {
                                         HAS_FOCUS.store(false, Ordering::SeqCst);
+                                        active_mode = FocusClaimMode::Auto;
                                         info!("Focus released");
                                     }
                                 }
                                 FocusAction::Claim => {
-                                    if packet.client_id != state.client_id && is_focused() {
-                                        debug!(
-                                            other = packet.client_id,
-                                            "Another client claiming focus (last-writer-wins)"
-                                        );
-                                    }
+                                    // Just observing — host handles arbitration
                                 }
                             }
                         }
@@ -191,10 +208,15 @@ async fn run_inner(
                     );
                 }
 
-                // Re-claim focus periodically to survive host auto-release timeout
-                if state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
+                // Re-claim focus periodically to survive host auto-release timeout.
+                // Uses active_mode so manual focus stays manual on re-claims.
+                if is_focused() && last_claim.elapsed() >= claim_interval {
                     last_claim = Instant::now();
-                    send_focus_claim(&send_socket, dest, state.client_id, &mut sequence).await;
+                    send_focus_claim(&send_socket, dest, state.client_id, &mut sequence, active_mode).await;
+                } else if !is_focused() && state.config.focus.auto_claim && last_claim.elapsed() >= claim_interval {
+                    // Auto-claim only when not focused (disaster recovery: previous holder died)
+                    last_claim = Instant::now();
+                    send_focus_claim(&send_socket, dest, state.client_id, &mut sequence, FocusClaimMode::Auto).await;
                 }
 
                 // If we have focus, periodically check for and send feedback from virtual device
@@ -260,12 +282,14 @@ async fn send_focus_claim(
     dest: SocketAddrV4,
     client_id: u32,
     sequence: &mut u16,
+    mode: FocusClaimMode,
 ) {
     let packet = FocusPacket {
         action: FocusAction::Claim,
         client_id,
         sequence: *sequence,
         timestamp_us: now_us(),
+        mode,
     };
 
     let mut buf = [0u8; FocusPacket::SIZE];
@@ -274,7 +298,7 @@ async fn send_focus_claim(
     if let Err(e) = socket.send_to(&buf, dest).await {
         error!("Failed to send focus claim: {}", e);
     } else {
-        info!(client_id = client_id, seq = *sequence, "Focus claim sent");
+        info!(client_id = client_id, seq = *sequence, mode = ?mode, "Focus claim sent");
     }
 
     *sequence = sequence.wrapping_add(1);
@@ -291,6 +315,7 @@ async fn send_focus_release(
         client_id,
         sequence: *sequence,
         timestamp_us: now_us(),
+        mode: FocusClaimMode::Auto,
     };
 
     let mut buf = [0u8; FocusPacket::SIZE];

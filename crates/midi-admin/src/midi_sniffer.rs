@@ -282,26 +282,30 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                     .as_secs();
 
                 // Focus packets (MAGIC_FOCUS = "MDFC")
-                if &buf[0..4] == b"MDFC" && len >= 16 {
+                // v3.1+: 20 bytes (with mode byte), legacy: 19 bytes
+                if &buf[0..4] == b"MDFC" && len >= 19 {
                     let action = buf[4];
                     let client_id = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]);
+                    // FocusAction: Claim=0x01, Release=0x02, Ack=0x03
                     let action_str = match action {
-                        0 => "Claim",
-                        1 => "Ack",
-                        2 => "Release",
+                        0x01 => "Claim",
+                        0x02 => "Release",
+                        0x03 => "Ack",
                         _ => "Unknown",
                     };
+                    // FocusClaimMode: Auto=0x00, Manual=0x01 (byte 19, if present)
+                    let mode_str = if len >= 20 && buf[19] == 0x01 { "manual" } else { "auto" };
 
                     // Update admin focus state
-                    if action == 1 {
-                        // Ack = focus granted to this client
+                    if action == 0x03 {
+                        // Ack = host confirmed focus to this client
                         let mut fs = state.inner.focus_state.write().await;
                         fs.holder = Some(crate::state::FocusHolder {
                             client_id,
                             ip: addr.ip().to_string(),
                             since: now_s,
                         });
-                    } else if action == 2 {
+                    } else if action == 0x02 {
                         // Release = client dropped focus
                         let mut fs = state.inner.focus_state.write().await;
                         if fs.holder.as_ref().map_or(false, |h| h.client_id == client_id) {
@@ -313,7 +317,7 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                         serde_json::json!({
                             "ch": "focus",
                             "ts": now_s,
-                            "msg": format!("Focus {} client={} from={}", action_str, client_id, addr),
+                            "msg": format!("Focus {} client={} mode={} from={}", action_str, client_id, mode_str, addr),
                         }).to_string(),
                     );
                 }

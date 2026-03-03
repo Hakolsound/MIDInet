@@ -273,16 +273,42 @@ impl FocusAction {
     }
 }
 
+/// Distinguishes operator-initiated focus from automatic focus.
+/// Auto claims only succeed when no client holds focus (disaster recovery).
+/// Manual claims always override (operator intent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FocusClaimMode {
+    /// Automatic claim — only granted when no one holds focus (disaster recovery)
+    Auto = 0x00,
+    /// Manual claim — operator override, always granted
+    Manual = 0x01,
+}
+
+impl FocusClaimMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0x01 => Self::Manual,
+            _ => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FocusPacket {
     pub action: FocusAction,
     pub client_id: u32,
     pub sequence: u16,
     pub timestamp_us: u64,
+    /// Claim mode: Auto (disaster recovery only) vs Manual (operator override)
+    pub mode: FocusClaimMode,
 }
 
 impl FocusPacket {
-    pub const SIZE: usize = 19; // magic(4) + action(1) + client_id(4) + seq(2) + timestamp(8)
+    // magic(4) + action(1) + client_id(4) + seq(2) + timestamp(8) + mode(1) = 20
+    pub const SIZE: usize = 20;
+    /// Previous version without mode byte (for backward compat deserialization)
+    const LEGACY_SIZE: usize = 19;
 
     pub fn serialize(&self, buf: &mut [u8; Self::SIZE]) {
         buf[0..4].copy_from_slice(&MAGIC_FOCUS);
@@ -290,15 +316,24 @@ impl FocusPacket {
         buf[5..9].copy_from_slice(&self.client_id.to_be_bytes());
         buf[9..11].copy_from_slice(&self.sequence.to_be_bytes());
         buf[11..19].copy_from_slice(&self.timestamp_us.to_be_bytes());
+        buf[19] = self.mode as u8;
     }
 
     pub fn deserialize(data: &[u8]) -> Option<Self> {
-        if data.len() < Self::SIZE {
+        // Accept both 19-byte (legacy) and 20-byte (v3.1+) packets
+        if data.len() < Self::LEGACY_SIZE {
             return None;
         }
         if &data[0..4] != &MAGIC_FOCUS {
             return None;
         }
+
+        let mode = if data.len() >= Self::SIZE {
+            FocusClaimMode::from_u8(data[19])
+        } else {
+            // Legacy packet without mode byte — treat as Auto
+            FocusClaimMode::Auto
+        };
 
         Some(Self {
             action: FocusAction::from_u8(data[4])?,
@@ -307,6 +342,7 @@ impl FocusPacket {
             timestamp_us: u64::from_be_bytes([
                 data[11], data[12], data[13], data[14], data[15], data[16], data[17], data[18],
             ]),
+            mode,
         })
     }
 }
@@ -507,6 +543,7 @@ mod tests {
             client_id: 12345,
             sequence: 7,
             timestamp_us: 999999,
+            mode: FocusClaimMode::Manual,
         };
 
         let mut buf = [0u8; FocusPacket::SIZE];
@@ -516,6 +553,25 @@ mod tests {
         assert_eq!(decoded.action, FocusAction::Claim);
         assert_eq!(decoded.client_id, 12345);
         assert_eq!(decoded.sequence, 7);
+        assert_eq!(decoded.mode, FocusClaimMode::Manual);
+    }
+
+    #[test]
+    fn test_focus_legacy_deserialize() {
+        // 19-byte legacy packet (no mode byte) should deserialize as Auto
+        let packet = FocusPacket {
+            action: FocusAction::Claim,
+            client_id: 42,
+            sequence: 3,
+            timestamp_us: 12345,
+            mode: FocusClaimMode::Auto,
+        };
+        let mut buf = [0u8; FocusPacket::SIZE];
+        packet.serialize(&mut buf);
+        // Pass only 19 bytes (strip mode byte)
+        let decoded = FocusPacket::deserialize(&buf[..19]).unwrap();
+        assert_eq!(decoded.mode, FocusClaimMode::Auto);
+        assert_eq!(decoded.client_id, 42);
     }
 
     #[test]

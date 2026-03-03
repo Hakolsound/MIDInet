@@ -14,7 +14,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use midi_protocol::packets::{FocusAction, FocusPacket, MidiDataPacket, MAGIC_FOCUS, MAGIC_MIDI};
+use midi_protocol::packets::{FocusAction, FocusClaimMode, FocusPacket, MidiDataPacket, MAGIC_FOCUS, MAGIC_MIDI};
 
 use crate::midi_output::platform::MidiOutputWriter;
 use crate::SharedState;
@@ -29,6 +29,9 @@ pub struct FocusState {
     pub claimed_at: Option<Instant>,
     /// Focus auto-release timeout (10s without feedback → release)
     pub last_feedback: Option<Instant>,
+    /// Whether focus was granted via manual (operator) claim.
+    /// Manual focus is only overridable by another manual claim, not auto-claims.
+    pub manual_hold: bool,
 }
 
 impl Default for FocusState {
@@ -38,6 +41,7 @@ impl Default for FocusState {
             last_claim_seq: 0,
             claimed_at: None,
             last_feedback: None,
+            manual_hold: false,
         }
     }
 }
@@ -153,6 +157,7 @@ pub async fn run(
                         fs.holder = None;
                         fs.claimed_at = None;
                         fs.last_feedback = None;
+                        fs.manual_hold = false;
                     }
                 }
             }
@@ -171,45 +176,72 @@ async fn handle_focus_packet(
         FocusAction::Claim => {
             let mut fs = focus_state.write().await;
 
-            // Last-writer-wins: accept the claim if the sequence is newer.
-            // Uses wrapping comparison: new_seq is "newer" if the forward distance
-            // (modulo u16) is less than half the u16 range. This handles
-            // wraparound correctly without the seq==0 hole.
+            // Focus arbitration with Auto/Manual priority:
+            //
+            // - No holder → grant any claim (auto or manual)
+            // - Same client re-claiming → grant (keeps focus alive)
+            // - Different client + Manual claim → always grant (operator override)
+            // - Different client + Auto claim → REJECT (prevents oscillation
+            //   between two auto-claiming clients; auto-claim is for disaster
+            //   recovery only — it should only succeed when nobody holds focus)
             let should_grant = match fs.holder {
                 None => true,
                 Some(current) if current == packet.client_id => true,
                 Some(_) => {
-                    let diff = packet.sequence.wrapping_sub(fs.last_claim_seq);
-                    diff > 0 && diff < 0x8000
+                    // Another client is trying to take focus
+                    match packet.mode {
+                        FocusClaimMode::Manual => true, // operator override always wins
+                        FocusClaimMode::Auto => false,  // auto-claims cannot steal focus
+                    }
                 }
             };
 
             if should_grant {
                 let old_holder = fs.holder;
+                let is_switch = old_holder.is_some() && old_holder != Some(packet.client_id);
                 fs.holder = Some(packet.client_id);
                 fs.last_claim_seq = packet.sequence;
                 fs.claimed_at = Some(Instant::now());
                 fs.last_feedback = Some(Instant::now());
+                fs.manual_hold = packet.mode == FocusClaimMode::Manual;
 
-                info!(
-                    client_id = packet.client_id,
-                    old_holder = ?old_holder,
-                    from = %source,
-                    "Focus granted"
-                );
+                if is_switch {
+                    info!(
+                        client_id = packet.client_id,
+                        old_holder = ?old_holder,
+                        mode = ?packet.mode,
+                        from = %source,
+                        "Focus switched (operator override)"
+                    );
+                } else {
+                    info!(
+                        client_id = packet.client_id,
+                        mode = ?packet.mode,
+                        from = %source,
+                        "Focus granted"
+                    );
+                }
 
-                // Send ack
+                // Send ack to all clients (multicast) so they know who holds focus
                 let ack = FocusPacket {
                     action: FocusAction::Ack,
                     client_id: packet.client_id,
                     sequence: packet.sequence,
                     timestamp_us: now_us(),
+                    mode: packet.mode,
                 };
                 let mut ack_buf = [0u8; FocusPacket::SIZE];
                 ack.serialize(&mut ack_buf);
                 if let Err(e) = send_socket.send_to(&ack_buf, dest).await {
                     error!("Failed to send focus ack: {}", e);
                 }
+            } else {
+                debug!(
+                    client_id = packet.client_id,
+                    holder = ?fs.holder,
+                    mode = ?packet.mode,
+                    "Auto-claim rejected (focus held by another client)"
+                );
             }
         }
         FocusAction::Release => {
@@ -219,6 +251,7 @@ async fn handle_focus_packet(
                 fs.holder = None;
                 fs.claimed_at = None;
                 fs.last_feedback = None;
+                fs.manual_hold = false;
             }
         }
         FocusAction::Ack => {
