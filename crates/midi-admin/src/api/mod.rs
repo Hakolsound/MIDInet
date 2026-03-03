@@ -45,10 +45,20 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                 Some("ico") => "image/x-icon",
                 _ => "application/octet-stream",
             };
-            Response::builder()
+            // Use no-cache for HTML and short cache + ETag for JS/CSS so
+            // deploys are picked up immediately without hard-refresh.
+            let cache_val = match path.rsplit('.').next() {
+                Some("html") => "no-cache",
+                _ => "public, max-age=60, must-revalidate",
+            };
+            let mut resp = Response::builder()
                 .header(header::CONTENT_TYPE, mime)
-                .header(header::CACHE_CONTROL, "public, max-age=3600")
-                .body(Body::from(file.data.into_owned()))
+                .header(header::CACHE_CONTROL, cache_val);
+
+            // ETag based on build hash — changes every deploy
+            resp = resp.header(header::ETAG, format!("\"{}\"", midi_protocol::GIT_HASH));
+
+            resp.body(Body::from(file.data.into_owned()))
                 .unwrap()
         }
         None => {
