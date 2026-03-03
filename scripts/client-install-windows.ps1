@@ -29,6 +29,9 @@ $Errors = @()
 
 $IsWin11 = ([Environment]::OSVersion.Version.Build -ge 22000)
 
+# Ensure TLS 1.2 — fresh Windows 10 may default to older versions
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 # ── Helper Functions ─────────────────────────────────────────
 
 function Write-Step($num, $total, $msg) {
@@ -113,11 +116,31 @@ Write-Step 1 $TotalSteps "Checking prerequisites..."
 
 # Git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Warn "Git not found. Installing via winget..."
-    try {
-        winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
-        $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
-    } catch {}
+    $gitInstalled = $false
+    # Try winget first (may not exist on fresh Windows 10)
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Warn "Git not found. Installing via winget..."
+        try {
+            winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+            $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
+            if (Get-Command git -ErrorAction SilentlyContinue) { $gitInstalled = $true }
+        } catch {}
+    }
+    # Fall back to direct download
+    if (-not $gitInstalled) {
+        Write-Warn "Git not found. Downloading installer from git-scm.com..."
+        try {
+            $gitInstallerUrl = "https://github.com/git-for-windows/git/releases/latest/download/Git-64-bit.exe"
+            $gitInstaller = "$env:TEMP\git-installer.exe"
+            Invoke-WebRequest -Uri $gitInstallerUrl -OutFile $gitInstaller -UseBasicParsing
+            Write-Warn "Running Git installer (silent)..."
+            Start-Process -FilePath $gitInstaller -ArgumentList "/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-" -Wait
+            Remove-Item $gitInstaller -Force -ErrorAction SilentlyContinue
+            $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
+        } catch {
+            Write-Warn "Direct download failed: $_"
+        }
+    }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Err "Git installation failed. Install from https://git-scm.com and re-run."
         exit 1
@@ -157,12 +180,28 @@ if ($HasVsCpp) {
     Write-Ok "Visual Studio C++ Build Tools available"
 } else {
     Write-Warn "Visual Studio C++ Build Tools not found (required for Rust to compile)."
-    Write-Warn "Installing minimal MSVC build tools via winget..."
-    try {
-        winget install Microsoft.VisualStudio.2022.BuildTools `
-            --override "--wait --passive --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100" `
-            --accept-package-agreements --accept-source-agreements
-    } catch {}
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Warn "Installing minimal MSVC build tools via winget..."
+        try {
+            winget install Microsoft.VisualStudio.2022.BuildTools `
+                --override "--wait --passive --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100" `
+                --accept-package-agreements --accept-source-agreements
+        } catch {}
+    } else {
+        Write-Warn "winget not available. Downloading VS Build Tools installer directly..."
+        try {
+            $vsbtInstaller = "$env:TEMP\vs_BuildTools.exe"
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $vsbtInstaller -UseBasicParsing
+            Write-Warn "Running VS Build Tools installer (this may take several minutes)..."
+            Start-Process -FilePath $vsbtInstaller -ArgumentList `
+                "--wait", "--passive", "--norestart", `
+                "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+                "--add", "Microsoft.VisualStudio.Component.Windows11SDK.26100" -Wait
+            Remove-Item $vsbtInstaller -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Warn "Direct download failed: $_"
+        }
+    }
 
     # Re-check after install attempt
     $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"

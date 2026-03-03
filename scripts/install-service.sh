@@ -59,7 +59,7 @@ Requires=midinet-host.service
 Type=simple
 User=midinet
 Group=midinet
-ExecStart=/opt/midinet/bin/midi-admin --listen 0.0.0.0:8080
+ExecStart=/opt/midinet/bin/midi-admin --listen 0.0.0.0:8080 --config /etc/midinet/midinet.toml
 Restart=always
 RestartSec=5
 
