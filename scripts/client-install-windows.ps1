@@ -199,23 +199,40 @@ $HasTeVirtualMidi = (Test-Path $teVmDll) -or (Test-Path $teVmDll32)
 
 if ($HasTeVirtualMidi) {
     Write-Ok "teVirtualMIDI driver found (primary backend)"
+} elseif ($IsWin11) {
+    Write-Ok "Windows 11 detected - Windows MIDI Services will be used as fallback"
+    Write-Host "    teVirtualMIDI driver not found, but not required on Windows 11." -ForegroundColor DarkGray
+    Write-Host "    The client uses Windows MIDI Services as a native alternative." -ForegroundColor DarkGray
 } else {
-    if ($IsWin11) {
-        Write-Ok "Windows 11 detected - Windows MIDI Services will be used as fallback"
-        Write-Host "    teVirtualMIDI driver not found, but not required on Windows 11." -ForegroundColor DarkGray
-        Write-Host "    The client uses Windows MIDI Services as a native alternative." -ForegroundColor DarkGray
+    Write-Warn "teVirtualMIDI driver not found (required on Windows 10 for virtual MIDI ports)."
+    Write-Warn "Downloading teVirtualMIDI SDK from tobias-erichsen.de..."
+    $teVmZip = "$env:TEMP\teVirtualMIDISDK.zip"
+    $teVmDir = "$env:TEMP\teVirtualMIDISDK"
+    $teVmUrl = "https://www.tobias-erichsen.de/wp-content/uploads/2020/01/teVirtualMIDISDKSetup_1_3_0_43.zip"
+    try {
+        Invoke-WebRequest -Uri $teVmUrl -OutFile $teVmZip -UseBasicParsing
+        Expand-Archive -Path $teVmZip -DestinationPath $teVmDir -Force
+        $teVmSetup = Get-ChildItem -Path $teVmDir -Filter "*.exe" -Recurse | Select-Object -First 1
+        if ($teVmSetup) {
+            Write-Warn "Running teVirtualMIDI installer (may request admin approval)..."
+            Start-Process -FilePath $teVmSetup.FullName -ArgumentList "/SILENT" -Wait
+        }
+        # Clean up temp files
+        Remove-Item $teVmZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $teVmDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Remove-Item $teVmZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $teVmDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # Re-check after install attempt
+    $HasTeVirtualMidi = (Test-Path $teVmDll) -or (Test-Path $teVmDll32)
+    if ($HasTeVirtualMidi) {
+        Write-Ok "teVirtualMIDI driver installed"
     } else {
-        Write-Warn "teVirtualMIDI driver NOT found."
-        Write-Host ""
-        Write-Host "    On Windows 10, MIDInet requires the teVirtualMIDI driver" -ForegroundColor Yellow
-        Write-Host "    to create virtual MIDI ports." -ForegroundColor Yellow
-        Write-Host "    Download from: https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "    The client will build and install, but virtual MIDI ports won't work" -ForegroundColor Yellow
-        Write-Host "    until the driver is installed." -ForegroundColor Yellow
-        Write-Host "    Download from: https://www.tobias-erichsen.de/software/virtualmidi.html" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Warn "Continuing without teVirtualMIDI driver..."
+        Write-Warn "teVirtualMIDI driver could not be installed automatically."
+        Write-Warn "Virtual MIDI ports won't work until the driver is installed."
+        Write-Warn "Download manually from: https://www.tobias-erichsen.de/software/virtualmidi.html"
     }
 }
 
