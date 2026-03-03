@@ -75,6 +75,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let identify_reqs = state.inner.identify_requests.read().await;
             let designated_primary = state.inner.designated_primary.read().await;
             let designated_focus = state.inner.designated_focus.read().await;
+            let configured_mode = state.inner.configured_mode.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -111,6 +112,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                 "designated_primary": *designated_primary,
                 "designated_focus": *designated_focus,
                 "active_alerts": alerts.len(),
+                "operational_mode": configured_mode.as_str(),
                 "input_redundancy": {
                     "enabled": input_red.enabled,
                     "active_input": input_red.active_input,
