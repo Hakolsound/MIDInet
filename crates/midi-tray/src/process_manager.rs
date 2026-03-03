@@ -10,7 +10,7 @@
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tracing::{error, info, warn};
@@ -110,13 +110,37 @@ impl ProcessManager {
     }
 
     /// Spawn the client process (hidden on Windows, normal on other platforms).
+    /// On Windows, stdout/stderr are redirected to a log file next to the tray logs.
     pub fn spawn(&mut self) -> Result<(), std::io::Error> {
         let mut cmd = Command::new(&self.client_path);
         if let Some(ref config) = self.config_path {
             cmd.args(["-c", &config.to_string_lossy()]);
         }
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            // Redirect client output to a log file so diagnostics aren't lost
+            let log_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("logs")))
+                .unwrap_or_else(|| PathBuf::from("."));
+            let _ = std::fs::create_dir_all(&log_dir);
+            let log_path = log_dir.join("client.log");
+            match std::fs::File::create(&log_path) {
+                Ok(file) => {
+                    let stderr_file = file.try_clone().unwrap_or_else(|_| {
+                        std::fs::File::create(&log_path).expect("log file")
+                    });
+                    cmd.stdout(Stdio::from(file));
+                    cmd.stderr(Stdio::from(stderr_file));
+                    info!(path = %log_path.display(), "Client output → log file");
+                }
+                Err(e) => {
+                    warn!("Could not create client log file: {} — output will be discarded", e);
+                }
+            }
+        }
 
         let child = cmd.spawn()?;
         info!(pid = child.id(), path = %self.client_path.display(), "Spawned midi-client");
