@@ -81,6 +81,9 @@ SyslogIdentifier=midinet-admin
 WantedBy=multi-user.target
 EOF
 
+# Ensure midinet user can access ALSA MIDI devices
+usermod -aG audio midinet 2>/dev/null || true
+
 # Reload systemd and enable services
 systemctl daemon-reload
 systemctl enable midinet-host.service

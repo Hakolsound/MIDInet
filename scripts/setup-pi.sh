@@ -67,6 +67,7 @@ echo "[7/7] Creating midinet user and directories..."
 if ! id midinet &>/dev/null; then
     useradd -r -s /bin/false -d /opt/midinet midinet
 fi
+usermod -aG audio midinet 2>/dev/null || true
 mkdir -p /opt/midinet/{bin,config,logs}
 chown -R midinet:midinet /opt/midinet
 
