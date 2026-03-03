@@ -910,7 +910,7 @@ function ClientsCard() {
       ${state.clients.length === 0 && !showAdd && html`<div class="empty-state">No clients connected</div>`}
       <div style="padding:4px 20px">
         ${state.clients.map(c => {
-          const hasFocus = state.designatedFocus === c.id;
+          const hasFocus = state.status.focus_holder === c.id || state.designatedFocus === c.id;
           const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'manual' ? 'warn' : c.connection_state === 'discovering' ? 'warn' : 'error';
           const hostHash = state.status.git_hash || '';
           const verMismatch = hostHash && c.git_hash && c.git_hash !== hostHash;
@@ -1109,7 +1109,7 @@ function SignalFlowDiagram() {
             `}
             ${state.clients.map(c => {
               const ch = c.packet_loss_percent > 1 ? 'err' : c.packet_loss_percent > 0.1 ? 'warn' : 'ok';
-              const isFocus = state.designatedFocus === c.id;
+              const isFocus = state.status.focus_holder === c.id || state.designatedFocus === c.id;
               const oscCmd = '/midinet/focus/claim ' + c.id;
               const onClick = (e) => {
                 if (e.metaKey || e.ctrlKey) {
@@ -1201,10 +1201,21 @@ function ModeSelector() {
   const [armed, setArmed] = useState(false);
   const [selected, setSelected] = useState(currentMode);
   const [busy, setBusy] = useState(false);
+  const [pendingMode, setPendingMode] = useState(null);
   const armTimer = useRef(null);
+  const pendingTimer = useRef(null);
 
-  // Sync selected with current when not armed
-  useEffect(() => { if (!armed) setSelected(currentMode); }, [currentMode, armed]);
+  // Sync selected with current when not armed and no pending change
+  useEffect(() => { if (!armed && !pendingMode) setSelected(currentMode); }, [currentMode, armed, pendingMode]);
+
+  // Clear pending state when host confirms the new mode
+  useEffect(() => {
+    if (pendingMode && currentMode === pendingMode) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Mode changed to "${pendingMode}".`) });
+      setPendingMode(null);
+      clearTimeout(pendingTimer.current);
+    }
+  }, [currentMode, pendingMode]);
 
   // Auto-disarm after 10s of inactivity
   useEffect(() => {
@@ -1231,9 +1242,21 @@ function ModeSelector() {
       cls: 'btn-danger',
       onConfirm: async () => {
         setBusy(true);
-        const r = await apiFetch('/api/system/mode', { method: 'POST', body: JSON.stringify({ mode: selected }) });
+        const targetMode = selected;
+        const r = await apiFetch('/api/system/mode', { method: 'POST', body: JSON.stringify({ mode: targetMode }) });
         if (r.success) {
-          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', r.restarting ? `Mode → ${selected}. Host restarting...` : `Mode → ${selected}. Restart host manually.`) });
+          if (r.restarting) {
+            setPendingMode(targetMode);
+            setSelected(targetMode);
+            // Timeout: if host hasn't confirmed after 30s, warn
+            clearTimeout(pendingTimer.current);
+            pendingTimer.current = setTimeout(() => {
+              setPendingMode(null);
+              dispatch({ type: 'ADD_TOAST', toast: mkToast('warning', 'Host restart is taking longer than expected. Check the host status.') });
+            }, 30000);
+          } else {
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('warning', r.error || `Mode saved but host restart failed. Restart manually.`) });
+          }
           setArmed(false);
         } else {
           dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to change mode') });
@@ -1249,14 +1272,18 @@ function ModeSelector() {
     <div class="card-header">
       <span class="card-header-icon">${ICO.server()}</span>
       Operational Mode
-      <span class="mode-badge" data-mode=${currentMode}>${currentMode}</span>
+      ${pendingMode
+        ? html`<span class="mode-badge pending">restarting...</span>`
+        : html`<span class="mode-badge" data-mode=${currentMode}>${currentMode}</span>`}
     </div>
     <div class="card-body">
-      <div class="mode-cockpit ${armed ? 'armed' : ''}">
+      <div class="mode-cockpit ${armed ? 'armed' : ''} ${pendingMode ? 'pending' : ''}">
         <div class="mode-guard-container">
           <!-- Guard cover -->
-          <div class="mode-guard ${armed ? 'armed' : ''}" onClick=${() => { if (!armed) { setArmed(true); } }}>
-            ${!armed && html`<div class="mode-guard-label">ARM TO CHANGE</div>`}
+          <div class="mode-guard ${armed ? 'armed' : ''}" onClick=${() => { if (!armed && !pendingMode) { setArmed(true); } }}>
+            ${pendingMode
+              ? html`<div class="mode-guard-label">RESTARTING HOST...</div>`
+              : !armed && html`<div class="mode-guard-label">ARM TO CHANGE</div>`}
           </div>
           <!-- Mode options underneath -->
           <div class="mode-options">

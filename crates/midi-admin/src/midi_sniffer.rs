@@ -296,7 +296,7 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                     // FocusClaimMode: Auto=0x00, Manual=0x01 (byte 19, if present)
                     let mode_str = if len >= 20 && buf[19] == 0x01 { "manual" } else { "auto" };
 
-                    // Update admin focus state
+                    // Update admin focus state and sync designated_focus
                     if action == 0x03 {
                         // Ack = host confirmed focus to this client
                         let mut fs = state.inner.focus_state.write().await;
@@ -305,11 +305,19 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                             ip: addr.ip().to_string(),
                             since: now_s,
                         });
+                        drop(fs); // release before acquiring designated_focus lock
+                        // Sync designated_focus so heartbeat responses match reality
+                        *state.inner.designated_focus.write().await = Some(client_id);
                     } else if action == 0x02 {
                         // Release = client dropped focus
                         let mut fs = state.inner.focus_state.write().await;
                         if fs.holder.as_ref().map_or(false, |h| h.client_id == client_id) {
                             fs.holder = None;
+                            drop(fs); // release before acquiring designated_focus lock
+                            let mut df = state.inner.designated_focus.write().await;
+                            if *df == Some(client_id) {
+                                *df = None;
+                            }
                         }
                     }
 

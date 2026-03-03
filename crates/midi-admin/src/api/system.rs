@@ -354,40 +354,94 @@ pub async fn set_mode(
 
     info!(mode = %mode, path = %config_path, "Operational mode changed in config");
 
-    // Verify the restart path unit is active
+    // Try to restart the host. Two mechanisms:
+    // 1. Write trigger file for midinet-restart.path (clean systemctl restart)
+    // 2. Fallback: SIGTERM the host process directly (Restart=always brings it back)
+
+    let trigger = format!("mode={}\n{:?}\n", mode, std::time::SystemTime::now());
+    let trigger_ok = match std::fs::write(RESTART_TRIGGER_PATH, trigger) {
+        Ok(()) => {
+            info!(mode = %mode, "Wrote restart trigger file");
+            true
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to write restart trigger file — will try direct signal");
+            false
+        }
+    };
+
+    // Check if the path unit will handle it
     let path_unit_active = std::process::Command::new("systemctl")
         .args(["is-active", "--quiet", "midinet-restart.path"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
 
-    if !path_unit_active {
-        // Config was saved but we can't auto-restart
-        return Json(json!({
-            "success": true,
-            "restarting": false,
-            "message": "Mode saved to config. Restart the host manually to apply (midinet-restart.path not active).",
-        }));
-    }
-
-    // Trigger restart
-    let trigger = format!("mode={}\n{:?}\n", mode, std::time::SystemTime::now());
-    match std::fs::write(RESTART_TRIGGER_PATH, trigger) {
-        Ok(()) => {
-            info!(mode = %mode, "Host restart triggered for mode change");
-            Json(json!({
-                "success": true,
-                "restarting": true,
-                "mode": mode,
-            }))
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to write restart trigger");
-            Json(json!({
+    if !trigger_ok || !path_unit_active {
+        // Fallback: signal the host process directly.
+        // Both admin and host run as the midi user, so we can send signals.
+        // systemd Restart=always will restart it with the updated config.
+        info!("Path unit not active or trigger write failed — sending SIGTERM to host");
+        let sigterm_ok = signal_host_process();
+        if !sigterm_ok && !trigger_ok {
+            return Json(json!({
                 "success": true,
                 "restarting": false,
-                "error": format!("Mode saved but restart trigger failed: {}", e),
-            }))
+                "mode": mode,
+                "error": "Mode saved to config but could not trigger restart. Restart the host manually.",
+            }));
+        }
+    }
+
+    info!(mode = %mode, trigger_ok = trigger_ok, path_unit = path_unit_active, "Host restart initiated for mode change");
+    Json(json!({
+        "success": true,
+        "restarting": true,
+        "mode": mode,
+    }))
+}
+
+/// Send SIGTERM to the host process by reading its PID from systemd.
+/// Returns true if the signal was sent successfully.
+fn signal_host_process() -> bool {
+    // Ask systemd for the host's main PID
+    let output = match std::process::Command::new("systemctl")
+        .args(["show", "-p", "MainPID", "--value", "midinet-host.service"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(error = %e, "Failed to query host PID from systemd");
+            return false;
+        }
+    };
+
+    let pid_str = String::from_utf8_lossy(&output.stdout);
+    let pid: u32 = match pid_str.trim().parse() {
+        Ok(p) if p > 0 => p,
+        _ => {
+            warn!(raw = %pid_str.trim(), "Host PID not found or zero");
+            return false;
+        }
+    };
+
+    // Send SIGTERM — both services run as the midi user so this is permitted.
+    // systemd Restart=always will restart the host with the updated config.
+    match std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+    {
+        Ok(s) if s.success() => {
+            info!(pid = pid, "Sent SIGTERM to midi-host process");
+            true
+        }
+        Ok(s) => {
+            warn!(pid = pid, exit = ?s.code(), "kill command failed");
+            false
+        }
+        Err(e) => {
+            warn!(pid = pid, error = %e, "Failed to execute kill command");
+            false
         }
     }
 }

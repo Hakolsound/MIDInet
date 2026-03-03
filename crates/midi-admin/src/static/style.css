@@ -1069,6 +1069,13 @@ a { color: var(--accent); text-decoration: none; }
 .mode-badge[data-mode="multi"] { background: rgba(10,132,255,0.15); color: var(--blue); }
 .mode-badge[data-mode="redundant"] { background: rgba(48,209,88,0.12); color: var(--green); }
 .mode-badge[data-mode="single"] { background: rgba(255,255,255,0.05); color: var(--text-3); }
+.mode-badge.pending { background: rgba(255,159,10,0.2); color: var(--orange); animation: commit-pulse 1.5s ease-in-out infinite; }
+
+.mode-cockpit.pending .mode-guard {
+    background: repeating-linear-gradient(45deg, rgba(255,159,10,0.08), rgba(255,159,10,0.08) 8px, transparent 8px, transparent 16px);
+    pointer-events: none;
+}
+.mode-cockpit.pending .mode-guard-label { color: var(--orange); }
 
 /* ── Host device tags (multi-device mode) ── */
 .host-row-wrap { border-bottom: 0.5px solid var(--border); }
