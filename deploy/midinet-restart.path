@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch for MIDInet host restart requests
+
+[Path]
+PathModified=/var/lib/midinet/restart-trigger
+
+[Install]
+WantedBy=multi-user.target

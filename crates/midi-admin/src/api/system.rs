@@ -1,11 +1,13 @@
 use axum::extract::State;
 use axum::Json;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, error, info, warn};
 
 use crate::state::AppState;
 
 pub(crate) const UPDATE_LOG_PATH: &str = "/var/lib/midinet/update.log";
+const RESTART_TRIGGER_PATH: &str = "/var/lib/midinet/restart-trigger";
 
 /// GET /api/system/update-check — check if a newer version is available on origin.
 pub async fn check_update() -> Json<Value> {
@@ -263,6 +265,131 @@ pub(crate) fn strip_ansi(s: &str) -> String {
         }
     }
     result
+}
+
+// ── Mode change ──
+
+#[derive(Deserialize)]
+pub struct SetModeBody {
+    pub mode: String,
+}
+
+/// POST /api/system/mode — change the host operational mode and restart.
+///
+/// Writes the new mode to host.toml, then triggers a host-only restart via
+/// the midinet-restart.path systemd unit (same trigger pattern as updates).
+pub async fn set_mode(
+    State(state): State<AppState>,
+    Json(body): Json<SetModeBody>,
+) -> Json<Value> {
+    // Validate mode
+    let mode = body.mode.trim().to_lowercase();
+    if !matches!(mode.as_str(), "single" | "redundant" | "multi") {
+        return Json(json!({
+            "success": false,
+            "error": format!("Invalid mode '{}'. Must be 'single', 'redundant', or 'multi'.", mode),
+        }));
+    }
+
+    // Read the config file, modify [host].mode, write back
+    let config_path = state.inner.config_path.read().await.clone();
+
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(path = %config_path, error = %e, "Failed to read config file");
+            return Json(json!({
+                "success": false,
+                "error": format!("Cannot read config: {}", e),
+            }));
+        }
+    };
+
+    let mut table: toml::Table = match toml::from_str(&contents) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to parse config TOML");
+            return Json(json!({
+                "success": false,
+                "error": format!("Config parse error: {}", e),
+            }));
+        }
+    };
+
+    // Ensure [host] section exists and set mode
+    let host_section = table
+        .entry("host")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let toml::Value::Table(ref mut host) = host_section {
+        host.insert("mode".to_string(), toml::Value::String(mode.clone()));
+    }
+
+    let new_contents = match toml::to_string_pretty(&table) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "error": format!("Failed to serialize config: {}", e),
+            }));
+        }
+    };
+
+    // Atomic write: temp file + rename
+    let tmp_path = format!("{}.tmp", config_path);
+    if let Err(e) = std::fs::write(&tmp_path, &new_contents) {
+        error!(error = %e, "Failed to write temp config");
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to write config: {}", e),
+        }));
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+        error!(error = %e, "Failed to rename temp config");
+        let _ = std::fs::remove_file(&tmp_path);
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to apply config: {}", e),
+        }));
+    }
+
+    info!(mode = %mode, path = %config_path, "Operational mode changed in config");
+
+    // Verify the restart path unit is active
+    let path_unit_active = std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "midinet-restart.path"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !path_unit_active {
+        // Config was saved but we can't auto-restart
+        return Json(json!({
+            "success": true,
+            "restarting": false,
+            "message": "Mode saved to config. Restart the host manually to apply (midinet-restart.path not active).",
+        }));
+    }
+
+    // Trigger restart
+    let trigger = format!("mode={}\n{:?}\n", mode, std::time::SystemTime::now());
+    match std::fs::write(RESTART_TRIGGER_PATH, trigger) {
+        Ok(()) => {
+            info!(mode = %mode, "Host restart triggered for mode change");
+            Json(json!({
+                "success": true,
+                "restarting": true,
+                "mode": mode,
+            }))
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to write restart trigger");
+            Json(json!({
+                "success": true,
+                "restarting": false,
+                "error": format!("Mode saved but restart trigger failed: {}", e),
+            }))
+        }
+    }
 }
 
 fn git_update_check() -> Value {

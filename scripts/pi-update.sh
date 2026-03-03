@@ -204,14 +204,17 @@ install -m 755 "$MIDINET_DIR/scripts/pi-update.sh" /usr/local/bin/midinet-update
 # Update systemd units in case they changed
 install -m 644 "$MIDINET_DIR/deploy/midinet-host.service"   /etc/systemd/system/
 install -m 644 "$MIDINET_DIR/deploy/midinet-admin.service"  /etc/systemd/system/
-install -m 644 "$MIDINET_DIR/deploy/midinet-update.service" /etc/systemd/system/
-install -m 644 "$MIDINET_DIR/deploy/midinet-update.path"    /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-update.service"  /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-update.path"     /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-restart.service" /etc/systemd/system/
+install -m 644 "$MIDINET_DIR/deploy/midinet-restart.path"    /etc/systemd/system/
 systemctl daemon-reload
 
-# Enable the path unit so the admin panel can trigger updates without sudo.
-# (The path unit watches /var/lib/midinet/update-trigger and starts
-# midinet-update.service as root when the file is modified.)
-systemctl enable --now midinet-update.path 2>/dev/null || true
+# Enable path units so the admin panel can trigger updates/restarts without sudo.
+# (Path units watch trigger files in /var/lib/midinet/ and start the
+# corresponding service as root when the file is modified.)
+systemctl enable --now midinet-update.path  2>/dev/null || true
+systemctl enable --now midinet-restart.path 2>/dev/null || true
 
 systemctl start midinet-host.service
 systemctl start midinet-admin.service

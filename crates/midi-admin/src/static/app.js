@@ -1097,7 +1097,7 @@ function SignalFlowDiagram() {
         <!-- Clients Stage -->
         <div class="sf-stage">
           <div class="sf-stage-label">Clients (${state.clients.length})</div>
-          <div class="sf-stage-nodes" style="max-height:140px;overflow-y:auto">
+          <div class="sf-stage-nodes">
             ${state.clients.length === 0 && html`
               <div class="sf-node" data-health="off">
                 <span class="sf-node-dot" data-s="off" />
@@ -1107,19 +1107,28 @@ function SignalFlowDiagram() {
                 </div>
               </div>
             `}
-            ${state.clients.slice(0, 5).map(c => {
+            ${state.clients.map(c => {
               const ch = c.packet_loss_percent > 1 ? 'err' : c.packet_loss_percent > 0.1 ? 'warn' : 'ok';
-              const isFocus = s.focus_holder === c.id;
-              return html`<div class="sf-node" data-health=${ch} key=${c.id}>
+              const isFocus = state.designatedFocus === c.id;
+              const oscCmd = '/midinet/focus/claim ' + c.id;
+              const onClick = (e) => {
+                if (e.metaKey || e.ctrlKey) {
+                  copyText(oscCmd, dispatch);
+                  return;
+                }
+                apiFetch('/api/clients/' + c.id + '/focus', { method: 'PUT', body: JSON.stringify({ focus: !isFocus }) })
+                  .then(() => dispatch({ type: 'SET_DESIGNATED_FOCUS', id: isFocus ? null : c.id }));
+              };
+              return html`<div class="sf-node sf-node-clickable" data-health=${ch} key=${c.id} onClick=${onClick}
+                title=${isFocus ? 'Click: release focus · ⌘+Click: copy OSC' : 'Click: set focus · ⌘+Click: copy OSC'}>
                 <span class="sf-node-dot" data-s=${ch} />
                 <div class="sf-node-info">
-                  <span class="sf-node-name">${c.hostname}</span>
+                  <span class="sf-node-name">${c.hostname} <span class="sf-client-id">#${c.id}</span></span>
                   <span class="sf-node-meta">${c.latency_ms?.toFixed(1) || '—'}ms · ${c.packet_loss_percent?.toFixed(2) || '0'}%</span>
                 </div>
                 ${isFocus && html`<span class="sf-node-badge" data-role="focus">Focus</span>`}
               </div>`;
             })}
-            ${state.clients.length > 5 && html`<div style="font-size:10px;color:var(--text-3);text-align:center;padding:4px">+${state.clients.length - 5} more</div>`}
           </div>
         </div>
       </div>
@@ -1185,6 +1194,99 @@ function FailoverPanel() {
   </div>`;
 }
 
+// ── Mode Selector (cockpit guard) ────────────────────────────
+function ModeSelector() {
+  const { state, dispatch } = useContext(AppContext);
+  const currentMode = state.status.operational_mode || 'single';
+  const [armed, setArmed] = useState(false);
+  const [selected, setSelected] = useState(currentMode);
+  const [busy, setBusy] = useState(false);
+  const armTimer = useRef(null);
+
+  // Sync selected with current when not armed
+  useEffect(() => { if (!armed) setSelected(currentMode); }, [currentMode, armed]);
+
+  // Auto-disarm after 10s of inactivity
+  useEffect(() => {
+    if (armed) {
+      clearTimeout(armTimer.current);
+      armTimer.current = setTimeout(() => setArmed(false), 10000);
+    }
+    return () => clearTimeout(armTimer.current);
+  }, [armed, selected]);
+
+  const modes = [
+    { id: 'single', label: 'Single', desc: 'One controller, one highway' },
+    { id: 'redundant', label: 'Redundant', desc: 'Dual controllers, auto-failover' },
+    { id: 'multi', label: 'Multi', desc: 'Multiple controllers, parallel highways' },
+  ];
+
+  const commit = () => {
+    if (selected === currentMode) return;
+    const multiWarn = selected === 'multi' ? '\n\nEnsure [[midi.devices]] entries are configured in host.toml before applying.' : '';
+    dispatch({ type: 'MODAL', modal: {
+      title: 'Change Operational Mode',
+      message: `Switch from "${currentMode}" to "${selected}".\n\nThe host will restart. All connected clients will briefly disconnect (~5-10s). MIDI output will interrupt.${multiWarn}`,
+      ok: 'Apply & Restart',
+      cls: 'btn-danger',
+      onConfirm: async () => {
+        setBusy(true);
+        const r = await apiFetch('/api/system/mode', { method: 'POST', body: JSON.stringify({ mode: selected }) });
+        if (r.success) {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', r.restarting ? `Mode → ${selected}. Host restarting...` : `Mode → ${selected}. Restart host manually.`) });
+          setArmed(false);
+        } else {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to change mode') });
+        }
+        setBusy(false);
+      },
+    }});
+  };
+
+  const changed = selected !== currentMode;
+
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">${ICO.server()}</span>
+      Operational Mode
+      <span class="mode-badge" data-mode=${currentMode}>${currentMode}</span>
+    </div>
+    <div class="card-body">
+      <div class="mode-cockpit ${armed ? 'armed' : ''}">
+        <div class="mode-guard-container">
+          <!-- Guard cover -->
+          <div class="mode-guard ${armed ? 'armed' : ''}" onClick=${() => { if (!armed) { setArmed(true); } }}>
+            ${!armed && html`<div class="mode-guard-label">ARM TO CHANGE</div>`}
+          </div>
+          <!-- Mode options underneath -->
+          <div class="mode-options">
+            ${modes.map(m => html`
+              <button key=${m.id}
+                class="mode-option ${selected === m.id ? 'selected' : ''} ${m.id === currentMode ? 'current' : ''}"
+                disabled=${!armed || busy}
+                onClick=${() => { setSelected(m.id); clearTimeout(armTimer.current); armTimer.current = setTimeout(() => setArmed(false), 10000); }}>
+                <span class="mode-option-dot ${selected === m.id ? 'on' : ''}" />
+                <div class="mode-option-info">
+                  <span class="mode-option-label">${m.label}</span>
+                  <span class="mode-option-desc">${m.desc}</span>
+                </div>
+                ${m.id === currentMode && html`<span class="mode-option-current">Active</span>`}
+              </button>
+            `)}
+          </div>
+        </div>
+        <!-- Commit bar -->
+        <div class="mode-commit-bar ${armed && changed ? 'visible' : ''}">
+          <button class="mode-disarm-btn" onClick=${() => setArmed(false)}>Cancel</button>
+          <button class="mode-commit-btn" disabled=${!changed || busy} onClick=${commit}>
+            ${busy ? 'Applying...' : 'COMMIT & RESTART'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ── Settings Page ─────────────────────────────────────────────
 function SettingsPage() {
   const { state, dispatch } = useContext(AppContext);
@@ -1195,6 +1297,7 @@ function SettingsPage() {
   }, []);
   return html`<div class="page-scroll">
     <div class="page-grid">
+      <div class="card-wide"><${ModeSelector} /></div>
       <${DeviceSettings} />
       <${OscSettings} />
       <div class="card-wide"><${FailoverSettingsPanel} /></div>

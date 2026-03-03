@@ -1,0 +1,9 @@
+[Unit]
+Description=MIDInet host restart (triggered by admin panel mode change)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart midinet-host.service
+# Clean up trigger file whether restart succeeded or failed
+ExecStopPost=/bin/rm -f /var/lib/midinet/restart-trigger
+TimeoutStartSec=30
