@@ -949,6 +949,17 @@ a { color: var(--accent); text-decoration: none; }
 .input-red-device { font-size: 13px; font-weight: 600; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .input-red-status { font-family: var(--mono); font-size: 10px; color: var(--text-3); display: flex; align-items: center; gap: 5px; }
 
+/* ── Multi-device controller grid ── */
+.input-red.multi-devices { flex-wrap: wrap; }
+.input-red.multi-devices .input-red-item { flex: 1 1 calc(50% - 5px); min-width: 180px; }
+
+/* ── Per-device MIDI stats ── */
+.midi-stats-multi { padding: 8px 12px; border-top: 0.5px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.midi-stat-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.midi-stat-device { font-weight: 600; font-size: 10px; width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.midi-stat-row .midi-stat-value { font-family: var(--mono); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+.midi-stat-row .midi-stat-label { font-size: 9px; color: var(--text-3); text-transform: uppercase; width: 32px; }
+
 /* ── Switch Button ── */
 .switch-btn {
     display: block;

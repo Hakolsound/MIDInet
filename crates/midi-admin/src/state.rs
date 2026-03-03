@@ -296,6 +296,8 @@ pub struct AppStateInner {
     /// Configured operational mode (read from config file, updated by set_mode API).
     /// Authoritative source — not overwritten by mDNS discovery.
     pub configured_mode: RwLock<String>,
+    /// Per-device MIDI metrics keyed by device_id (populated by sniffer in multi mode).
+    pub per_device_midi: RwLock<HashMap<u8, DeviceMidiRate>>,
 }
 
 impl AppState {
@@ -334,6 +336,7 @@ impl AppState {
                 designated_focus: RwLock::new(None),
                 update_log_tx: broadcast::channel(256).0,
                 configured_mode: RwLock::new("single".to_string()),
+                per_device_midi: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -484,6 +487,14 @@ pub struct MidiMetrics {
     pub active_notes: u32,
     pub dropped_messages: u64,
     pub peak_burst_rate: f32,
+}
+
+/// Per-device MIDI rate metrics (multi-device mode).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeviceMidiRate {
+    pub messages_per_sec: f32,
+    pub bytes_per_sec: u64,
+    pub active_notes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

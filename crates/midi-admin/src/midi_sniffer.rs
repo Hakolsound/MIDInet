@@ -4,6 +4,7 @@
 /// to populate the admin panel's MIDI metrics (messages/sec, bytes/sec, etc.).
 /// Runs as a background tokio task spawned from main.
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
-use crate::state::AppState;
+use crate::state::{AppState, DeviceMidiRate};
 
 /// Run the multicast MIDI sniffer. Joins `multicast_group:data_port`,
 /// counts MIDI packets, and updates `state.midi_metrics` once per second.
@@ -77,6 +78,11 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
     let mut active_notes: u32 = 0;
     let mut tick = Instant::now();
 
+    // Per-device accumulators (msg_count, byte_count)
+    let mut dev_msgs: HashMap<u8, u64> = HashMap::new();
+    let mut dev_bytes: HashMap<u8, u64> = HashMap::new();
+    let mut dev_notes: HashMap<u8, u32> = HashMap::new();
+
     loop {
         tokio::select! {
             result = socket.recv_from(&mut buf) => {
@@ -84,18 +90,35 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                     Ok((len, _addr)) => {
                         // Verify MIDI data packet magic: "MDMI"
                         if len >= 18 && &buf[0..4] == b"MDMI" {
+                            // Detect V1 vs V2 packet format.
+                            // V1: flags at byte 15 (bit 7 clear), midi_len at 16..18, header=18
+                            // V2: flags bit 7 set, device_id at 16, midi_len at 17..19, header=19
+                            let flags = buf[15];
+                            let (device_id, header_size) = if flags & 0x80 != 0 && len >= 19 {
+                                (buf[16], 19usize)
+                            } else {
+                                (0u8, 18usize)
+                            };
+
+                            let midi_len_off = header_size - 2;
+                            let midi_len = u16::from_be_bytes([buf[midi_len_off], buf[midi_len_off + 1]]) as usize;
+
                             msg_count += 1;
                             total_messages += 1;
-
-                            // Extract MIDI payload length from header (bytes 16..18, big-endian u16)
-                            let midi_len = u16::from_be_bytes([buf[16], buf[17]]) as usize;
                             byte_count += midi_len as u64;
 
-                            // Count active notes from raw MIDI data (offset 18..)
-                            if len >= 18 + midi_len {
-                                let midi_data = &buf[18..18 + midi_len];
+                            // Per-device accumulation
+                            *dev_msgs.entry(device_id).or_insert(0) += 1;
+                            *dev_bytes.entry(device_id).or_insert(0) += midi_len as u64;
+
+                            // Count active notes from raw MIDI data
+                            if len >= header_size + midi_len {
+                                let midi_data = &buf[header_size..header_size + midi_len];
                                 let prev = active_notes;
                                 count_active_notes(midi_data, &mut active_notes);
+                                // Per-device note tracking
+                                let dn = dev_notes.entry(device_id).or_insert(0);
+                                count_active_notes(midi_data, dn);
                                 // Push active_notes to shared state immediately for snappy UI
                                 if active_notes != prev {
                                     state.inner.midi_metrics.write().await.active_notes = active_notes;
@@ -103,8 +126,8 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                             }
 
                             // Log to traffic sniffer for real-time display
-                            if midi_len > 0 && len >= 18 + midi_len {
-                                let midi_data = &buf[18..18 + midi_len];
+                            if midi_len > 0 && len >= header_size + midi_len {
+                                let midi_data = &buf[header_size..header_size + midi_len];
                                 let desc = describe_midi(midi_data);
                                 let now_s = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -115,6 +138,7 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                                         "ch": "midi",
                                         "ts": now_s,
                                         "msg": desc,
+                                        "device_id": device_id,
                                     }).to_string(),
                                 );
                                 state.inner.traffic_counters.midi_packets_in.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -137,8 +161,25 @@ pub async fn run(state: AppState, multicast_group: String, data_port: u16, inter
                     metrics.total_messages = total_messages;
                     metrics.active_notes = active_notes;
                 }
+
+                // Update per-device rates
+                {
+                    let mut pd = state.inner.per_device_midi.write().await;
+                    pd.clear();
+                    for (&did, &msgs) in &dev_msgs {
+                        pd.insert(did, DeviceMidiRate {
+                            messages_per_sec: msgs as f32 / elapsed,
+                            bytes_per_sec: (*dev_bytes.get(&did).unwrap_or(&0) as f32 / elapsed) as u64,
+                            active_notes: *dev_notes.get(&did).unwrap_or(&0),
+                        });
+                    }
+                }
+
                 msg_count = 0;
                 byte_count = 0;
+                dev_msgs.clear();
+                dev_bytes.clear();
+                // Don't clear dev_notes — they're cumulative like active_notes
                 tick = Instant::now();
             }
         }

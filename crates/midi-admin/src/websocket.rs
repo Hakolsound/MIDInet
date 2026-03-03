@@ -76,6 +76,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let designated_primary = state.inner.designated_primary.read().await;
             let designated_focus = state.inner.designated_focus.read().await;
             let configured_mode = state.inner.configured_mode.read().await;
+            let per_device_midi = state.inner.per_device_midi.read().await;
 
             json!({
                 "timestamp": std::time::SystemTime::now()
@@ -131,6 +132,13 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                     "osc_status": osc_state.status,
                     "active_preset": *active_preset,
                 },
+                "device_midi": per_device_midi.iter().map(|(k, v)| {
+                    (k.to_string(), serde_json::json!({
+                        "msg_per_sec": v.messages_per_sec,
+                        "bytes_per_sec": v.bytes_per_sec,
+                        "active_notes": v.active_notes,
+                    }))
+                }).collect::<serde_json::Map<String, serde_json::Value>>(),
                 "device_activity": *device_activity,
                 "identify_active": identify_reqs.keys().collect::<Vec<_>>(),
             })

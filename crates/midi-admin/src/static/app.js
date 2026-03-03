@@ -31,6 +31,12 @@ const ICO = {
   volume: () => html`<svg ...${svgAttrs}><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg>`,
 };
 
+// ── Device Colors (consistent across all views) ──────────────
+const DEVICE_COLORS = ['var(--accent)', 'var(--green)', 'var(--orange)', 'var(--violet)', 'var(--signal)'];
+const DEVICE_COLORS_RAW = ['#0a84ff', '#30d158', '#ff9f0a', '#bf5af2', '#5ac8fa'];
+const deviceColor = (i) => DEVICE_COLORS[i % DEVICE_COLORS.length];
+const deviceColorRaw = (i) => DEVICE_COLORS_RAW[i % DEVICE_COLORS_RAW.length];
+
 // ── Utilities ─────────────────────────────────────────────────
 const fmtUp = (s) => {
   if (!s) return '0m';
@@ -97,7 +103,7 @@ const INIT = {
   hosts: [], clients: [], devices: [], alerts: [],
   designatedPrimary: null, designatedFocus: null,
   pipeline: null, settings: null, presets: [], failoverDetail: null,
-  sparkData: [], toasts: [], warningPopups: [],
+  sparkData: [], perDeviceSparkData: {}, toasts: [], warningPopups: [],
   trafficLastSeen: { midi_in: 0, midi_out: 0, osc: 0, api: 0 },
   snifferOpen: false, snifferEntries: [], snifferFilter: 'all',
   modal: null, updateModal: null,
@@ -123,8 +129,16 @@ function reducer(state, action) {
       const da = d.device_activity || state.deviceActivity;
       const ia = {};
       (d.identify_active || []).forEach(id => { ia[id] = true; });
+      // Per-device spark data accumulation
+      const pds = { ...state.perDeviceSparkData };
+      const dm = d.device_midi || {};
+      for (const [did, metrics] of Object.entries(dm)) {
+        const arr = [...(pds[did] || []), metrics.msg_per_sec || 0];
+        if (arr.length > 120) arr.shift();
+        pds[did] = arr;
+      }
       return {
-        ...state, status: { ...state.status, ...d }, sparkData: spark, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia,
+        ...state, status: { ...state.status, ...d }, sparkData: spark, perDeviceSparkData: pds, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia,
         hosts: d.hosts || state.hosts,
         clients: d.clients || state.clients,
         designatedPrimary: d.designated_primary !== undefined ? d.designated_primary : state.designatedPrimary,
@@ -255,6 +269,48 @@ function useSparkline(ref, data, color = '#0a84ff') {
     const lx = (data.length - 1) * step, ly = y(data[data.length - 1]);
     ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
   }, [data, color]);
+}
+
+function useMultiSparkline(ref, datasets, colors) {
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || datasets.length === 0) return;
+    const ctx = c.getContext('2d'), dpr = devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr; ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    // Shared Y-axis scale across all datasets
+    let globalMax = 1;
+    datasets.forEach(d => { const mx = Math.max(...d, 1); if (mx > globalMax) globalMax = mx; });
+    datasets.forEach((data, di) => {
+      if (data.length < 2) return;
+      const color = colors[di % colors.length];
+      const step = w / (data.length - 1);
+      const y = (v) => h - (v / globalMax) * h * 0.85 - 2;
+      // Fill
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, color + '18'); grad.addColorStop(1, color + '02');
+      ctx.beginPath(); ctx.moveTo(0, h);
+      data.forEach((v, i) => ctx.lineTo(i * step, y(v)));
+      ctx.lineTo(w, h); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+      // Line
+      ctx.beginPath();
+      data.forEach((v, i) => { i === 0 ? ctx.moveTo(i * step, y(v)) : ctx.lineTo(i * step, y(v)); });
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+      // Endpoint dot
+      const lx = (data.length - 1) * step, ly = y(data[data.length - 1]);
+      ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+    });
+  }, [datasets, colors]);
+}
+
+function useMode() {
+  const { state } = useContext(AppContext);
+  const mode = state.status.operational_mode || 'single';
+  const host = state.hosts[0] || null;
+  const devices = mode === 'multi' && host ? [host.device_name, ...(host.extra_device_names || [])] : [];
+  const deviceMidi = state.status.device_midi || {};
+  return { mode, host, devices, deviceMidi };
 }
 
 // ── Header ────────────────────────────────────────────────────
@@ -711,6 +767,7 @@ function ControllersCard() {
   const { state, dispatch } = useContext(AppContext);
   const midi = state.status.midi || {};
   const ir = state.status.input_redundancy || {};
+  const { mode, devices, deviceMidi } = useMode();
   const hMap = { active: 'ok', disconnected: 'error', error: 'error', reconnecting: 'warn', unknown: 'idle' };
 
   // Determine which device is Active vs Backup based on active_input
@@ -746,6 +803,64 @@ function ControllersCard() {
     return 'source-manual';
   };
 
+  // ── Multi mode: N equal-peer device cards ──
+  if (mode === 'multi' && devices.length > 0) {
+    return html`<div class="card">
+      <div class="card-header">
+        <span class="card-header-icon">${ICO.usb()}</span>
+        Controllers
+        <span class="mode-badge" data-mode="multi">${devices.length} devices</span>
+      </div>
+      <div class="card-body">
+        <div class="input-red multi-devices">
+          ${devices.map((name, i) => {
+            const dm = deviceMidi[String(i)] || {};
+            const rate = dm.msg_per_sec || 0;
+            const hasActivity = rate > 0;
+            return html`<div class="input-red-item ${hasActivity ? 'active' : ''}" key=${i} style="border-color:${deviceColor(i)}">
+              <div class="input-red-icon" style="color:${deviceColor(i)}">${ICO.usb()}</div>
+              <div class="input-red-info">
+                <div class="input-red-label" style="color:${deviceColor(i)}">#${i}</div>
+                <div class="input-red-device">${name}</div>
+                <div class="input-red-status">
+                  <span class="status-dot" data-status=${hasActivity ? 'ok' : 'idle'} />${hasActivity ? 'active' : 'idle'}
+                  <span class="mono" style="margin-left:auto;color:${deviceColor(i)}">${hasActivity ? fmtRate(rate) + '/s' : ''}</span>
+                </div>
+              </div>
+            </div>`;
+          })}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── Single mode: one controller card ──
+  if (mode === 'single') {
+    const devName = ir.primary_device || activeName;
+    const devHealth = ir.primary_health || 'unknown';
+    return html`<div class="card">
+      <div class="card-header">
+        <span class="card-header-icon">${ICO.usb()}</span>
+        Controller
+      </div>
+      <div class="card-body">
+        <div class="input-red">
+          <div class="input-red-item active">
+            <div class="input-red-icon">${ICO.usb()}</div>
+            <div class="input-red-info">
+              <div class="input-red-device">${devName}</div>
+              <div class="input-red-status">
+                <span class="status-dot" data-status=${hMap[devHealth] || 'idle'} />${devHealth || 'unknown'}
+                <span class="mono" style="margin-left:auto">${devHealth === 'active' ? fmtRate(midi.messages_per_sec || 0) + '/s' : ''}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── Redundant mode (default): Active/Backup layout ──
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.usb()}</span>
@@ -791,8 +906,21 @@ function ControllersCard() {
 function MidiDataCard() {
   const { state } = useContext(AppContext);
   const ref = useRef(null);
-  useSparkline(ref, state.sparkData);
+  const { mode, devices, deviceMidi } = useMode();
   const midi = state.status.midi || {};
+  const isMulti = mode === 'multi' && devices.length > 0;
+
+  // Multi-device: collect per-device spark datasets
+  const deviceIds = Object.keys(deviceMidi).sort();
+  const multiDatasets = deviceIds.map(did => state.perDeviceSparkData[did] || []);
+  const multiColors = deviceIds.map((_, i) => DEVICE_COLORS_RAW[i % DEVICE_COLORS_RAW.length]);
+
+  if (isMulti) {
+    useMultiSparkline(ref, multiDatasets, multiColors);
+  } else {
+    useSparkline(ref, state.sparkData);
+  }
+
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.music()}</span>
@@ -801,20 +929,35 @@ function MidiDataCard() {
     <div class="card-body-flush" style="flex:1;min-height:0;padding:8px 12px">
       <div class="spark-wrap"><canvas ref=${ref} /></div>
     </div>
-    <div class="midi-stats">
-      <div class="midi-stat">
-        <span class="midi-stat-value">${fmtRate(midi.messages_per_sec || 0)}</span>
-        <span class="midi-stat-label">msg/s</span>
+    ${isMulti ? html`
+      <div class="midi-stats-multi">
+        ${devices.map((name, i) => {
+          const dm = deviceMidi[String(i)] || {};
+          return html`<div class="midi-stat-row" key=${i}>
+            <span class="midi-stat-device" style="color:${deviceColor(i)}">#${i} ${name}</span>
+            <span class="midi-stat-value" style="color:${deviceColor(i)}">${fmtRate(dm.msg_per_sec || 0)}</span>
+            <span class="midi-stat-label">msg/s</span>
+            <span class="midi-stat-value">${dm.active_notes || 0}</span>
+            <span class="midi-stat-label">notes</span>
+          </div>`;
+        })}
       </div>
-      <div class="midi-stat">
-        <span class="midi-stat-value">${midi.active_notes || 0}</span>
-        <span class="midi-stat-label">notes</span>
+    ` : html`
+      <div class="midi-stats">
+        <div class="midi-stat">
+          <span class="midi-stat-value">${fmtRate(midi.messages_per_sec || 0)}</span>
+          <span class="midi-stat-label">msg/s</span>
+        </div>
+        <div class="midi-stat">
+          <span class="midi-stat-value">${midi.active_notes || 0}</span>
+          <span class="midi-stat-label">notes</span>
+        </div>
+        <div class="midi-stat">
+          <span class="midi-stat-value">${midi.bytes_per_sec ? (midi.bytes_per_sec / 1024).toFixed(1) : '0'}</span>
+          <span class="midi-stat-label">KB/s</span>
+        </div>
       </div>
-      <div class="midi-stat">
-        <span class="midi-stat-value">${midi.bytes_per_sec ? (midi.bytes_per_sec / 1024).toFixed(1) : '0'}</span>
-        <span class="midi-stat-label">KB/s</span>
-      </div>
-    </div>
+    `}
   </div>`;
 }
 
@@ -830,13 +973,29 @@ function NetworkCard() {
   const { state, dispatch } = useContext(AppContext);
   const t = state.status.traffic || {};
   const ls = state.trafficLastSeen;
-  const chs = [
-    { k: 'midi_in', l: 'MIDI Broadcast', v: t.midi_in_per_sec || 0 },
-    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0 },
-    { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0 },
-    { k: 'api', l: 'API', v: t.api_per_sec || 0 },
+  const { mode, devices, deviceMidi } = useMode();
+  const isMulti = mode === 'multi' && devices.length > 0;
+
+  // Build traffic channels — in multi mode, per-device rows replace single MIDI Broadcast
+  const sharedChs = [
+    { k: 'midi_out', l: 'MIDI Feedback', v: t.midi_out_per_sec || 0, clr: null },
+    { k: 'osc', l: 'OSC', v: t.osc_per_sec || 0, clr: null },
+    { k: 'api', l: 'API', v: t.api_per_sec || 0, clr: null },
   ];
-  const mx = Math.max(...chs.map(c => c.v), 1);
+  let trafficRows;
+  if (isMulti) {
+    const deviceRows = devices.map((name, i) => ({
+      k: 'dev_' + i, l: '#' + i + ' ' + name, v: (deviceMidi[String(i)]?.msg_per_sec || 0), clr: deviceColorRaw(i),
+    }));
+    trafficRows = [...deviceRows, ...sharedChs];
+  } else {
+    trafficRows = [
+      { k: 'midi_in', l: 'MIDI Broadcast', v: t.midi_in_per_sec || 0, clr: null },
+      ...sharedChs,
+    ];
+  }
+  const mx = Math.max(...trafficRows.map(c => c.v), 1);
+
   return html`<div class="card">
     <div class="card-header">
       <span class="card-header-icon">${ICO.wifi()}</span>
@@ -850,15 +1009,15 @@ function NetworkCard() {
         <div class="ctrl-section-label">Hosts</div>
         ${state.hosts.map(h => {
           const isMaster = state.designatedPrimary === h.id;
-          const isMulti = h.operational_mode === 'multi';
-          const allDevices = isMulti ? [h.device_name, ...(h.extra_device_names || [])] : null;
+          const isHostMulti = h.operational_mode === 'multi';
+          const allDevices = isHostMulti ? [h.device_name, ...(h.extra_device_names || [])] : null;
           return html`<div class="host-row-wrap" key=${h.id}>
             <div class="host-row">
               <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
               <span class="host-name">${h.device_name || h.name || h.ip}</span>
               <span class="host-role-badge" data-role=${isMaster ? 'primary' : h.role}>${isMaster ? 'master' : h.role}</span>
               ${h.operational_mode && h.operational_mode !== 'single' && html`
-                <span class="mode-badge" data-mode=${h.operational_mode}>${h.operational_mode}${isMulti ? ' \u00d7' + h.device_count : ''}</span>
+                <span class="mode-badge" data-mode=${h.operational_mode}>${h.operational_mode}${isHostMulti ? ' \u00d7' + h.device_count : ''}</span>
               `}
               <span class="host-detail">${h.ip}</span>
               <button class="btn btn-xs ${isMaster ? 'btn-active' : ''}" onClick=${() =>
@@ -866,9 +1025,9 @@ function NetworkCard() {
                   .then(() => dispatch({ type: 'SET_DESIGNATED_PRIMARY', id: h.id }))
               }>${isMaster ? '\u2605 Master' : 'Set Master'}</button>
             </div>
-            ${isMulti && allDevices && html`
+            ${isHostMulti && allDevices && html`
               <div class="host-devices">
-                ${allDevices.map((name, i) => html`<span class="host-device-tag" key=${i}>#${i} ${name}</span>`)}
+                ${allDevices.map((name, i) => html`<span class="host-device-tag" key=${i} style="border-color:${deviceColor(i)};color:${deviceColor(i)}">#${i} ${name}</span>`)}
               </div>
             `}
           </div>`;
@@ -876,8 +1035,8 @@ function NetworkCard() {
       `}
       ${state.hosts.length === 0 && html`<div style="font-size:12px;color:var(--text-3);margin-bottom:12px">No hosts discovered</div>`}
       <div class="ctrl-section-label" style="margin-top:12px">Traffic</div>
-      ${chs.map(c => {
-        const clr = trafficColor(ls[c.k]);
+      ${trafficRows.map(c => {
+        const clr = c.clr || trafficColor(ls[c.k]);
         return html`<div class="traffic-row" key=${c.k}>
           <span class="traffic-ch" style="color:${clr}">${c.l}</span>
           <div class="traffic-bar-wrap"><div class="traffic-bar" style="background:${clr};width:${Math.min((c.v / mx) * 100, 100)}%" /></div>
@@ -969,6 +1128,8 @@ function SignalFlowDiagram() {
   const devOk = dev === 'connected';
   const hostOk = s.health_score >= 50;
   const hasClients = s.client_count > 0;
+  const { mode, devices: multiDevices, deviceMidi } = useMode();
+  const isMultiMode = mode === 'multi' && multiDevices.length > 0;
 
   // Segment health
   const seg1Health = devOk && hostOk ? 'active' : devOk || hostOk ? 'warn' : 'err';
@@ -979,17 +1140,12 @@ function SignalFlowDiagram() {
   const hasFocus = s.focus_holder != null;
   const focusClient = hasFocus ? state.clients.find(c => c.id === s.focus_holder) : null;
 
-  // Multi-device: gather all device names from the first host
-  const activeHost = state.hosts.length > 0 ? state.hosts[0] : null;
-  const isMultiMode = activeHost?.operational_mode === 'multi';
-  const multiDevices = isMultiMode ? [activeHost.device_name, ...(activeHost.extra_device_names || [])] : [];
-
   return html`<div class="sf-diagram">
     <div class="sf-header">
       <span class="card-header-icon">${ICO.sliders()}</span>
       Signal Flow
-      ${activeHost?.operational_mode && activeHost.operational_mode !== 'single' && html`
-        <span class="mode-badge" data-mode=${activeHost.operational_mode} style="margin-left:8px">${activeHost.operational_mode}</span>
+      ${mode !== 'single' && html`
+        <span class="mode-badge" data-mode=${mode} style="margin-left:8px">${mode}</span>
       `}
       <div class="card-header-right">
         <button class="btn btn-sm" onClick=${() => dispatch({ type: 'SNIFFER_OPEN' })}>${ICO.search()} Sniffer</button>
@@ -1000,17 +1156,28 @@ function SignalFlowDiagram() {
 
         <!-- Controllers Stage -->
         <div class="sf-stage">
-          <div class="sf-stage-label">Controllers${isMultiMode ? ' (' + multiDevices.length + ')' : ''}</div>
+          <div class="sf-stage-label">${mode === 'single' ? 'Controller' : 'Controllers'}${isMultiMode ? ' (' + multiDevices.length + ')' : ''}</div>
           <div class="sf-stage-nodes">
-            ${isMultiMode ? multiDevices.map((name, i) => html`
-              <div class="sf-node" data-health=${devOk ? 'ok' : 'warn'} key=${i}>
-                <span class="sf-node-dot" data-s=${devOk ? 'ok' : 'warn'} />
+            ${isMultiMode ? multiDevices.map((name, i) => {
+              const dm = deviceMidi[String(i)] || {};
+              const rate = dm.msg_per_sec || 0;
+              return html`
+              <div class="sf-node" data-health=${rate > 0 ? 'ok' : 'warn'} key=${i}>
+                <span class="sf-node-dot" data-s=${rate > 0 ? 'ok' : 'warn'} style="background:${deviceColorRaw(i)}" />
                 <div class="sf-node-info">
-                  <span class="sf-node-name">${name}</span>
-                  <span class="sf-node-meta">Highway #${i}</span>
+                  <span class="sf-node-name" style="color:${deviceColor(i)}">${name}</span>
+                  <span class="sf-node-meta">#${i} ${rate > 0 ? fmtRate(rate) + '/s' : 'idle'}</span>
+                </div>
+              </div>`;
+            }) : mode === 'single' ? html`
+              <div class="sf-node" data-health=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')}>
+                <span class="sf-node-dot" data-s=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')} />
+                <div class="sf-node-info">
+                  <span class="sf-node-name">${ir.primary_device || 'Controller'}</span>
+                  <span class="sf-node-meta">${devOk ? fmtRate(midi.messages_per_sec || 0) + '/s' : ir.primary_health || 'disconnected'}</span>
                 </div>
               </div>
-            `) : html`
+            ` : html`
               <div class="sf-node" data-health=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')}>
                 <span class="sf-node-dot" data-s=${hMap[ir.primary_health] || (devOk ? 'ok' : 'err')} />
                 <div class="sf-node-info">
@@ -1161,6 +1328,22 @@ function FailoverPanel() {
   const { state, dispatch } = useContext(AppContext);
   const fo = state.failoverDetail;
   const s = state.status;
+  const { mode } = useMode();
+
+  // Non-redundant modes: show placeholder
+  if (mode === 'single') {
+    return html`<div class="card" style="flex-shrink:0">
+      <div class="card-header">Failover Control</div>
+      <div class="card-body"><div class="empty-state" style="padding:20px;color:var(--text-3)">No failover in single controller mode</div></div>
+    </div>`;
+  }
+  if (mode === 'multi') {
+    return html`<div class="card" style="flex-shrink:0">
+      <div class="card-header">Failover Control</div>
+      <div class="card-body"><div class="empty-state" style="padding:20px;color:var(--text-3)">Each device highway operates independently</div></div>
+    </div>`;
+  }
+
   if (!fo) return html`<div class="card"><div class="card-header">Failover</div><div class="card-body"><div class="empty-state">Loading...</div></div></div>`;
   const doSwitch = () => {
     const go = async () => {
@@ -1330,6 +1513,7 @@ function ModeSelector() {
 // ── Settings Page ─────────────────────────────────────────────
 function SettingsPage() {
   const { state, dispatch } = useContext(AppContext);
+  const { mode } = useMode();
   useEffect(() => {
     apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
     apiFetch('/api/settings/presets').then(d => dispatch({ type: 'SET_PRESETS', data: d.presets }));
@@ -1340,7 +1524,7 @@ function SettingsPage() {
       <div class="card-wide"><${ModeSelector} /></div>
       <${DeviceSettings} />
       <${OscSettings} />
-      <div class="card-wide"><${FailoverSettingsPanel} /></div>
+      ${mode === 'redundant' && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
       <div class="card-wide"><${PresetGrid} /></div>
     </div>
   </div>`;
@@ -1356,6 +1540,7 @@ function DeviceSettings() {
   const devices = state.devices || [];
   const activity = state.deviceActivity || {};
   const identifying = state.identifyActive || {};
+  const { mode, devices: multiDevices, deviceMidi } = useMode();
 
   // Connect to device-activity WebSocket when settings page is open
   useEffect(() => {
@@ -1402,6 +1587,100 @@ function DeviceSettings() {
     return a && (Date.now() - a.last_activity_ms) < 2000;
   };
 
+  // ── Multi mode: read-only highway list ──
+  if (mode === 'multi' && multiDevices.length > 0) {
+    return html`<div class="card">
+      <div class="card-header">MIDI Controllers <span class="mode-badge" data-mode="multi">multi</span></div>
+      <div class="card-body">
+        <div class="ctrl-section-label">Device Highways</div>
+        <div class="device-id-list">
+          ${multiDevices.map((name, i) => {
+            const dm = deviceMidi[String(i)] || {};
+            const rate = dm.msg_per_sec || 0;
+            return html`<div class="device-id-item ${rate > 0 ? 'active' : ''}" key=${i}>
+              <div class="device-id-dot" style="background:${deviceColorRaw(i)};box-shadow:0 0 6px ${deviceColorRaw(i)}40" />
+              <div class="device-id-info">
+                <div class="device-id-name" style="color:${deviceColor(i)}">Highway #${i}</div>
+                <div class="device-id-meta">${name}</div>
+              </div>
+              <span class="mono" style="font-size:13px;color:${deviceColor(i)}">${fmtRate(rate)}/s</span>
+            </div>`;
+          })}
+        </div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:8px">Device highways are configured in host.toml [[midi.devices]]</div>
+        ${devices.length > 0 && html`
+          <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
+          <div class="device-id-list">
+            ${devices.map(d => {
+              const act = isActive(d.id);
+              const lastMsg = activity[d.id]?.last_message;
+              const isId = identifying[d.id];
+              return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+                <div class="device-id-dot ${act ? 'active' : ''}" />
+                <div class="device-id-info">
+                  <div class="device-id-name">${d.name}</div>
+                  <div class="device-id-meta">
+                    ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
+                  </div>
+                </div>
+                <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
+                  ${isId ? 'Flashing...' : 'Identify'}
+                </button>
+              </div>`;
+            })}
+          </div>
+          <div style="font-size:10px;color:var(--text-3);margin-top:8px">Move a fader or press a key to see which device responds.</div>
+        `}
+      </div>
+    </div>`;
+  }
+
+  // ── Single mode: one controller dropdown ──
+  if (mode === 'single') {
+    return html`<div class="card">
+      <div class="card-header">MIDI Controller</div>
+      <div class="card-body">
+        <div class="form-group"><label class="form-label">Controller</label>
+          <div class="form-row">
+            <select value=${activeDid} onChange=${(e) => setActiveDid(e.target.value)} style="flex:1">
+              <option value="">Select...</option>
+              ${devices.map(d => html`<option value=${d.id} key=${d.id}>${d.name}${d.connected ? '' : ' (offline)'}</option>`)}
+            </select>
+            <button class="btn btn-sm btn-accent" onClick=${() => saveRole('active', activeDid)} disabled=${!activeDid}>Apply</button>
+          </div>
+          <div class="flex items-center gap-sm mt-sm">
+            <span class="status-dot" data-status=${s?.status === 'connected' ? 'ok' : s?.status === 'switching' ? 'warn' : 'disconnected'} />
+            <span style="font-size:12px;color:var(--text-2)">${s?.status || 'disconnected'}</span>
+          </div>
+        </div>
+        ${devices.length > 0 && html`
+          <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
+          <div class="device-id-list">
+            ${devices.map(d => {
+              const act = isActive(d.id);
+              const lastMsg = activity[d.id]?.last_message;
+              const isId = identifying[d.id];
+              return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+                <div class="device-id-dot ${act ? 'active' : ''}" />
+                <div class="device-id-info">
+                  <div class="device-id-name">${d.name}</div>
+                  <div class="device-id-meta">
+                    ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
+                  </div>
+                </div>
+                <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
+                  ${isId ? 'Flashing...' : 'Identify'}
+                </button>
+              </div>`;
+            })}
+          </div>
+          <div style="font-size:10px;color:var(--text-3);margin-top:8px">Move a fader or press a key to see which device responds.</div>
+        `}
+      </div>
+    </div>`;
+  }
+
+  // ── Redundant mode (default): Active/Backup dropdowns ──
   return html`<div class="card">
     <div class="card-header">MIDI Controllers</div>
     <div class="card-body">
