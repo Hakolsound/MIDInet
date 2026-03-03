@@ -354,46 +354,23 @@ pub async fn set_mode(
 
     info!(mode = %mode, path = %config_path, "Operational mode changed in config");
 
-    // Try to restart the host. Two mechanisms:
-    // 1. Write trigger file for midinet-restart.path (clean systemctl restart)
-    // 2. Fallback: SIGTERM the host process directly (Restart=always brings it back)
+    // Restart the host so it picks up the new mode.
+    // Primary: SIGTERM the host process directly — both services run as the midi
+    // user, so signals are permitted. systemd Restart=always brings it back with
+    // the updated config. Also write the trigger file for midinet-restart.path
+    // as a belt-and-suspenders backup.
 
     let trigger = format!("mode={}\n{:?}\n", mode, std::time::SystemTime::now());
-    let trigger_ok = match std::fs::write(RESTART_TRIGGER_PATH, trigger) {
-        Ok(()) => {
-            info!(mode = %mode, "Wrote restart trigger file");
-            true
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to write restart trigger file — will try direct signal");
-            false
-        }
-    };
-
-    // Check if the path unit will handle it
-    let path_unit_active = std::process::Command::new("systemctl")
-        .args(["is-active", "--quiet", "midinet-restart.path"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if !trigger_ok || !path_unit_active {
-        // Fallback: signal the host process directly.
-        // Both admin and host run as the midi user, so we can send signals.
-        // systemd Restart=always will restart it with the updated config.
-        info!("Path unit not active or trigger write failed — sending SIGTERM to host");
-        let sigterm_ok = signal_host_process();
-        if !sigterm_ok && !trigger_ok {
-            return Json(json!({
-                "success": true,
-                "restarting": false,
-                "mode": mode,
-                "error": "Mode saved to config but could not trigger restart. Restart the host manually.",
-            }));
-        }
+    if let Err(e) = std::fs::write(RESTART_TRIGGER_PATH, &trigger) {
+        warn!(error = %e, "Failed to write restart trigger file (non-fatal)");
     }
 
-    info!(mode = %mode, trigger_ok = trigger_ok, path_unit = path_unit_active, "Host restart initiated for mode change");
+    let sigterm_ok = signal_host_process();
+    if !sigterm_ok {
+        warn!("SIGTERM failed — relying on path unit trigger for restart");
+    }
+
+    info!(mode = %mode, sigterm = sigterm_ok, "Host restart initiated for mode change");
     Json(json!({
         "success": true,
         "restarting": true,
