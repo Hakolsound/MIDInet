@@ -354,6 +354,17 @@ pub async fn set_mode(
 
     info!(mode = %mode, path = %config_path, "Operational mode changed in config");
 
+    // Update the admin's in-memory host state immediately so the dashboard
+    // reflects the new mode without waiting for mDNS re-discovery (the host
+    // may not send a goodbye packet when killed, so the browser keeps the
+    // stale TXT record).
+    {
+        let mut hosts = state.inner.hosts.write().await;
+        for host in hosts.iter_mut() {
+            host.operational_mode = mode.clone();
+        }
+    }
+
     // Restart the host so it picks up the new mode.
     // Primary: SIGTERM the host process directly — both services run as the midi
     // user, so signals are permitted. systemd Restart=always brings it back with
