@@ -143,20 +143,52 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Write-Ok "Rust already installed ($(rustc --version))"
 }
 
-# Visual Studio Build Tools (C++ workload)
+# Visual Studio Build Tools (C++ workload) — required for Rust MSVC target
+$HasVsCpp = $false
 $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (Test-Path $vsWhere) {
     $vsInstall = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if ($vsInstall) {
-        Write-Ok "Visual Studio C++ Build Tools available"
-    } else {
-        Write-Warn "Visual Studio found but C++ workload missing."
-        Write-Warn "Install 'Desktop development with C++' workload from Visual Studio Installer."
+        $HasVsCpp = $true
     }
+}
+
+if ($HasVsCpp) {
+    Write-Ok "Visual Studio C++ Build Tools available"
 } else {
-    Write-Warn "Visual Studio Build Tools not detected."
-    Write-Warn "If the build fails, install from: https://visualstudio.microsoft.com/visual-cpp-build-tools/"
-    Write-Warn "Select 'Desktop development with C++' workload."
+    Write-Warn "Visual Studio C++ Build Tools not found (required for Rust to compile)."
+    Write-Warn "Installing Visual Studio Build Tools with C++ workload via winget..."
+    Write-Warn "This is a large download (~1.5 GB) and may take several minutes."
+    try {
+        winget install Microsoft.VisualStudio.2022.BuildTools `
+            --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" `
+            --accept-package-agreements --accept-source-agreements
+    } catch {}
+
+    # Re-check after install attempt
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsWhere) {
+        $vsInstall = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if ($vsInstall) {
+            $HasVsCpp = $true
+        }
+    }
+
+    if ($HasVsCpp) {
+        Write-Ok "Visual Studio C++ Build Tools installed"
+    } else {
+        Write-Err "Visual Studio C++ Build Tools could not be installed automatically."
+        Write-Host ""
+        Write-Host "    Rust on Windows requires the MSVC linker (link.exe) which comes with" -ForegroundColor Red
+        Write-Host "    Visual Studio Build Tools. Without it, the build WILL fail." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "    Please install manually:" -ForegroundColor Yellow
+        Write-Host "    1. Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Yellow
+        Write-Host "    2. Select 'Desktop development with C++' workload" -ForegroundColor Yellow
+        Write-Host "    3. Re-run this installer after installation completes" -ForegroundColor Yellow
+        Write-Host ""
+        exit 1
+    }
 }
 
 # ── 2. MIDI Driver Check ─────────────────────────────────────
