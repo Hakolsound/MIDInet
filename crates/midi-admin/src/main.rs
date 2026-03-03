@@ -73,8 +73,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Read [host].mode directly from the raw TOML for the authoritative
-        // configured_mode (the admin's MidinetConfig doesn't include [host]).
+        // Read [host].mode and device names directly from the raw TOML for the
+        // authoritative state (the admin's MidinetConfig doesn't include [host]).
         if let Ok(raw) = std::fs::read_to_string(&args.config) {
             if let Ok(table) = raw.parse::<toml::Table>() {
                 if let Some(mode) = table
@@ -85,6 +85,41 @@ async fn main() -> anyhow::Result<()> {
                 {
                     info!(mode = %mode, "Configured operational mode from config");
                     *state.inner.configured_mode.write().await = mode.to_string();
+                }
+
+                // Read configured device names from TOML
+                let mut device_names = Vec::new();
+                // Check [[midi.devices]] for multi-device entries
+                if let Some(devices_arr) = table
+                    .get("midi")
+                    .and_then(|m| m.as_table())
+                    .and_then(|m| m.get("devices"))
+                    .and_then(|d| d.as_array())
+                {
+                    for entry in devices_arr {
+                        if let Some(name) = entry
+                            .as_table()
+                            .and_then(|t| t.get("name"))
+                            .and_then(|v| v.as_str())
+                        {
+                            device_names.push(name.to_string());
+                        }
+                    }
+                }
+                // Fallback to [midi].device if no [[midi.devices]]
+                if device_names.is_empty() {
+                    if let Some(dev) = table
+                        .get("midi")
+                        .and_then(|m| m.as_table())
+                        .and_then(|m| m.get("device"))
+                        .and_then(|v| v.as_str())
+                    {
+                        device_names.push(dev.to_string());
+                    }
+                }
+                if !device_names.is_empty() {
+                    info!(devices = ?device_names, "Configured devices from config");
+                    *state.inner.configured_devices.write().await = device_names;
                 }
             }
         }

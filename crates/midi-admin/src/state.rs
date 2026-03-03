@@ -296,6 +296,9 @@ pub struct AppStateInner {
     /// Configured operational mode (read from config file, updated by set_mode API).
     /// Authoritative source — not overwritten by mDNS discovery.
     pub configured_mode: RwLock<String>,
+    /// Configured device names (read from config file).
+    /// In multi mode: names from [[midi.devices]]; otherwise: [midi].device name.
+    pub configured_devices: RwLock<Vec<String>>,
     /// Per-device MIDI metrics keyed by device_id (populated by sniffer in multi mode).
     pub per_device_midi: RwLock<HashMap<u8, DeviceMidiRate>>,
 }
@@ -336,6 +339,7 @@ impl AppState {
                 designated_focus: RwLock::new(None),
                 update_log_tx: broadcast::channel(256).0,
                 configured_mode: RwLock::new("single".to_string()),
+                configured_devices: RwLock::new(Vec::new()),
                 per_device_midi: RwLock::new(HashMap::new()),
             }),
         }

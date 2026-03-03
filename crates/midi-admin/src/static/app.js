@@ -308,7 +308,10 @@ function useMode() {
   const { state } = useContext(AppContext);
   const mode = state.status.operational_mode || 'single';
   const host = state.hosts[0] || null;
-  const devices = mode === 'multi' && host ? [host.device_name, ...(host.extra_device_names || [])] : [];
+  // Prefer configured_devices from config file (reliable), fall back to mDNS host data
+  const cfgDevices = state.status.configured_devices || [];
+  const hostDevices = host ? [host.device_name, ...(host.extra_device_names || [])] : [];
+  const devices = mode === 'multi' ? (cfgDevices.length > 0 ? cfgDevices : hostDevices) : [];
   const deviceMidi = state.status.device_midi || {};
   return { mode, host, devices, deviceMidi };
 }
