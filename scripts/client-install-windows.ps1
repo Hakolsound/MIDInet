@@ -157,11 +157,10 @@ if ($HasVsCpp) {
     Write-Ok "Visual Studio C++ Build Tools available"
 } else {
     Write-Warn "Visual Studio C++ Build Tools not found (required for Rust to compile)."
-    Write-Warn "Installing Visual Studio Build Tools with C++ workload via winget..."
-    Write-Warn "This is a large download (~1.5 GB) and may take several minutes."
+    Write-Warn "Installing minimal MSVC build tools via winget..."
     try {
         winget install Microsoft.VisualStudio.2022.BuildTools `
-            --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" `
+            --override "--wait --passive --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100" `
             --accept-package-agreements --accept-source-agreements
     } catch {}
 
