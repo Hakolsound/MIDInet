@@ -293,6 +293,9 @@ pub struct AppStateInner {
     pub designated_focus: RwLock<Option<u32>>,
     /// Broadcast channel for update log lines (streamed to /ws/update)
     pub update_log_tx: broadcast::Sender<String>,
+    /// Configured operational mode (read from config file, updated by set_mode API).
+    /// Authoritative source — not overwritten by mDNS discovery.
+    pub configured_mode: RwLock<String>,
 }
 
 impl AppState {
@@ -330,6 +333,7 @@ impl AppState {
                 designated_primary: RwLock::new(None),
                 designated_focus: RwLock::new(None),
                 update_log_tx: broadcast::channel(256).0,
+                configured_mode: RwLock::new("single".to_string()),
             }),
         }
     }

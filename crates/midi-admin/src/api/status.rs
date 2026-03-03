@@ -14,10 +14,10 @@ pub async fn get_status(State(state): State<AppState>) -> Json<Value> {
     let hosts = state.inner.hosts.read().await;
     let alerts = state.inner.alert_manager.active_alerts();
 
-    // Determine operational mode from the first discovered host (or default)
-    let operational_mode = hosts.first()
-        .map(|h| h.operational_mode.as_str())
-        .unwrap_or("single");
+    // Use the authoritative configured_mode (read from config file / set by API).
+    // mDNS-discovered host data can be stale after SIGTERM restarts.
+    let configured_mode = state.inner.configured_mode.read().await;
+    let operational_mode = configured_mode.as_str();
     let device_count = hosts.first().map(|h| h.device_count).unwrap_or(1);
 
     Json(json!({

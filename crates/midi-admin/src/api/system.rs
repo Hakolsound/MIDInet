@@ -354,10 +354,11 @@ pub async fn set_mode(
 
     info!(mode = %mode, path = %config_path, "Operational mode changed in config");
 
-    // Update the admin's in-memory host state immediately so the dashboard
-    // reflects the new mode without waiting for mDNS re-discovery (the host
-    // may not send a goodbye packet when killed, so the browser keeps the
-    // stale TXT record).
+    // Update the authoritative configured_mode — this is what get_status()
+    // reads, independent of mDNS discovery which can return stale data.
+    *state.inner.configured_mode.write().await = mode.clone();
+
+    // Also update the in-memory host state for consistency.
     {
         let mut hosts = state.inner.hosts.write().await;
         for host in hosts.iter_mut() {

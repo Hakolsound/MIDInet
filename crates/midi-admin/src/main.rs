@@ -72,6 +72,22 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+
+        // Read [host].mode directly from the raw TOML for the authoritative
+        // configured_mode (the admin's MidinetConfig doesn't include [host]).
+        if let Ok(raw) = std::fs::read_to_string(&args.config) {
+            if let Ok(table) = raw.parse::<toml::Table>() {
+                if let Some(mode) = table
+                    .get("host")
+                    .and_then(|h| h.as_table())
+                    .and_then(|h| h.get("mode"))
+                    .and_then(|v| v.as_str())
+                {
+                    info!(mode = %mode, "Configured operational mode from config");
+                    *state.inner.configured_mode.write().await = mode.to_string();
+                }
+            }
+        }
     } else {
         info!(path = %args.config, "No config file found, using defaults");
     }

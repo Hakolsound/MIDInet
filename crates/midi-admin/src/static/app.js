@@ -58,8 +58,21 @@ function estimateLatency(s, clients) {
 let _tid = 0;
 const mkToast = (type, message) => ({ id: ++_tid, type, message, ts: Date.now() });
 const copyText = async (text, dispatch) => {
-  try { await navigator.clipboard.writeText(text); dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Copied') }); }
-  catch { dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Copy failed') }); }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Copied') });
+  } catch { dispatch({ type: 'ADD_TOAST', toast: mkToast('error', 'Copy failed') }); }
 };
 const apiFetch = async (url, opts = {}) => {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json', ...opts.headers }, ...opts });
