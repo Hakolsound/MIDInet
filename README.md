@@ -4,14 +4,14 @@
 
 Distribute MIDI from physical controllers to any number of clients over LAN. Each client creates virtual MIDI devices with the exact same identity as the originals — existing mappings and scripts work unchanged.
 
-The host runs on a **Raspberry Pi** — a $80 device that sits on your network rack alongside (or on the same Pi as) **Bitfocus Companion**, giving you both MIDI distribution and StreamDeck control from one tiny box.
+The host runs on a **Raspberry Pi** — a $80 device that sits on your network rack  on the same Pi as **Bitfocus Companion**, giving you both MIDI distribution and StreamDeck control from one tiny box.
 
 Built for live production environments where reliability is non-negotiable.
 
 🌐 **[midinet.io](https://midinet.io)** — Website & docs
 💬 **[Discord Community](https://discord.gg/4s2ZjkB7N3)** — Support & discussion
 
-*By [Hakol Fine AV Services](https://hakol.co.il)*
+*By [Hakol Fine AV Services](https://www.fineavservices.com)*
 
 ---
 
