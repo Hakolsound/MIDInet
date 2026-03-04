@@ -52,6 +52,12 @@ async fn main() -> anyhow::Result<()> {
 
     info!(listen = %args.listen, config = %args.config, "MIDInet admin panel starting");
 
+    // Initialize license system so /api/license endpoints work
+    let license_dir = midi_license::default_data_dir();
+    if let Err(e) = midi_license::init(&license_dir).await {
+        tracing::warn!("License system init failed: {e} (license endpoints will be degraded)");
+    }
+
     // Initialize shared state with config path
     let state = AppState::new(args.config.clone());
 
