@@ -311,7 +311,19 @@ function useMode() {
   // Prefer configured_devices from config file (reliable), fall back to mDNS host data
   const cfgDevices = state.status.configured_devices || [];
   const hostDevices = host ? [host.device_name, ...(host.extra_device_names || [])] : [];
-  const devices = mode === 'multi' ? (cfgDevices.length > 0 ? cfgDevices : hostDevices) : [];
+  const rawDevices = mode === 'multi' ? (cfgDevices.length > 0 ? cfgDevices : hostDevices) : [];
+  // Resolve raw config names (e.g. "auto:nanoKONTROL2" → "nanoKONTROL2") using detected devices
+  const detected = state.devices || [];
+  const devices = rawDevices.map(name => {
+    if (name === 'auto' && detected.length > 0) return detected[0].name;
+    const prefix = 'auto:';
+    if (name.startsWith(prefix)) {
+      const hint = name.slice(prefix.length);
+      const match = detected.find(d => d.name.toLowerCase().includes(hint.toLowerCase()));
+      return match ? match.name : hint;
+    }
+    return name;
+  });
   const deviceMidi = state.status.device_midi || {};
   return { mode, host, devices, deviceMidi };
 }
@@ -1533,6 +1545,127 @@ function SettingsPage() {
   </div>`;
 }
 
+function MultiDeviceSettings({ midiDevices, activity, identifying, isActive, doIdentify }) {
+  const { state, dispatch } = useContext(AppContext);
+  const { deviceMidi } = useMode();
+  const [highways, setHighways] = useState(null); // null = loading
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Load current highways from API on mount
+  useEffect(() => {
+    apiFetch('/api/settings/device-highways').then(d => {
+      setHighways(d.devices || []);
+    });
+  }, []);
+
+  const addHighway = (device) => {
+    const next = [...(highways || []), { name: device.name, device: 'auto:' + device.name }];
+    setHighways(next);
+    setDirty(true);
+  };
+
+  const removeHighway = (idx) => {
+    const next = (highways || []).filter((_, i) => i !== idx);
+    setHighways(next);
+    setDirty(true);
+  };
+
+  const saveHighways = () => {
+    if (!highways || highways.length === 0) return;
+    dispatch({ type: 'MODAL', modal: {
+      title: 'Apply Device Highways',
+      message: `Set ${highways.length} device highway${highways.length > 1 ? 's' : ''}:\n\n${highways.map((h, i) => `  #${i}  ${h.name}`).join('\n')}\n\nThe host will restart. MIDI output will briefly interrupt.`,
+      ok: 'Apply & Restart',
+      cls: 'btn-danger',
+      onConfirm: async () => {
+        setSaving(true);
+        const r = await apiFetch('/api/settings/device-highways', {
+          method: 'PUT',
+          body: JSON.stringify({ devices: highways }),
+        });
+        if (r.success) {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `${r.device_count} highway${r.device_count > 1 ? 's' : ''} configured. Host restarting...`) });
+          setDirty(false);
+        } else {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed') });
+        }
+        setSaving(false);
+      },
+    }});
+  };
+
+  // Devices available to add (not already in highways)
+  const hwDeviceNames = new Set((highways || []).map(h => h.name));
+  const availableDevices = (midiDevices || []).filter(d => d.connected && !hwDeviceNames.has(d.name));
+
+  return html`<div class="card">
+    <div class="card-header">
+      MIDI Controllers <span class="mode-badge" data-mode="multi">multi</span>
+      ${dirty && html`<div class="card-header-right">
+        <button class="btn btn-sm btn-accent" onClick=${saveHighways} disabled=${saving}>${saving ? 'Saving...' : 'Apply & Restart'}</button>
+      </div>`}
+    </div>
+    <div class="card-body">
+      <div class="ctrl-section-label">Device Highways</div>
+      ${highways === null ? html`<div class="empty-state">Loading...</div>` : html`
+        <div class="device-id-list">
+          ${highways.map((hw, i) => {
+            const dm = deviceMidi[String(i)] || {};
+            const rate = dm.msg_per_sec || 0;
+            return html`<div class="device-id-item ${rate > 0 ? 'active' : ''}" key=${i}>
+              <div class="device-id-dot" style="background:${deviceColorRaw(i)};box-shadow:0 0 6px ${deviceColorRaw(i)}40" />
+              <div class="device-id-info">
+                <div class="device-id-name" style="color:${deviceColor(i)}">Highway #${i}</div>
+                <div class="device-id-meta">${hw.name}</div>
+              </div>
+              <span class="mono" style="font-size:13px;color:${deviceColor(i)}">${rate > 0 ? fmtRate(rate) + '/s' : ''}</span>
+              <button class="btn btn-xs" style="color:var(--red);margin-left:8px" onClick=${() => removeHighway(i)} title="Remove highway">x</button>
+            </div>`;
+          })}
+        </div>
+        ${highways.length === 0 && html`<div style="font-size:12px;color:var(--text-3);padding:8px 0">No highways configured. Add devices below.</div>`}
+        ${availableDevices.length > 0 && html`
+          <div class="ctrl-section-label" style="margin-top:16px">Add Device</div>
+          <div class="device-id-list">
+            ${availableDevices.map(d => html`<div class="device-id-item" key=${d.id} style="cursor:pointer" onClick=${() => addHighway(d)}>
+              <div class="device-id-dot" style="background:var(--text-3)" />
+              <div class="device-id-info">
+                <div class="device-id-name">${d.name}</div>
+                <div class="device-id-meta">${d.manufacturer}</div>
+              </div>
+              <button class="btn btn-xs btn-active" onClick=${(e) => { e.stopPropagation(); addHighway(d); }}>+ Add</button>
+            </div>`)}
+          </div>
+        `}
+      `}
+      ${midiDevices.length > 0 && html`
+        <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
+        <div class="device-id-list">
+          ${midiDevices.map(d => {
+            const act = isActive(d.id);
+            const lastMsg = activity[d.id]?.last_message;
+            const isId = identifying[d.id];
+            return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+              <div class="device-id-dot ${act ? 'active' : ''}" />
+              <div class="device-id-info">
+                <div class="device-id-name">${d.name}</div>
+                <div class="device-id-meta">
+                  ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
+                </div>
+              </div>
+              <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
+                ${isId ? 'Flashing...' : 'Identify'}
+              </button>
+            </div>`;
+          })}
+        </div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:8px">Move a fader or press a key to see which device responds.</div>
+      `}
+    </div>
+  </div>`;
+}
+
 function DeviceSettings() {
   const { state, dispatch } = useContext(AppContext);
   const s = state.settings?.midi_device;
@@ -1590,52 +1723,10 @@ function DeviceSettings() {
     return a && (Date.now() - a.last_activity_ms) < 2000;
   };
 
-  // ── Multi mode: read-only highway list ──
-  if (mode === 'multi' && multiDevices.length > 0) {
-    return html`<div class="card">
-      <div class="card-header">MIDI Controllers <span class="mode-badge" data-mode="multi">multi</span></div>
-      <div class="card-body">
-        <div class="ctrl-section-label">Device Highways</div>
-        <div class="device-id-list">
-          ${multiDevices.map((name, i) => {
-            const dm = deviceMidi[String(i)] || {};
-            const rate = dm.msg_per_sec || 0;
-            return html`<div class="device-id-item ${rate > 0 ? 'active' : ''}" key=${i}>
-              <div class="device-id-dot" style="background:${deviceColorRaw(i)};box-shadow:0 0 6px ${deviceColorRaw(i)}40" />
-              <div class="device-id-info">
-                <div class="device-id-name" style="color:${deviceColor(i)}">Highway #${i}</div>
-                <div class="device-id-meta">${name}</div>
-              </div>
-              <span class="mono" style="font-size:13px;color:${deviceColor(i)}">${fmtRate(rate)}/s</span>
-            </div>`;
-          })}
-        </div>
-        <div style="font-size:10px;color:var(--text-3);margin-top:8px">Device highways are configured in host.toml [[midi.devices]]</div>
-        ${devices.length > 0 && html`
-          <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
-          <div class="device-id-list">
-            ${devices.map(d => {
-              const act = isActive(d.id);
-              const lastMsg = activity[d.id]?.last_message;
-              const isId = identifying[d.id];
-              return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
-                <div class="device-id-dot ${act ? 'active' : ''}" />
-                <div class="device-id-info">
-                  <div class="device-id-name">${d.name}</div>
-                  <div class="device-id-meta">
-                    ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
-                  </div>
-                </div>
-                <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
-                  ${isId ? 'Flashing...' : 'Identify'}
-                </button>
-              </div>`;
-            })}
-          </div>
-          <div style="font-size:10px;color:var(--text-3);margin-top:8px">Move a fader or press a key to see which device responds.</div>
-        `}
-      </div>
-    </div>`;
+  // ── Multi mode: interactive highway editor ──
+  if (mode === 'multi') {
+    return html`<${MultiDeviceSettings} midiDevices=${devices}
+      activity=${activity} identifying=${identifying} isActive=${isActive} doIdentify=${doIdentify} />`;
   }
 
   // ── Single mode: one controller dropdown ──

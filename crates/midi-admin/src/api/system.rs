@@ -435,6 +435,167 @@ fn signal_host_process() -> bool {
     }
 }
 
+// ── Device Highway Management ──
+
+#[derive(Deserialize)]
+pub struct DeviceHighwayEntry {
+    pub name: String,
+    pub device: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetDeviceHighwaysBody {
+    pub devices: Vec<DeviceHighwayEntry>,
+}
+
+/// PUT /api/settings/device-highways — set the [[midi.devices]] list in the config.
+/// Writes to the TOML file and restarts the host so it picks up the changes.
+pub async fn set_device_highways(
+    State(state): State<AppState>,
+    Json(body): Json<SetDeviceHighwaysBody>,
+) -> Json<Value> {
+    if body.devices.is_empty() {
+        return Json(json!({
+            "success": false,
+            "error": "At least one device highway is required.",
+        }));
+    }
+    if body.devices.len() > 16 {
+        return Json(json!({
+            "success": false,
+            "error": "Maximum 16 device highways supported.",
+        }));
+    }
+
+    let config_path = state.inner.config_path.read().await.clone();
+
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(path = %config_path, error = %e, "Failed to read config file");
+            return Json(json!({
+                "success": false,
+                "error": format!("Cannot read config: {}", e),
+            }));
+        }
+    };
+
+    let mut table: toml::Table = match toml::from_str(&contents) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to parse config TOML");
+            return Json(json!({
+                "success": false,
+                "error": format!("Config parse error: {}", e),
+            }));
+        }
+    };
+
+    // Build [[midi.devices]] array
+    let devices_array: Vec<toml::Value> = body
+        .devices
+        .iter()
+        .map(|d| {
+            let mut t = toml::Table::new();
+            t.insert("name".to_string(), toml::Value::String(d.name.clone()));
+            t.insert("device".to_string(), toml::Value::String(d.device.clone()));
+            toml::Value::Table(t)
+        })
+        .collect();
+
+    // Ensure [midi] section exists
+    let midi_section = table
+        .entry("midi")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let toml::Value::Table(ref mut midi) = midi_section {
+        midi.insert(
+            "devices".to_string(),
+            toml::Value::Array(devices_array),
+        );
+    }
+
+    let new_contents = match toml::to_string_pretty(&table) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "error": format!("Failed to serialize config: {}", e),
+            }));
+        }
+    };
+
+    // Atomic write
+    let tmp_path = format!("{}.tmp", config_path);
+    if let Err(e) = std::fs::write(&tmp_path, &new_contents) {
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to write config: {}", e),
+        }));
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to apply config: {}", e),
+        }));
+    }
+
+    // Update in-memory configured_devices
+    let device_names: Vec<String> = body.devices.iter().map(|d| d.name.clone()).collect();
+    info!(devices = ?device_names, path = %config_path, "Device highways updated in config");
+    *state.inner.configured_devices.write().await = device_names;
+
+    // Restart host to pick up new device config
+    let trigger = format!("highways\n{:?}\n", std::time::SystemTime::now());
+    if let Err(e) = std::fs::write(RESTART_TRIGGER_PATH, &trigger) {
+        warn!(error = %e, "Failed to write restart trigger file (non-fatal)");
+    }
+    let sigterm_ok = signal_host_process();
+
+    info!(sigterm = sigterm_ok, "Host restart initiated for highway change");
+    Json(json!({
+        "success": true,
+        "restarting": true,
+        "device_count": body.devices.len(),
+    }))
+}
+
+/// GET /api/settings/device-highways — return current [[midi.devices]] from config.
+pub async fn get_device_highways(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let config_path = state.inner.config_path.read().await.clone();
+
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return Json(json!({ "devices": [] })),
+    };
+
+    let table: toml::Table = match toml::from_str(&contents) {
+        Ok(t) => t,
+        Err(_) => return Json(json!({ "devices": [] })),
+    };
+
+    let mut devices = Vec::new();
+    if let Some(arr) = table
+        .get("midi")
+        .and_then(|m| m.as_table())
+        .and_then(|m| m.get("devices"))
+        .and_then(|d| d.as_array())
+    {
+        for entry in arr {
+            if let Some(t) = entry.as_table() {
+                devices.push(json!({
+                    "name": t.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "device": t.get("device").and_then(|v| v.as_str()).unwrap_or(""),
+                }));
+            }
+        }
+    }
+
+    Json(json!({ "devices": devices }))
+}
+
 fn git_update_check() -> Value {
     let branch = midi_protocol::GIT_BRANCH;
 
