@@ -1837,6 +1837,22 @@ a { color: var(--accent); text-decoration: none; }
     from { transform: translateY(10px) scale(.96); opacity: 0; }
     to { transform: translateY(0) scale(1); opacity: 1; }
 }
+.toast--sticky { pointer-events: auto; }
+.toast-dismiss {
+    margin-left: auto; padding: 0 2px; background: none; border: none;
+    color: var(--text-3); font-size: 16px; cursor: pointer; opacity: .5;
+    line-height: 1; flex-shrink: 0;
+}
+.toast-dismiss:hover { opacity: 1; }
+.status-toast-container {
+    position: fixed;
+    bottom: calc(var(--footer-h) + 16px);
+    left: 20px;
+    z-index: 500;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+}
 
 /* ── Warning Popups (buzzing seatbelt) ── */
 .warning-popup-container {

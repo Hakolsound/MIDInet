@@ -251,10 +251,13 @@ pub async fn run(state: AppState) {
             }
             // Also update the main device status
             let active_device = state.inner.active_device.read().await;
+            let mut status = state.inner.midi_device_status.write().await;
             if let Some(ref dev_id) = *active_device {
                 let connected = scanned.iter().any(|d| d.id == *dev_id || d.name == *dev_id);
-                let mut status = state.inner.midi_device_status.write().await;
                 status.status = if connected { "connected" } else { "disconnected" }.to_string();
+            } else {
+                // Multi-device mode: no single active device, use scan result
+                status.status = if scanned.is_empty() { "disconnected" } else { "connected" }.to_string();
             }
         }
 

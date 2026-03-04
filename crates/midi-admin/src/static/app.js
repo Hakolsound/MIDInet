@@ -85,19 +85,41 @@ const apiFetch = async (url, opts = {}) => {
   return res.json();
 };
 
-// ── Inline Tips ──────────────────────────────────────────────
+// ── Status Toasts (persistent, dismissible) ─────────────────
 const _dismissedTips = new Set(JSON.parse(sessionStorage.getItem('dismissed-tips') || '[]'));
 const dismissTip = (id) => { _dismissedTips.add(id); sessionStorage.setItem('dismissed-tips', JSON.stringify([..._dismissedTips])); };
 
-function InlineTip({ id, type = 'info', icon, children }) {
-  const [visible, setVisible] = useState(!_dismissedTips.has(id));
-  if (!visible) return null;
-  const iconMap = { info: ICO.help, warn: ICO.bell, success: ICO.wifi };
-  const IconFn = icon || iconMap[type] || ICO.help;
-  return html`<div class="inline-tip inline-tip--${type}">
-    <span class="inline-tip-icon">${IconFn()}</span>
-    <span class="inline-tip-text">${children}</span>
-    <button class="inline-tip-dismiss" onClick=${() => { dismissTip(id); setVisible(false); }} title="Dismiss">×</button>
+function StatusToasts() {
+  const { state } = useContext(AppContext);
+  const [dismissed, setDismissed] = useState(() => new Set(_dismissedTips));
+  const dismiss = (id) => { dismissTip(id); setDismissed(s => new Set(s).add(id)); };
+
+  const noDevice = (state.status.settings?.midi_device_status || 'disconnected') === 'disconnected';
+  const noClients = state.clients.length === 0;
+  const fo = state.status.failover || {};
+  const hasMultipleClients = state.clients.length > 1;
+  const hostRedundancy = state.status.host_redundancy || false;
+
+  const tips = [];
+  // Overview tips
+  if (state.page === 'overview' && noDevice)
+    tips.push({ id: 'tip-no-device', type: 'warning', msg: 'No MIDI device detected. Connect a USB MIDI controller to the host.' });
+  if (state.page === 'overview' && !noDevice && noClients)
+    tips.push({ id: 'tip-no-clients', type: 'warning', msg: 'No clients connected. Ensure all machines are on the same subnet.' });
+  // Control tips
+  if (state.page === 'control' && hasMultipleClients)
+    tips.push({ id: 'tip-focus', type: 'info', msg: 'Focus determines which client receives MIDI feedback (LEDs, faders). Click a client to switch.' });
+  if (state.page === 'control' && hostRedundancy && fo.active_host === 'primary' && !fo.standby_healthy)
+    tips.push({ id: 'tip-no-standby', type: 'info', msg: 'No standby host detected. Set up a second Raspberry Pi for redundancy.' });
+
+  const visible = tips.filter(t => !dismissed.has(t.id));
+  if (!visible.length) return null;
+
+  return html`<div class="status-toast-container">
+    ${visible.map(t => html`<div class="toast toast--sticky" data-type=${t.type} key=${t.id}>
+      <span class="toast-dot" />${t.msg}
+      <button class="toast-dismiss" onClick=${() => dismiss(t.id)} title="Dismiss">×</button>
+    </div>`)}
   </div>`;
 }
 
@@ -787,16 +809,7 @@ function SnifferDrawer() {
 
 // ── Overview Page ─────────────────────────────────────────────
 function OverviewPage() {
-  const { state } = useContext(AppContext);
-  const noClients = state.clients.length === 0;
-  const noDevice = (state.status.settings?.midi_device_status || 'disconnected') === 'disconnected';
   return html`<div class="overview-grid">
-    ${noDevice && html`<div class="card-wide" style="grid-column:1/-1"><${InlineTip} id="tip-no-device" type="warn" icon=${ICO.usb}>
-      <strong>No MIDI device detected.</strong> Connect a USB MIDI controller to the host and it will be picked up automatically.
-    <//></div>`}
-    ${!noDevice && noClients && html`<div class="card-wide" style="grid-column:1/-1"><${InlineTip} id="tip-no-clients" type="warn" icon=${ICO.wifi}>
-      <strong>No clients connected.</strong> All machines must be on the same network subnet — multicast traffic doesn't cross routers or VLANs. Make sure clients can ping this host.
-    <//></div>`}
     <${ControllersCard} />
     <${MidiDataCard} />
     <${NetworkCard} />
@@ -1153,19 +1166,11 @@ function ClientsCard() {
 
 // ── Control Page ──────────────────────────────────────────────
 function ControlPage() {
-  const { state, dispatch } = useContext(AppContext);
+  const { dispatch } = useContext(AppContext);
   useEffect(() => {
     apiFetch('/api/failover').then(d => dispatch({ type: 'SET_FAILOVER', data: d }));
   }, []);
-  const fo = state.status.failover || {};
-  const hasMultipleClients = state.clients.length > 1;
   return html`<div class="control-layout">
-    ${hasMultipleClients && html`<${InlineTip} id="tip-focus" type="info" icon=${ICO.users}>
-      <strong>Focus</strong> determines which client receives MIDI feedback (LEDs, motorized faders). Click a client in the diagram to switch focus, or ⌘+Click to copy the OSC command.
-    <//>`}
-    ${fo.active_host === 'primary' && !fo.standby_healthy && html`<${InlineTip} id="tip-no-standby" type="info" icon=${ICO.server}>
-      No standby host detected. For redundancy, set up a second Raspberry Pi — it will sync automatically via mDNS.
-    <//>`}
     <${SignalFlowDiagram} />
     <${FailoverPanel} />
   </div>`;
@@ -1922,9 +1927,6 @@ function SettingsPage() {
   }, []);
   return html`<div class="page-scroll">
     <div class="page-grid">
-      <${InlineTip} id="tip-settings-modes" type="info" icon=${ICO.sliders}>
-        <strong>Single</strong> mode for one controller, <strong>Redundant</strong> for primary + backup with automatic failover, <strong>Multi-Device</strong> for up to 16 controllers. Switching modes is live — no restart needed.
-      <//>
       <div class="card-wide"><${ModeSelector} /></div>
       <${HostRedundancyCard} />
       <${DeviceSettings} />
@@ -2511,6 +2513,7 @@ function App() {
     <${ConfirmModal} />
     <${UpdateProgressModal} />
     <${ToastContainer} />
+    <${StatusToasts} />
     <${WarningPopupContainer} />
     <${SnifferDrawer} />
     <${SupportPopup} />
