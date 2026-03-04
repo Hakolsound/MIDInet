@@ -75,6 +75,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
             let identify_reqs = state.inner.identify_requests.read().await;
             let designated_primary = state.inner.designated_primary.read().await;
             let designated_focus = state.inner.designated_focus.read().await;
+            let host_redundancy = state.inner.host_redundancy_enabled.read().await;
             let configured_mode = state.inner.configured_mode.read().await;
             let configured_devices = state.inner.configured_devices.read().await;
             let per_device_midi = state.inner.per_device_midi.read().await;
@@ -114,6 +115,7 @@ async fn handle_status_ws(mut socket: WebSocket, state: AppState) {
                 "designated_primary": *designated_primary,
                 "designated_focus": *designated_focus,
                 "active_alerts": alerts.len(),
+                "host_redundancy": *host_redundancy,
                 "operational_mode": configured_mode.as_str(),
                 "configured_devices": *configured_devices,
                 "input_redundancy": {

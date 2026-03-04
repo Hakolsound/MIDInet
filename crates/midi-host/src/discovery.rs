@@ -29,6 +29,11 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
     );
 
     properties.insert(
+        "host_redundancy".to_string(),
+        state.host_redundancy.to_string(),
+    );
+
+    properties.insert(
         "mcast".to_string(),
         state.config.network.multicast_group.clone(),
     );

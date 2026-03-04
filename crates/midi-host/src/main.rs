@@ -62,6 +62,9 @@ pub struct HostSection {
     /// Operational mode: "single", "redundant", or "multi"
     #[serde(default)]
     pub mode: OperationalMode,
+    /// Enable primary/standby host failover (independent of controller mode)
+    #[serde(default)]
+    pub host_redundancy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -275,6 +278,8 @@ pub struct SharedState {
     pub device_identities: RwLock<Vec<DeviceIdentity>>,
     /// Bitmask of active devices (bit N = device N alive). Updated by multi_device highway.
     pub device_mask: Arc<std::sync::atomic::AtomicU16>,
+    /// Whether primary/standby host failover is enabled
+    pub host_redundancy: bool,
 }
 
 /// Adapter that tags InputHealth events with an input index
@@ -351,12 +356,18 @@ async fn main() -> anyhow::Result<()> {
         "MIDInet host starting"
     );
 
-    // Determine initial role based on host ID (lower ID = primary)
-    let initial_role = if config.host.id == 1 {
-        HostRole::Primary
+    // Determine initial role: with host redundancy, lower ID = primary;
+    // without host redundancy, always act as primary.
+    let initial_role = if config.host.host_redundancy {
+        if config.host.id == 1 { HostRole::Primary } else { HostRole::Standby }
     } else {
-        HostRole::Standby
+        HostRole::Primary
     };
+
+    if config.host.mode == OperationalMode::Redundant && !config.host.host_redundancy {
+        info!("Hint: mode='redundant' is for dual-controller input redundancy. \
+               To enable primary/standby host failover, set host_redundancy = true in [host].");
+    }
 
     let (role_tx, _role_rx) = watch::channel(initial_role);
 
@@ -417,6 +428,7 @@ async fn main() -> anyhow::Result<()> {
         mode,
         device_identities: RwLock::new(Vec::new()),
         device_mask: Arc::clone(&device_mask),
+        host_redundancy: config.host.host_redundancy,
     });
 
     // --- Task handles collector for clean shutdown ---

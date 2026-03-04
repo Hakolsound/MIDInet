@@ -435,6 +435,125 @@ fn signal_host_process() -> bool {
     }
 }
 
+// ── Host Redundancy Toggle ──
+
+#[derive(Deserialize)]
+pub struct SetHostRedundancyBody {
+    pub enabled: bool,
+}
+
+/// GET /api/system/host-redundancy — return current host redundancy state.
+pub async fn get_host_redundancy(
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let enabled = *state.inner.host_redundancy_enabled.read().await;
+    Json(json!({ "host_redundancy": enabled }))
+}
+
+/// POST /api/system/host-redundancy — toggle host redundancy and restart.
+pub async fn set_host_redundancy(
+    State(state): State<AppState>,
+    Json(body): Json<SetHostRedundancyBody>,
+) -> Json<Value> {
+    let config_path = state.inner.config_path.read().await.clone();
+
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(path = %config_path, error = %e, "Failed to read config file");
+            return Json(json!({
+                "success": false,
+                "error": format!("Cannot read config: {}", e),
+            }));
+        }
+    };
+
+    let mut table: toml::Table = match toml::from_str(&contents) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to parse config TOML");
+            return Json(json!({
+                "success": false,
+                "error": format!("Config parse error: {}", e),
+            }));
+        }
+    };
+
+    // Ensure [host] section exists and set host_redundancy
+    let host_section = table
+        .entry("host")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let toml::Value::Table(ref mut host) = host_section {
+        host.insert(
+            "host_redundancy".to_string(),
+            toml::Value::Boolean(body.enabled),
+        );
+    }
+
+    let new_contents = match toml::to_string_pretty(&table) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({
+                "success": false,
+                "error": format!("Failed to serialize config: {}", e),
+            }));
+        }
+    };
+
+    // Atomic write: temp file + rename
+    let tmp_path = format!("{}.tmp", config_path);
+    if let Err(e) = std::fs::write(&tmp_path, &new_contents) {
+        error!(error = %e, "Failed to write temp config");
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to write config: {}", e),
+        }));
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+        error!(error = %e, "Failed to rename temp config");
+        let _ = std::fs::remove_file(&tmp_path);
+        return Json(json!({
+            "success": false,
+            "error": format!("Failed to apply config: {}", e),
+        }));
+    }
+
+    info!(
+        host_redundancy = body.enabled,
+        path = %config_path,
+        "Host redundancy setting changed in config"
+    );
+
+    // Update in-memory state
+    *state.inner.host_redundancy_enabled.write().await = body.enabled;
+
+    // Restart host to pick up the new setting
+    let trigger = format!(
+        "host_redundancy={}\n{:?}\n",
+        body.enabled,
+        std::time::SystemTime::now()
+    );
+    if let Err(e) = std::fs::write(RESTART_TRIGGER_PATH, &trigger) {
+        warn!(error = %e, "Failed to write restart trigger file (non-fatal)");
+    }
+
+    let sigterm_ok = signal_host_process();
+    if !sigterm_ok {
+        warn!("SIGTERM failed — relying on path unit trigger for restart");
+    }
+
+    info!(
+        host_redundancy = body.enabled,
+        sigterm = sigterm_ok,
+        "Host restart initiated for host redundancy change"
+    );
+    Json(json!({
+        "success": true,
+        "restarting": true,
+        "host_redundancy": body.enabled,
+    }))
+}
+
 // ── Device Highway Management ──
 
 #[derive(Deserialize)]

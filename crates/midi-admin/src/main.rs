@@ -77,14 +77,15 @@ async fn main() -> anyhow::Result<()> {
         // authoritative state (the admin's MidinetConfig doesn't include [host]).
         if let Ok(raw) = std::fs::read_to_string(&args.config) {
             if let Ok(table) = raw.parse::<toml::Table>() {
-                if let Some(mode) = table
-                    .get("host")
-                    .and_then(|h| h.as_table())
-                    .and_then(|h| h.get("mode"))
-                    .and_then(|v| v.as_str())
-                {
-                    info!(mode = %mode, "Configured operational mode from config");
-                    *state.inner.configured_mode.write().await = mode.to_string();
+                if let Some(host_table) = table.get("host").and_then(|h| h.as_table()) {
+                    if let Some(mode) = host_table.get("mode").and_then(|v| v.as_str()) {
+                        info!(mode = %mode, "Configured operational mode from config");
+                        *state.inner.configured_mode.write().await = mode.to_string();
+                    }
+                    if let Some(hr) = host_table.get("host_redundancy").and_then(|v| v.as_bool()) {
+                        info!(host_redundancy = hr, "Host redundancy setting from config");
+                        *state.inner.host_redundancy_enabled.write().await = hr;
+                    }
                 }
 
                 // Read configured device names from TOML

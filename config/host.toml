@@ -6,6 +6,7 @@
 id = 1                              # Lower ID = higher priority for primary
 name = "host-a"                     # Human-readable name (used in mDNS)
 # mode = "single"                  # "single" (default), "redundant", or "multi"
+# host_redundancy = false          # Enable primary/standby host failover (independent of mode)
 
 [network]
 multicast_group = "239.69.83.1"     # Unique per host (primary: .1, standby: .2)

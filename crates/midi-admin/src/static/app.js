@@ -325,7 +325,8 @@ function useMode() {
     return name;
   });
   const deviceMidi = state.status.device_midi || {};
-  return { mode, host, devices, deviceMidi };
+  const hostRedundancy = state.status.host_redundancy || false;
+  return { mode, host, devices, deviceMidi, hostRedundancy };
 }
 
 // ── Header ────────────────────────────────────────────────────
@@ -1343,19 +1344,13 @@ function FailoverPanel() {
   const { state, dispatch } = useContext(AppContext);
   const fo = state.failoverDetail;
   const s = state.status;
-  const { mode } = useMode();
+  const { hostRedundancy } = useMode();
 
-  // Non-redundant modes: show placeholder
-  if (mode === 'single') {
+  // Host redundancy disabled: show placeholder
+  if (!hostRedundancy) {
     return html`<div class="card" style="flex-shrink:0">
-      <div class="card-header">Failover Control</div>
-      <div class="card-body"><div class="empty-state" style="padding:20px;color:var(--text-3)">No failover in single controller mode</div></div>
-    </div>`;
-  }
-  if (mode === 'multi') {
-    return html`<div class="card" style="flex-shrink:0">
-      <div class="card-header">Failover Control</div>
-      <div class="card-body"><div class="empty-state" style="padding:20px;color:var(--text-3)">Each device highway operates independently</div></div>
+      <div class="card-header">Host Failover</div>
+      <div class="card-body"><div class="empty-state" style="padding:20px;color:var(--text-3)">Host redundancy disabled. Enable in Settings to configure primary/standby failover.</div></div>
     </div>`;
   }
 
@@ -1379,7 +1374,7 @@ function FailoverPanel() {
     else go();
   };
   return html`<div class="card" style="flex-shrink:0">
-    <div class="card-header">Failover Control</div>
+    <div class="card-header">Host Failover</div>
     <div class="card-body" style="padding:12px 20px">
       <div class="flex items-center gap-md" style="flex-wrap:wrap">
         <div style="flex:1;min-width:120px">
@@ -1438,8 +1433,8 @@ function ModeSelector() {
   }, [armed, selected]);
 
   const modes = [
-    { id: 'single', label: 'Single', desc: 'One controller, one highway' },
-    { id: 'redundant', label: 'Redundant', desc: 'Dual controllers, auto-failover' },
+    { id: 'single', label: 'Single', desc: 'One MIDI controller' },
+    { id: 'redundant', label: 'Redundant', desc: 'Dual controllers with input failover' },
     { id: 'multi', label: 'Multi', desc: 'Multiple controllers, parallel highways' },
   ];
 
@@ -1525,10 +1520,55 @@ function ModeSelector() {
   </div>`;
 }
 
+// ── Host Redundancy Toggle ────────────────────────────────────
+function HostRedundancyToggle() {
+  const { state, dispatch } = useContext(AppContext);
+  const { hostRedundancy } = useMode();
+  const [busy, setBusy] = useState(false);
+
+  const toggle = () => {
+    const newVal = !hostRedundancy;
+    const action = newVal ? 'Enable' : 'Disable';
+    dispatch({ type: 'MODAL', modal: {
+      title: `${action} Host Redundancy`,
+      message: newVal
+        ? 'Enable primary/standby host failover. A second host running MIDInet is required. The host will restart and all connected clients will briefly disconnect (~5-10s).'
+        : 'Disable host redundancy. This host will always act as primary. The host will restart and all connected clients will briefly disconnect (~5-10s).',
+      ok: `${action} & Restart`,
+      cls: 'btn-danger',
+      onConfirm: async () => {
+        setBusy(true);
+        const r = await apiFetch('/api/system/host-redundancy', {
+          method: 'POST',
+          body: JSON.stringify({ enabled: newVal }),
+        });
+        if (r.success) {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Host redundancy ${newVal ? 'enabled' : 'disabled'}. Restarting host...`) });
+        } else {
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to update host redundancy') });
+        }
+        setBusy(false);
+      },
+    }});
+  };
+
+  return html`<div class="card">
+    <div class="card-header">Host Redundancy</div>
+    <div class="card-body" style="padding:12px 20px">
+      <div class="flex items-center justify-between">
+        <div style="flex:1">
+          <div style="font-size:13px;color:var(--text-2)">Primary/standby host failover across two physical hosts. Works with any controller mode.</div>
+        </div>
+        <button class="toggle ${hostRedundancy ? 'on' : ''}" disabled=${busy} onClick=${toggle} />
+      </div>
+    </div>
+  </div>`;
+}
+
 // ── Settings Page ─────────────────────────────────────────────
 function SettingsPage() {
   const { state, dispatch } = useContext(AppContext);
-  const { mode } = useMode();
+  const { mode, hostRedundancy } = useMode();
   useEffect(() => {
     apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
     apiFetch('/api/settings/presets').then(d => dispatch({ type: 'SET_PRESETS', data: d.presets }));
@@ -1537,9 +1577,10 @@ function SettingsPage() {
   return html`<div class="page-scroll">
     <div class="page-grid">
       <div class="card-wide"><${ModeSelector} /></div>
+      <div class="card-wide"><${HostRedundancyToggle} /></div>
       <${DeviceSettings} />
       <${OscSettings} />
-      ${mode === 'redundant' && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
+      ${hostRedundancy && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
       <div class="card-wide"><${PresetGrid} /></div>
     </div>
   </div>`;

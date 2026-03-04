@@ -102,6 +102,10 @@ async fn handle_osc_message(
 
     // ── Host failover switch (/midinet/failover/switch) ──
     if msg.addr == trigger.address {
+        if !ctx.state.host_redundancy {
+            debug!("Host redundancy disabled — ignoring failover switch OSC command");
+            return;
+        }
         if !trigger.enabled {
             debug!("OSC failover trigger disabled, ignoring");
             return;

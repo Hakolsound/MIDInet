@@ -166,6 +166,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/system/update", post(system::run_update))
         .route("/api/system/update-status", get(system::update_status))
         .route("/api/system/mode", post(system::set_mode))
+        .route("/api/system/host-redundancy", get(system::get_host_redundancy).post(system::set_host_redundancy))
         .route("/api/settings/device-highways", get(system::get_device_highways).put(system::set_device_highways))
         // Settings
         .route("/api/settings", get(settings::get_settings))

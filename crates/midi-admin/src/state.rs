@@ -293,6 +293,9 @@ pub struct AppStateInner {
     pub designated_focus: RwLock<Option<u32>>,
     /// Broadcast channel for update log lines (streamed to /ws/update)
     pub update_log_tx: broadcast::Sender<String>,
+    /// Whether host redundancy (primary/standby failover) is enabled.
+    /// Independent of the controller mode. Read from config, toggled via API.
+    pub host_redundancy_enabled: RwLock<bool>,
     /// Configured operational mode (read from config file, updated by set_mode API).
     /// Authoritative source — not overwritten by mDNS discovery.
     pub configured_mode: RwLock<String>,
@@ -338,6 +341,7 @@ impl AppState {
                 designated_primary: RwLock::new(None),
                 designated_focus: RwLock::new(None),
                 update_log_tx: broadcast::channel(256).0,
+                host_redundancy_enabled: RwLock::new(false),
                 configured_mode: RwLock::new("single".to_string()),
                 configured_devices: RwLock::new(Vec::new()),
                 per_device_midi: RwLock::new(HashMap::new()),
