@@ -114,6 +114,28 @@ impl ProcessManager {
     /// Spawn the client process (hidden on Windows, normal on other platforms).
     /// On Windows, stdout/stderr are redirected to a log file next to the tray logs.
     pub fn spawn(&mut self) -> Result<(), std::io::Error> {
+        // On Windows, ensure the health port is free before spawning.
+        // After a restart (exit code 42), the previous process may still hold
+        // the port in TIME_WAIT. Without this check the new client can't bind
+        // its health server and appears as "Daemon not running" in the tray.
+        #[cfg(target_os = "windows")]
+        {
+            let port = midi_protocol::health::DEFAULT_HEALTH_PORT;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                    Ok(_listener) => break,
+                    Err(_) => {
+                        if Instant::now() >= deadline {
+                            warn!(port = port, "Health port still in use after 10s — spawning anyway");
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+
         let mut cmd = Command::new(&self.client_path);
         if let Some(ref config) = self.config_path {
             cmd.args(["-c", &config.to_string_lossy()]);
@@ -183,10 +205,31 @@ impl ProcessManager {
         }
     }
 
-    /// Restart the client process.
+    /// Restart the client process. On Windows, kills any stale orphan processes
+    /// first to reclaim the health port.
     pub fn restart(&mut self) -> Result<(), std::io::Error> {
         self.restart_count += 1;
         warn!(restart_count = self.restart_count, "Restarting midi-client");
+
+        // Kill orphan processes that might hold the health port
+        // (e.g., a previous instance that outlived its tray).
+        #[cfg(target_os = "windows")]
+        {
+            let username = std::env::var("USERNAME").unwrap_or_default();
+            for name in &["midi-client.exe", "midinet-client.exe"] {
+                let mut args = vec!["/F", "/IM", *name];
+                let filter;
+                if !username.is_empty() {
+                    filter = format!("USERNAME eq {}", username);
+                    args.extend(["/FI", &filter]);
+                }
+                let _ = Command::new("taskkill")
+                    .args(&args)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+        }
+
         self.spawn()
     }
 

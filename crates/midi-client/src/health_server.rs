@@ -48,11 +48,22 @@ pub async fn run(state: Arc<ClientState>, listen_addr: String) {
         .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], DEFAULT_HEALTH_PORT)));
     info!(%addr, "Health server listening");
 
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!("Failed to bind health server on {}: {}", addr, e);
-            return;
+    // Retry binding up to 30 seconds — after a restart, the previous process
+    // may still hold the port in TIME_WAIT or the OS hasn't fully released it.
+    let listener = {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => break l,
+                Err(e) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        error!("Failed to bind health server on {} after 30s: {}", addr, e);
+                        return;
+                    }
+                    tracing::warn!("Health server bind failed ({}), retrying in 1s...", e);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
         }
     };
 

@@ -325,8 +325,15 @@ impl VirtualMidiDevice for MidiServicesDevice {
 
             info!(name = %self.name, "Windows MIDI Services session created");
 
-            // Build endpoint info struct
-            let instance_id = format!("MIDINET_{}", self.name.replace(' ', "_").to_uppercase());
+            // Build endpoint info struct.
+            // Include the process ID so a respawned process doesn't collide with
+            // a stale virtual device still registered in midisrv.exe from the
+            // previous (crashed) process. The PID makes each instance unique.
+            let instance_id = format!(
+                "MIDINET_{}_{}",
+                self.name.replace(' ', "_").to_uppercase(),
+                std::process::id()
+            );
             let endpoint_info = midi2::MidiDeclaredEndpointInfo {
                 Name: HSTRING::from(&self.name),
                 ProductInstanceId: HSTRING::from(&instance_id),
