@@ -4,6 +4,7 @@ pub mod devices;
 pub mod failover;
 pub mod focus;
 pub mod input;
+pub mod license;
 pub mod metrics;
 pub mod pipeline;
 pub mod settings;
@@ -176,6 +177,10 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/settings/failover", put(settings::set_failover))
         .route("/api/settings/presets", get(settings::list_presets))
         .route("/api/settings/preset", post(settings::apply_preset))
+        // License
+        .route("/api/license", get(license::get_license))
+        .route("/api/license/activate", post(license::activate_license))
+        .route("/api/license/deactivate", post(license::deactivate_license))
         // Count API requests for traffic monitor
         .layer(middleware::from_fn_with_state(state.clone(), count_api_requests));
 

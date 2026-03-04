@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 midi-protocol = { workspace = true }
+midi-license = { path = "../midi-license" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

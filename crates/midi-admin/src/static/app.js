@@ -807,6 +807,104 @@ function SnifferDrawer() {
   </div>`;
 }
 
+// ── License Card ──────────────────────────────────────────────
+function LicenseCard() {
+  const { dispatch } = useContext(AppContext);
+  const [lic, setLic] = useState(null);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const fetchLicense = async () => {
+    const data = await apiFetch('/api/license');
+    setLic(data);
+  };
+  useEffect(() => { fetchLicense(); const t = setInterval(fetchLicense, 5000); return () => clearInterval(t); }, []);
+
+  const doActivate = async () => {
+    if (!key.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      const r = await apiFetch('/api/license/activate', {
+        method: 'POST', body: JSON.stringify({ key: key.trim() })
+      });
+      if (r.success) {
+        setKey(''); setLic(r.license);
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'License activated!') });
+      } else {
+        setErr(r.error || 'Activation failed');
+      }
+    } catch { setErr('Could not reach activation server'); }
+    setBusy(false);
+  };
+
+  const doDeactivate = async () => {
+    if (!confirm('Deactivate license on this machine?')) return;
+    setBusy(true); setErr('');
+    try {
+      const r = await apiFetch('/api/license/deactivate', { method: 'POST' });
+      if (r.success) {
+        setLic(r.license);
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'License deactivated') });
+      } else { setErr(r.error || 'Deactivation failed'); }
+    } catch { setErr('Request failed'); }
+    setBusy(false);
+  };
+
+  if (!lic) return html`<div class="card"><div class="card-header"><span class="card-header-icon">⚡</span>License</div><div class="card-body"><span class="dim">Loading…</span></div></div>`;
+
+  const st = lic.state;
+  const isLicensed = st === 'licensed';
+  const isTrial = st === 'trial';
+  const isDegraded = st === 'degraded';
+
+  const statusDot = isLicensed ? 'ok' : isTrial ? 'warn' : 'error';
+  const statusLabel = isLicensed ? `Licensed — ${lic.tier || 'Active'}`
+    : isTrial ? `Trial — ${Math.floor((lic.remaining_secs || 0) / 60)} min left`
+    : isDegraded ? 'Expired' : 'No License';
+
+  return html`<div class="card">
+    <div class="card-header">
+      <span class="card-header-icon">⚡</span>
+      License
+      <span class="status-dot" data-status=${statusDot} style="margin-left:auto" />
+    </div>
+    <div class="card-body">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span class="status-dot" data-status=${statusDot} />
+        <span style="font-size:14px;font-weight:600">${statusLabel}</span>
+      </div>
+
+      ${isLicensed && html`
+        <div style="margin-bottom:12px">
+          <span class="badge" data-tier=${lic.tier}>${(lic.tier || '').toUpperCase()}</span>
+        </div>
+        <button class="btn btn-sm btn-outline" onClick=${doDeactivate} disabled=${busy}>
+          ${busy ? 'Deactivating…' : 'Deactivate'}
+        </button>
+      `}
+
+      ${!isLicensed && html`
+        <div style="margin-bottom:8px">
+          <input type="text" class="input" placeholder="MIDINET-XXXX-XXXX-XXXX-…"
+            value=${key} onInput=${(e) => setKey(e.target.value)}
+            onKeyDown=${(e) => e.key === 'Enter' && doActivate()}
+            style="width:100%;font-family:var(--font-mono);font-size:12px;letter-spacing:0.5px" />
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-sm btn-primary" onClick=${doActivate} disabled=${busy || !key.trim()}>
+            ${busy ? 'Activating…' : 'Activate'}
+          </button>
+          <a href="https://midinet.io/pricing/" target="_blank" rel="noopener"
+            style="font-size:12px;color:var(--text-2);text-decoration:none">Get a license →</a>
+        </div>
+      `}
+
+      ${err && html`<div style="margin-top:8px;font-size:12px;color:var(--red)">${err}</div>`}
+    </div>
+  </div>`;
+}
+
 // ── Overview Page ─────────────────────────────────────────────
 function OverviewPage() {
   return html`<div class="overview-grid">
@@ -814,6 +912,7 @@ function OverviewPage() {
     <${MidiDataCard} />
     <${NetworkCard} />
     <${ClientsCard} />
+    <${LicenseCard} />
   </div>`;
 }
 

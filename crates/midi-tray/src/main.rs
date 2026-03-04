@@ -673,7 +673,13 @@ fn main() {
                     }
                 }
                 ID_ACTIVATE_LICENSE => {
-                    let _ = open::that("https://midinet.io/pricing");
+                    // Open local admin dashboard for GUI activation;
+                    // fall back to pricing page if dashboard URL unknown.
+                    let url = last_snapshot
+                        .as_ref()
+                        .and_then(|s| s.admin_url.as_deref())
+                        .unwrap_or("https://midinet.io/pricing");
+                    let _ = open::that(url);
                 }
                 ID_RESTART_CLIENT => {
                     #[cfg(target_os = "windows")]

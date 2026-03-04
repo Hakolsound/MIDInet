@@ -1919,6 +1919,7 @@ dependencies = [
  "axum-extra",
  "clap",
  "mdns-sd",
+ "midi-license",
  "midi-protocol",
  "reqwest",
  "rosc",
