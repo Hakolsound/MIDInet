@@ -16,6 +16,8 @@ use tracing::{debug, error, info, warn};
 
 use midi_protocol::packets::{FocusAction, FocusClaimMode, FocusPacket, MidiDataPacket, MAGIC_FOCUS, MAGIC_MIDI};
 
+use midi_protocol::OperationalMode;
+
 use crate::midi_output::platform::MidiOutputWriter;
 use crate::SharedState;
 
@@ -125,11 +127,17 @@ pub async fn run(
                                     if fs.holder.is_some() {
                                         debug!(
                                             from = %addr,
+                                            device_id = packet.device_id,
                                             midi_bytes = packet.midi_data.len(),
                                             "Forwarding feedback MIDI to controllers"
                                         );
-                                        // Write to ALL connected controllers (primary + secondary)
-                                        midi_output.write_all(&packet.midi_data);
+                                        // Multi-device: route to specific controller.
+                                        // Single/Redundant: write to ALL (primary + secondary).
+                                        if state.mode == OperationalMode::MultiDevice {
+                                            midi_output.write_to_device(packet.device_id, &packet.midi_data);
+                                        } else {
+                                            midi_output.write_all(&packet.midi_data);
+                                        }
                                         // Update last feedback timestamp
                                         drop(fs);
                                         let mut fs_w = focus_state.write().await;

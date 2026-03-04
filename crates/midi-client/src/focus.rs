@@ -219,54 +219,110 @@ async fn run_inner(
                     send_focus_claim(&send_socket, dest, state.client_id, &mut sequence, FocusClaimMode::Auto).await;
                 }
 
-                // If we have focus, periodically check for and send feedback from virtual device
+                // If we have focus, periodically check for and send feedback from virtual device(s)
                 if is_focused() && last_feedback_check.elapsed() >= feedback_interval {
                     last_feedback_check = Instant::now();
 
-                    let vdev = state.virtual_device.read().await;
                     let pipeline = state.pipeline_config.read().await;
-                    loop {
-                        match vdev.receive() {
-                            Ok(Some(midi_data)) => {
-                                let processed = pipeline.process(&midi_data);
-                                let send_data = match processed {
-                                    Some(ref data) => data,
-                                    None => {
-                                        debug!(bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
-                                        continue;
+                    let active_host = state.active_host_id.read().await;
+                    let has_host = active_host.is_some();
+                    drop(active_host);
+
+                    // Multi-device mode: read feedback from each device slot
+                    let multi_devs = state.multi_devices.read().await;
+                    if !multi_devs.is_empty() {
+                        for slot in multi_devs.iter() {
+                            if !slot.ready { continue; }
+                            let dev_id = slot.identity.device_id;
+                            loop {
+                                match slot.device.receive() {
+                                    Ok(Some(midi_data)) => {
+                                        let processed = pipeline.process(&midi_data);
+                                        let send_data = match processed {
+                                            Some(ref data) => data,
+                                            None => {
+                                                debug!(device_id = dev_id, bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
+                                                continue;
+                                            }
+                                        };
+                                        if has_host {
+                                            let packet = MidiDataPacket {
+                                                sequence: feedback_sequence,
+                                                timestamp_us: now_us(),
+                                                host_id: 0,
+                                                device_id: dev_id,
+                                                midi_data: send_data.clone(),
+                                                journal: None,
+                                            };
+                                            feedback_sequence = feedback_sequence.wrapping_add(1);
+                                            feedback_sent_count += 1;
+
+                                            let mut pkt_buf = Vec::new();
+                                            packet.serialize(&mut pkt_buf);
+
+                                            if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
+                                                error!(device_id = dev_id, "Failed to send feedback MIDI: {}", e);
+                                            } else {
+                                                state.health.counters.midi_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                                debug!(device_id = dev_id, bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
+                                            }
+                                        } else {
+                                            debug!(device_id = dev_id, "Feedback MIDI ready but no active host");
+                                        }
                                     }
-                                };
-
-                                let active_host = state.active_host_id.read().await;
-                                if active_host.is_some() {
-                                    let packet = MidiDataPacket {
-                                        sequence: feedback_sequence,
-                                        timestamp_us: now_us(),
-                                        host_id: 0,
-                                        device_id: 0,
-                                        midi_data: send_data.clone(),
-                                        journal: None,
-                                    };
-                                    feedback_sequence = feedback_sequence.wrapping_add(1);
-                                    feedback_sent_count += 1;
-
-                                    let mut pkt_buf = Vec::new();
-                                    packet.serialize(&mut pkt_buf);
-
-                                    if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
-                                        error!("Failed to send feedback MIDI: {}", e);
-                                    } else {
-                                        state.health.counters.midi_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
+                                    Ok(None) => break,
+                                    Err(e) => {
+                                        warn!(device_id = dev_id, "Error receiving feedback from multi-device: {}", e);
+                                        break;
                                     }
-                                } else {
-                                    debug!("Feedback MIDI ready but no active host");
                                 }
                             }
-                            Ok(None) => break,
-                            Err(e) => {
-                                warn!("Error receiving feedback from virtual device: {}", e);
-                                break;
+                        }
+                    } else {
+                        // Single/Redundant mode: read from the primary virtual device
+                        let vdev = state.virtual_device.read().await;
+                        loop {
+                            match vdev.receive() {
+                                Ok(Some(midi_data)) => {
+                                    let processed = pipeline.process(&midi_data);
+                                    let send_data = match processed {
+                                        Some(ref data) => data,
+                                        None => {
+                                            debug!(bytes = midi_data.len(), "Feedback MIDI filtered by pipeline");
+                                            continue;
+                                        }
+                                    };
+
+                                    if has_host {
+                                        let packet = MidiDataPacket {
+                                            sequence: feedback_sequence,
+                                            timestamp_us: now_us(),
+                                            host_id: 0,
+                                            device_id: 0,
+                                            midi_data: send_data.clone(),
+                                            journal: None,
+                                        };
+                                        feedback_sequence = feedback_sequence.wrapping_add(1);
+                                        feedback_sent_count += 1;
+
+                                        let mut pkt_buf = Vec::new();
+                                        packet.serialize(&mut pkt_buf);
+
+                                        if let Err(e) = send_socket.send_to(&pkt_buf, dest).await {
+                                            error!("Failed to send feedback MIDI: {}", e);
+                                        } else {
+                                            state.health.counters.midi_out.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                            debug!(bytes = send_data.len(), seq = packet.sequence, "Sent feedback MIDI to host");
+                                        }
+                                    } else {
+                                        debug!("Feedback MIDI ready but no active host");
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    warn!("Error receiving feedback from virtual device: {}", e);
+                                    break;
+                                }
                             }
                         }
                     }

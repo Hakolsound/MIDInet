@@ -1455,6 +1455,42 @@ a { color: var(--accent); text-decoration: none; }
 }
 .toggle.on::after { transform: translateX(16px); }
 
+/* ── Segmented Control ── */
+.segmented-control {
+    display: inline-flex;
+    background: rgba(255,255,255,0.05);
+    border-radius: var(--radius-xs);
+    border: 0.5px solid var(--border);
+    overflow: hidden;
+}
+.seg-btn {
+    padding: 6px 18px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-3);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background .15s var(--ease), color .15s var(--ease);
+    position: relative;
+}
+.seg-btn:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 0.5px;
+    background: var(--border);
+}
+.seg-btn:hover { color: var(--text-2); }
+.seg-btn.active { background: var(--accent); color: #fff; }
+.seg-btn.active::after { display: none; }
+.seg-btn.active + .seg-btn::after { display: none; }
+
+/* ── Host Monitor (Settings card) ── */
+.host-monitor-row:last-child { border-bottom: none; }
+
 /* ── Tables ── */
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
 .tbl th {

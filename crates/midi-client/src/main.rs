@@ -175,6 +175,10 @@ pub struct ClientState {
     /// Detected operational mode from the host network.
     /// None until the first host reports its mode.
     pub detected_mode: RwLock<Option<OperationalMode>>,
+    /// Set to true when admin requests a restart (e.g., mode change).
+    /// After graceful shutdown, main() exits with code 42 so the tray
+    /// (Windows) or service manager (Linux/macOS) auto-restarts.
+    pub restart_requested: AtomicBool,
 }
 
 #[tokio::main]
@@ -247,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
         cancel: cancel.clone(),
         multi_devices: RwLock::new(Vec::new()),
         detected_mode: RwLock::new(None),
+        restart_requested: AtomicBool::new(false),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
@@ -430,6 +435,14 @@ async fn main() -> anyhow::Result<()> {
         h.abort();
     }
     broadcast_discovery_handle.abort();
+
+    // If restart was requested by admin (e.g. mode change), exit with code 42
+    // so the tray (Windows) auto-restarts immediately. On Linux/macOS, the
+    // service manager (systemd/launchd) restarts regardless of exit code.
+    if state.restart_requested.load(Ordering::Relaxed) {
+        info!("Exiting with code 42 for admin-requested restart");
+        std::process::exit(42);
+    }
 
     Ok(())
 }

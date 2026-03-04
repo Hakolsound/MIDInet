@@ -321,3 +321,30 @@ impl HealthCollector {
         }
     }
 }
+
+/// Check if MIDI applications (e.g. Resolume Arena) are currently running.
+/// Used by admin heartbeat to report whether it's safe to restart this client.
+pub fn is_midi_app_active() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Arena.exe", "/NH"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map(|out| {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout.contains("Arena.exe")
+            })
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("pgrep")
+            .args(["-x", "Arena"])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+}

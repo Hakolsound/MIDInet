@@ -100,6 +100,7 @@ pub async fn run(state: AppState) {
             let failover = state.inner.failover_state.read().await;
             failover.standby_healthy
         };
+        let host_redundancy_enabled = *state.inner.host_redundancy_enabled.read().await;
 
         // --- Timestamp for this tick ---
         let now = std::time::SystemTime::now()
@@ -151,6 +152,11 @@ pub async fn run(state: AppState) {
                 score -= 5;
             }
 
+            // Secondary: standby host unreachable (only when redundancy enabled)
+            if host_redundancy_enabled && !standby_host_healthy {
+                score -= 10;
+            }
+
             score.clamp(0, 100) as u8
         };
 
@@ -200,6 +206,7 @@ pub async fn run(state: AppState) {
             latency_p95_ms: avg_latency_p95,
             midi_device_connected,
             standby_host_healthy,
+            host_redundancy_enabled,
             disk_free_mb,
         };
 

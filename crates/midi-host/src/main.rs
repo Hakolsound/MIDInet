@@ -507,6 +507,22 @@ async fn main() -> anyhow::Result<()> {
             // Create InputMux (handles dual-controller failover)
             let mux = Arc::new(input_mux::InputMux::new(primary_consumer, secondary_consumer));
 
+            // Populate device_identities for consistency with MultiDevice mode.
+            // broadcast_discovery uses identities[0] when populated, ensuring the
+            // primary controller name is explicitly advertised (not a fallback).
+            {
+                let mut identities = Vec::with_capacity(if dual_input { 2 } else { 1 });
+                let mut primary = state.identity.read().await.clone();
+                primary.device_id = 0;
+                identities.push(primary);
+                if dual_input {
+                    let mut secondary = usb_detector::read_device_identity(&resolved_secondary);
+                    secondary.device_id = 1;
+                    identities.push(secondary);
+                }
+                *state.device_identities.write().await = identities;
+            }
+
             // Auto-switch flag — shared between health monitor, OSC listener, and admin API
             let auto_switch_enabled = Arc::new(AtomicBool::new(true));
 
@@ -589,8 +605,16 @@ async fn main() -> anyhow::Result<()> {
     // Create focus state for bidirectional MIDI feedback
     let focus_state = Arc::new(RwLock::new(FocusState::default()));
 
-    // Create MIDI output writer — sends feedback to ALL connected controllers
-    let midi_output = {
+    // Create MIDI output writer — sends feedback to connected controllers.
+    // In multi-device mode, open each highway's device for per-device routing.
+    // In single/redundant mode, open the primary (+ secondary if dual).
+    let midi_output = if mode == OperationalMode::MultiDevice {
+        let resolved_paths: Vec<String> = config.midi.devices.iter()
+            .map(|d| usb_detector::resolve_device(&d.device))
+            .collect();
+        let refs: Vec<&str> = resolved_paths.iter().map(|s| s.as_str()).collect();
+        Arc::new(midi_output::platform::MidiOutputWriter::open(&refs))
+    } else {
         let mut devices: Vec<&str> = vec![&resolved_device];
         if dual_input {
             devices.push(&resolved_secondary);

@@ -131,15 +131,27 @@ impl AlertManager {
             now,
         );
 
-        // Standby host unreachable
-        self.check_threshold(
-            &config,
-            "standby_host",
-            !metrics.standby_host_healthy,
-            AlertSeverity::Warning,
-            "Standby host unreachable — no redundancy".to_string(),
-            now,
-        );
+        // Standby host unreachable — only relevant when host redundancy enabled
+        if metrics.host_redundancy_enabled {
+            self.check_threshold(
+                &config,
+                "standby_host",
+                !metrics.standby_host_healthy,
+                AlertSeverity::Warning,
+                "Standby host unreachable — no redundancy".to_string(),
+                now,
+            );
+        } else {
+            // Resolve any previously active standby alert when redundancy is disabled
+            self.check_threshold(
+                &config,
+                "standby_host",
+                false,
+                AlertSeverity::Warning,
+                String::new(),
+                now,
+            );
+        }
 
         // Disk space low
         if config.disk_free_min_mb > 0 {
@@ -245,6 +257,7 @@ pub struct EvalMetrics {
     pub latency_p95_ms: f32,
     pub midi_device_connected: bool,
     pub standby_host_healthy: bool,
+    pub host_redundancy_enabled: bool,
     pub disk_free_mb: u64,
 }
 

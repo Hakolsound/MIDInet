@@ -10,6 +10,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::{ClientState, FocusCommand};
+use crate::health::is_midi_app_active;
 
 /// Run the admin reporter. Waits for a discovered host with an admin_url,
 /// then registers and sends periodic heartbeats.
@@ -79,6 +80,7 @@ pub async fn run(state: Arc<ClientState>) {
             "device_name": snapshot.device_name,
             "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
             "git_hash": midi_protocol::GIT_HASH,
+            "midi_apps_active": is_midi_app_active(),
         });
 
         match http.post(format!("{}/api/clients/{}/heartbeat", admin_url, state.client_id))
@@ -121,6 +123,17 @@ pub async fn run(state: Arc<ClientState>) {
                             let _ = state.focus_tx.send(FocusCommand::Release).await;
                         }
                         _ => {}
+                    }
+
+                    // Process restart commands from admin panel (e.g. after mode change)
+                    if resp_body.get("restart_command").and_then(|v| v.as_str()) == Some("restart") {
+                        if is_midi_app_active() {
+                            warn!("Admin requested restart but MIDI apps are active — deferring");
+                        } else {
+                            info!("Admin requested restart — initiating graceful shutdown");
+                            state.restart_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                            state.cancel.cancel();
+                        }
                     }
                 }
             }

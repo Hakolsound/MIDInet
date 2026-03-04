@@ -2,7 +2,7 @@
 /// Collects metrics, status, and configuration from the system.
 /// All fields are thread-safe for use with axum's State extractor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -304,6 +304,10 @@ pub struct AppStateInner {
     pub configured_devices: RwLock<Vec<String>>,
     /// Per-device MIDI metrics keyed by device_id (populated by sniffer in multi mode).
     pub per_device_midi: RwLock<HashMap<u8, DeviceMidiRate>>,
+    /// Client IDs that need to restart (e.g., after mode change).
+    /// Heartbeat response includes `restart_command: "restart"` while in this set.
+    /// Cleared when client re-registers (indicating successful restart).
+    pub pending_restarts: RwLock<HashSet<u32>>,
 }
 
 impl AppState {
@@ -345,6 +349,7 @@ impl AppState {
                 configured_mode: RwLock::new("single".to_string()),
                 configured_devices: RwLock::new(Vec::new()),
                 per_device_midi: RwLock::new(HashMap::new()),
+                pending_restarts: RwLock::new(HashSet::new()),
             }),
         }
     }
@@ -471,6 +476,10 @@ pub struct ClientInfo {
     /// True if this client was manually added by the operator (not self-registered)
     #[serde(default)]
     pub manual: bool,
+    /// Whether MIDI applications (Resolume Arena) are active on this client.
+    /// Reported via heartbeat. Used to block mode changes that require client restart.
+    #[serde(default)]
+    pub midi_apps_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

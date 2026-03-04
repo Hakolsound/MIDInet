@@ -635,6 +635,14 @@ fn main() {
                         Some(0) => {
                             info!("Client exited cleanly (code 0)");
                         }
+                        Some(42) => {
+                            // Admin-requested restart — immediate respawn, no backoff
+                            info!("Client restarted by admin request (exit code 42)");
+                            proc_mgr.reset_backoff();
+                            if let Err(e) = proc_mgr.spawn() {
+                                error!("Failed to respawn client after admin restart: {}", e);
+                            }
+                        }
                         _ => {
                             if proc_mgr.should_restart() {
                                 if let Err(e) = proc_mgr.restart() {

@@ -1,9 +1,12 @@
 /// MIDI output writer for bidirectional feedback to physical controllers.
 ///
 /// Writes MIDI data to one or more ALSA rawmidi devices in playback mode.
-/// In dual-controller mode, feedback is sent to ALL connected controllers
-/// simultaneously so LED state, displays, and motorized faders stay in sync
-/// regardless of which controller is currently active for input.
+/// In dual-controller mode (single/redundant), feedback is sent to ALL connected
+/// controllers simultaneously so LED state, displays, and motorized faders stay
+/// in sync regardless of which controller is currently active for input.
+///
+/// In multi-device mode, `write_to_device(device_id, data)` routes feedback to
+/// the specific controller matching that device_id.
 
 #[cfg(target_os = "linux")]
 pub mod platform {
@@ -21,16 +24,18 @@ pub mod platform {
 
     struct MidiOutputDevice {
         name: String,
+        /// device_id for multi-device routing (index in the devices list)
+        device_id: u8,
         rawmidi: Rawmidi,
     }
 
     impl MidiOutputWriter {
-        /// Open MIDI output devices. Devices that fail to open are logged
-        /// and skipped — the writer continues with whatever devices are available.
+        /// Open MIDI output devices for single/redundant mode.
+        /// All devices receive the same feedback (broadcast).
         pub fn open(device_names: &[&str]) -> Self {
             let mut devices = Vec::new();
 
-            for &name in device_names {
+            for (idx, &name) in device_names.iter().enumerate() {
                 if name.is_empty() {
                     continue;
                 }
@@ -38,9 +43,10 @@ pub mod platform {
                 match CString::new(name) {
                     Ok(cstr) => match Rawmidi::open(&cstr, Direction::Playback, false) {
                         Ok(rawmidi) => {
-                            info!(device = %name, "MIDI output device opened");
+                            info!(device = %name, device_id = idx, "MIDI output device opened");
                             devices.push(MidiOutputDevice {
                                 name: name.to_string(),
+                                device_id: idx as u8,
                                 rawmidi,
                             });
                         }
@@ -62,7 +68,7 @@ pub mod platform {
         }
 
         /// Write MIDI data to all open output devices.
-        /// Errors on individual devices are logged but do not stop output to others.
+        /// Used in single/redundant mode where all controllers mirror the same state.
         pub fn write_all(&self, data: &[u8]) {
             for dev in &self.devices {
                 match dev.rawmidi.io().write(data) {
@@ -73,6 +79,25 @@ pub mod platform {
                         error!(device = %dev.name, "MIDI output write error: {}", e);
                     }
                 }
+            }
+        }
+
+        /// Write MIDI data to a specific device by device_id.
+        /// Used in multi-device mode to route feedback to the correct controller.
+        /// Falls back to write_all if device_id is not found (single-device compat).
+        pub fn write_to_device(&self, device_id: u8, data: &[u8]) {
+            if let Some(dev) = self.devices.iter().find(|d| d.device_id == device_id) {
+                match dev.rawmidi.io().write(data) {
+                    Ok(n) => {
+                        debug!(device = %dev.name, device_id, bytes = n, "Wrote MIDI feedback to device");
+                    }
+                    Err(e) => {
+                        error!(device = %dev.name, device_id, "MIDI output write error: {}", e);
+                    }
+                }
+            } else {
+                // No device with matching ID — fall back to broadcast
+                self.write_all(data);
             }
         }
 
@@ -105,6 +130,8 @@ pub mod platform {
         }
 
         pub fn write_all(&self, _data: &[u8]) {}
+
+        pub fn write_to_device(&self, _device_id: u8, _data: &[u8]) {}
 
         pub fn device_count(&self) -> usize {
             0

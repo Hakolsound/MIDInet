@@ -125,7 +125,17 @@ pub async fn register_client(
             connection_state: body.connection_state,
             git_hash: body.git_hash,
             manual: false,
+            midi_apps_active: false,
         });
+    }
+    drop(clients);
+
+    // Clear pending restart flag if this client just re-registered (it restarted)
+    {
+        let mut pending = state.inner.pending_restarts.write().await;
+        if pending.remove(&body.id) {
+            info!(client_id = body.id, "Client re-registered after restart, cleared pending restart");
+        }
     }
 
     Json(json!({ "success": true }))
@@ -149,6 +159,8 @@ pub struct ClientHeartbeatBody {
     pub connection_state: String,
     #[serde(default)]
     pub git_hash: String,
+    #[serde(default)]
+    pub midi_apps_active: bool,
 }
 
 /// POST /api/clients/:id/heartbeat — periodic health update from client
@@ -167,6 +179,7 @@ pub async fn client_heartbeat(
         client.midi_rate_in = body.midi_rate_in;
         client.midi_rate_out = body.midi_rate_out;
         client.device_ready = body.device_ready;
+        client.midi_apps_active = body.midi_apps_active;
         if !body.device_name.is_empty() {
             client.device_name = body.device_name;
         }
@@ -176,6 +189,7 @@ pub async fn client_heartbeat(
         if !body.git_hash.is_empty() {
             client.git_hash = body.git_hash;
         }
+        drop(clients);
 
         // Include focus command based on designated_focus
         let designated = *state.inner.designated_focus.read().await;
@@ -185,7 +199,18 @@ pub async fn client_heartbeat(
             None => None,
         };
 
-        Json(json!({ "success": true, "focus_command": focus_cmd, "host_git_hash": midi_protocol::GIT_HASH }))
+        // Check if this client needs to restart (e.g. after mode change)
+        let restart_cmd = {
+            let pending = state.inner.pending_restarts.read().await;
+            if pending.contains(&id) { Some("restart") } else { None }
+        };
+
+        Json(json!({
+            "success": true,
+            "focus_command": focus_cmd,
+            "host_git_hash": midi_protocol::GIT_HASH,
+            "restart_command": restart_cmd,
+        }))
     } else {
         Json(json!({ "success": false, "error": "Client not registered" }))
     }
@@ -293,6 +318,7 @@ pub async fn add_client_manual(
         connection_state: "manual".to_string(),
         git_hash: String::new(),
         manual: true,
+        midi_apps_active: false,
     });
 
     Json(json!({ "success": true, "id": id }))

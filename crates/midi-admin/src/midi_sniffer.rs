@@ -372,10 +372,18 @@ pub async fn run_control(state: AppState, control_group: String, control_port: u
                 }
 
                 // Feedback MIDI packets (MAGIC_MIDI = "MDMI")
+                // Must handle both V1 (18-byte header) and V2 (19-byte header with device_id)
                 if &buf[0..4] == b"MDMI" && len >= 18 {
-                    let midi_len = u16::from_be_bytes([buf[16], buf[17]]) as usize;
-                    if len >= 18 + midi_len && midi_len > 0 {
-                        let midi_data = &buf[18..18 + midi_len];
+                    let flags = buf[15];
+                    let (header_size, _device_id) = if flags & 0x80 != 0 && len >= 19 {
+                        (19usize, buf[16])  // V2: device_id at byte 16
+                    } else {
+                        (18usize, 0u8)      // V1: no device_id
+                    };
+                    let midi_len_off = header_size - 2;
+                    let midi_len = u16::from_be_bytes([buf[midi_len_off], buf[midi_len_off + 1]]) as usize;
+                    if len >= header_size + midi_len && midi_len > 0 {
+                        let midi_data = &buf[header_size..header_size + midi_len];
                         let desc = describe_midi(midi_data);
 
                         let _ = state.inner.traffic_log_tx.send(

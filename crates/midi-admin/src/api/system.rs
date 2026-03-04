@@ -278,6 +278,7 @@ pub struct SetModeBody {
 ///
 /// Writes the new mode to host.toml, then triggers a host-only restart via
 /// the midinet-restart.path systemd unit (same trigger pattern as updates).
+/// Also schedules all connected clients for restart so they pick up the new mode.
 pub async fn set_mode(
     State(state): State<AppState>,
     Json(body): Json<SetModeBody>,
@@ -289,6 +290,35 @@ pub async fn set_mode(
             "success": false,
             "error": format!("Invalid mode '{}'. Must be 'single', 'redundant', or 'multi'.", mode),
         }));
+    }
+
+    // ── Eligibility check: block if any client has MIDI apps (Resolume) running ──
+    {
+        let clients = state.inner.clients.read().await;
+        let blocking: Vec<_> = clients
+            .iter()
+            .filter(|c| c.midi_apps_active)
+            .map(|c| json!({ "id": c.id, "hostname": c.hostname, "ip": c.ip }))
+            .collect();
+        if !blocking.is_empty() {
+            let names: Vec<_> = clients
+                .iter()
+                .filter(|c| c.midi_apps_active)
+                .map(|c| c.hostname.as_str())
+                .collect();
+            warn!(
+                blocking = ?names,
+                "Mode change blocked — MIDI apps active on clients"
+            );
+            return Json(json!({
+                "success": false,
+                "error": format!(
+                    "Cannot change mode while MIDI applications are running on {} client(s). Close Resolume Arena first.",
+                    blocking.len()
+                ),
+                "blocking_clients": blocking,
+            }));
+        }
     }
 
     // Read the config file, modify [host].mode, write back
@@ -382,11 +412,27 @@ pub async fn set_mode(
         warn!("SIGTERM failed — relying on path unit trigger for restart");
     }
 
-    info!(mode = %mode, sigterm = sigterm_ok, "Host restart initiated for mode change");
+    // Schedule all connected clients for restart so they pick up the new mode
+    let client_count = {
+        let clients = state.inner.clients.read().await;
+        let ids: Vec<u32> = clients.iter().map(|c| c.id).collect();
+        let count = ids.len();
+        let mut pending = state.inner.pending_restarts.write().await;
+        pending.extend(ids);
+        count
+    };
+
+    info!(
+        mode = %mode,
+        sigterm = sigterm_ok,
+        clients_to_restart = client_count,
+        "Host restart initiated for mode change"
+    );
     Json(json!({
         "success": true,
         "restarting": true,
         "mode": mode,
+        "clients_restarting": client_count,
     }))
 }
 

@@ -1454,6 +1454,8 @@ function ModeSelector() {
           if (r.restarting) {
             setPendingMode(targetMode);
             setSelected(targetMode);
+            const clientMsg = r.clients_restarting > 0 ? ` Restarting ${r.clients_restarting} client(s)...` : '';
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('info', `Mode changed to "${targetMode}". Host restarting.${clientMsg}`) });
             // Timeout: if host hasn't confirmed after 30s, warn
             clearTimeout(pendingTimer.current);
             pendingTimer.current = setTimeout(() => {
@@ -1465,7 +1467,13 @@ function ModeSelector() {
           }
           setArmed(false);
         } else {
-          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to change mode') });
+          // Check for blocking clients (MIDI apps running)
+          if (r.blocking_clients && r.blocking_clients.length > 0) {
+            const names = r.blocking_clients.map(c => c.hostname || c.ip).join(', ');
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('error', `Close Resolume Arena on: ${names}`) });
+          } else {
+            dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to change mode') });
+          }
         }
         setBusy(false);
       },
@@ -1520,12 +1528,16 @@ function ModeSelector() {
   </div>`;
 }
 
-// ── Host Redundancy Toggle ────────────────────────────────────
-function HostRedundancyToggle() {
+// ── Host Redundancy Card ──────────────────────────────────────
+function HostRedundancyCard() {
   const { state, dispatch } = useContext(AppContext);
   const { hostRedundancy } = useMode();
   const [busy, setBusy] = useState(false);
+  const fo = state.status.failover || {};
+  const hosts = state.hosts || [];
+  const detail = state.failoverDetail;
 
+  // Toggle host redundancy on/off
   const toggle = () => {
     const newVal = !hostRedundancy;
     const action = newVal ? 'Enable' : 'Disable';
@@ -1552,14 +1564,127 @@ function HostRedundancyToggle() {
     }});
   };
 
-  return html`<div class="card">
-    <div class="card-header">Host Redundancy</div>
-    <div class="card-body" style="padding:12px 20px">
-      <div class="flex items-center justify-between">
-        <div style="flex:1">
-          <div style="font-size:13px;color:var(--text-2)">Primary/standby host failover across two physical hosts. Works with any controller mode.</div>
+  // Toggle Manual/Auto failover mode
+  const setAutoMode = (autoEnabled) => {
+    if (autoEnabled === fo.auto_enabled) return;
+    const go = async () => {
+      const r = await apiFetch('/api/failover/auto', { method: 'PUT', body: JSON.stringify({ enabled: autoEnabled }) });
+      if (r.success) {
+        if (detail) dispatch({ type: 'SET_FAILOVER', data: { ...detail, auto_enabled: r.auto_enabled } });
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('info', `Failover mode: ${autoEnabled ? 'Auto' : 'Manual'}`) });
+      }
+    };
+    if (!autoEnabled) {
+      dispatch({ type: 'MODAL', modal: {
+        title: 'Switch to Manual Failover?',
+        message: 'In manual mode, the system will NOT automatically switch hosts if the primary fails. You must trigger failover manually via this panel, MIDI trigger, or OSC command.',
+        onConfirm: go, ok: 'Switch to Manual', cls: 'btn-danger',
+      }});
+    } else go();
+  };
+
+  // Manual host switch
+  const doSwitch = () => {
+    const go = async () => {
+      const r = await apiFetch('/api/failover/switch', { method: 'POST' });
+      if (r.success) {
+        if (detail) dispatch({ type: 'SET_FAILOVER', data: { ...detail, active_host: r.active_host, failover_count: r.failover_count } });
+        dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `Switched to ${r.active_host}`) });
+      }
+    };
+    if (detail?.confirmation_mode === 'confirm') {
+      dispatch({ type: 'MODAL', modal: {
+        title: 'Confirm Failover',
+        message: `Switch from "${fo.active_host}" to "${fo.active_host === 'primary' ? 'standby' : 'primary'}"? MIDI output will briefly interrupt.`,
+        onConfirm: go, ok: 'Switch', cls: 'btn-danger',
+      }});
+    } else go();
+  };
+
+  // ── Disabled state: simple card ──
+  if (!hostRedundancy) {
+    return html`<div class="card">
+      <div class="card-header">Host Redundancy</div>
+      <div class="card-body" style="padding:12px 20px">
+        <div class="flex items-center justify-between">
+          <div style="flex:1">
+            <div style="font-size:13px;color:var(--text-2)">Primary/standby host failover across two physical hosts. Works with any controller mode.</div>
+          </div>
+          <button class="toggle" disabled=${busy} onClick=${toggle} />
         </div>
-        <button class="toggle ${hostRedundancy ? 'on' : ''}" disabled=${busy} onClick=${toggle} />
+      </div>
+    </div>`;
+  }
+
+  // ── Enabled state: expanded card ──
+  const autoEnabled = fo.auto_enabled !== false;
+
+  return html`<div class="card card-wide">
+    <div class="card-header">
+      Host Redundancy
+      <div class="card-header-right">
+        <button class="toggle on" disabled=${busy} onClick=${toggle} />
+      </div>
+    </div>
+    <div class="card-body-flush">
+      <!-- Failover Mode -->
+      <div class="form-section">
+        <div class="form-section-title">Failover Mode</div>
+        <div class="flex items-center gap-md">
+          <div class="segmented-control">
+            <button class="seg-btn ${!autoEnabled ? 'active' : ''}" onClick=${() => setAutoMode(false)}>Manual</button>
+            <button class="seg-btn ${autoEnabled ? 'active' : ''}" onClick=${() => setAutoMode(true)}>Auto</button>
+          </div>
+          <span style="font-size:12px;color:var(--text-3);flex:1">
+            ${autoEnabled
+              ? 'Automatically switches to standby when primary fails.'
+              : 'Only switches on explicit operator action. Overrides auto detection.'}
+          </span>
+        </div>
+      </div>
+
+      <!-- Host Monitor -->
+      <div class="form-section">
+        <div class="form-section-title">Hosts</div>
+        ${hosts.length === 0 && html`
+          <div style="font-size:12px;color:var(--text-3);padding:4px 0">No hosts discovered via mDNS.</div>
+        `}
+        ${hosts.map(h => {
+          const isMaster = state.designatedPrimary === h.id;
+          const isHostMulti = h.operational_mode === 'multi';
+          const allDevices = isHostMulti ? [h.device_name, ...(h.extra_device_names || [])] : null;
+          return html`<div class="host-monitor-row" key=${h.id} style="border-bottom:0.5px solid var(--border)">
+            <div class="host-row" style="border-bottom:none">
+              <span class="status-dot" data-status=${h.heartbeat_ok ? 'ok' : 'error'} />
+              <span class="host-name">${h.device_name || h.name || h.ip}</span>
+              <span class="host-role-badge" data-role=${isMaster ? 'primary' : h.role}>${isMaster ? 'primary' : h.role}</span>
+              ${h.operational_mode && h.operational_mode !== 'single' && html`
+                <span class="mode-badge" data-mode=${h.operational_mode}>${h.operational_mode}${isHostMulti ? ' \u00d7' + h.device_count : ''}</span>
+              `}
+              <span class="host-detail">${h.ip}</span>
+              <span class="host-detail">${fmtUp(h.uptime_seconds)}</span>
+            </div>
+            ${isHostMulti && allDevices && html`
+              <div class="host-devices">
+                ${allDevices.map((name, i) => html`<span class="host-device-tag" key=${i} style="border-color:${deviceColor(i)};color:${deviceColor(i)}">#${i} ${name}</span>`)}
+              </div>
+            `}
+          </div>`;
+        })}
+      </div>
+
+      <!-- Actions -->
+      <div class="form-section" style="display:flex;align-items:center;gap:12px">
+        <button class="btn btn-sm btn-danger" onClick=${doSwitch}>Switch Host</button>
+        <div style="flex:1" />
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3)">Active</span>
+          <span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--green)">${(fo.active_host || 'primary').toUpperCase()}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:0.5px solid var(--border)">
+          <span style="font-size:12px;color:var(--text-3)">Standby</span>
+          <span class="status-dot" data-status=${fo.standby_healthy ? 'ok' : 'error'} />
+        </div>
       </div>
     </div>
   </div>`;
@@ -1573,11 +1698,12 @@ function SettingsPage() {
     apiFetch('/api/settings').then(d => dispatch({ type: 'SET_SETTINGS', data: d }));
     apiFetch('/api/settings/presets').then(d => dispatch({ type: 'SET_PRESETS', data: d.presets }));
     apiFetch('/api/devices').then(d => dispatch({ type: 'SET_DEVICES', data: d.devices }));
+    apiFetch('/api/failover').then(d => dispatch({ type: 'SET_FAILOVER', data: d }));
   }, []);
   return html`<div class="page-scroll">
     <div class="page-grid">
       <div class="card-wide"><${ModeSelector} /></div>
-      <div class="card-wide"><${HostRedundancyToggle} /></div>
+      <${HostRedundancyCard} />
       <${DeviceSettings} />
       <${OscSettings} />
       ${hostRedundancy && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
