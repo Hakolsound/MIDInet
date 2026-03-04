@@ -4,6 +4,8 @@
 
 Distribute MIDI from physical controllers to any number of clients over LAN. Each client creates virtual MIDI devices with the exact same identity as the originals — existing mappings and scripts work unchanged.
 
+The host runs on a **Raspberry Pi** — a $80 device that sits on your network rack alongside (or on the same Pi as) **Bitfocus Companion**, giving you both MIDI distribution and StreamDeck control from one tiny box.
+
 Built for live production environments where reliability is non-negotiable.
 
 🌐 **[midinet.io](https://midinet.io)** — Website & docs
@@ -30,7 +32,7 @@ Built for live production environments where reliability is non-negotiable.
 
 ## How It Works
 
-Three operational modes, each with optional dual-host redundancy:
+A Raspberry Pi reads your physical MIDI controller(s) via USB and broadcasts over your existing LAN. Three operational modes, each with optional dual-host redundancy:
 
 ### Single Mode
 ```
@@ -276,6 +278,28 @@ Configures:
 - Bitfocus Companion alias detection (if installed)
 
 After setup, the admin panel is reachable at `http://midinet.local:8080`.
+
+### Running Alongside Bitfocus Companion
+
+MIDInet is designed to coexist with [Bitfocus Companion](https://bitfocus.io/companion) on the same Raspberry Pi. One device handles both MIDI distribution and StreamDeck button control for your entire show.
+
+```
+┌─────────────────────────────────────────────┐
+│              Raspberry Pi 5                  │
+│                                              │
+│  MIDInet Host ─── MIDI to all clients        │
+│  midinet.local:8080 (admin dashboard)        │
+│                                              │
+│  Companion ───── StreamDeck / button pages   │
+│  companion.local:8000                        │
+│                                              │
+│  Both reachable via .local mDNS              │
+└─────────────────────────────────────────────┘
+```
+
+The `pi-network-setup.sh` script auto-detects Companion and publishes a `companion.local` Avahi alias so both services are reachable at their own `.local` hostnames without changing the system hostname.
+
+Companion can also trigger MIDInet failover, focus switching, and mode changes via the REST API — wire a StreamDeck button to `POST /api/failover/switch` for instant manual failover from your control surface.
 
 ### Updating
 
