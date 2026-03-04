@@ -105,6 +105,11 @@ pub fn color_for_snapshot(snapshot: &midi_protocol::health::ClientHealthSnapshot
         ConnectionState::Connected => {
             if snapshot.packet_loss_percent > 5.0 || !snapshot.watchdog.all_tasks_healthy {
                 IconColor::Yellow
+            } else if snapshot.operational_mode.as_deref() == Some("redundant")
+                && snapshot.hosts_discovered < 2
+            {
+                // Redundant mode but standby host is missing
+                IconColor::Yellow
             } else {
                 IconColor::Green
             }
