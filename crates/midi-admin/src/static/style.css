@@ -2201,17 +2201,27 @@ a { color: var(--accent); text-decoration: none; }
 }
 
 /* Protected Apps */
-.protected-apps-category { margin-bottom: 16px; }
-.protected-apps-cat-header { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 6px; }
-.protected-apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px; }
-.protected-app-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: background 0.15s; }
-.protected-app-item:hover { background: var(--surface-hover, rgba(255,255,255,0.05)); }
-.protected-app-item.active { color: var(--accent, #00d4ff); }
-.protected-app-item.no-process { opacity: 0.35; cursor: not-allowed; }
-.protected-app-item input[type="checkbox"] { accent-color: var(--accent, #00d4ff); margin: 0; }
-.protected-app-name { flex: 1; }
+.protected-count-badge { font-size: 11px; padding: 1px 7px; border-radius: 8px; background: var(--accent, #00d4ff); color: #000; font-weight: 600; margin-left: 8px; vertical-align: middle; }
 .protected-app-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent, #00d4ff); color: #000; font-weight: 600; white-space: nowrap; }
-.protected-apps-custom-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.protected-app-custom-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: var(--surface-alt, rgba(255,255,255,0.08)); border-radius: 4px; font-size: 12px; font-family: monospace; }
-.protected-app-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
-.protected-app-remove:hover { color: var(--danger, #ff4444); }
+.prot-apps-layout { display: flex; gap: 16px; min-height: 180px; }
+.prot-apps-search-col { flex: 1; position: relative; min-width: 0; }
+.prot-apps-input-wrap { position: relative; }
+.prot-apps-search { width: 100%; box-sizing: border-box; }
+.prot-apps-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; max-height: 260px; overflow-y: auto; background: var(--surface, #1a1a2e); border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 6px; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.prot-apps-dd-group { padding: 4px 0; }
+.prot-apps-dd-cat { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); padding: 6px 12px 2px; }
+.prot-apps-dd-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; transition: background 0.1s; }
+.prot-apps-dd-item:hover { background: var(--surface-hover, rgba(255,255,255,0.06)); }
+.prot-apps-dd-custom { color: var(--accent, #00d4ff); border-top: 1px solid var(--border, rgba(255,255,255,0.08)); }
+.prot-apps-dd-empty { padding: 12px; text-align: center; color: var(--text-dim); font-size: 12px; }
+.prot-apps-added-col { flex: 1; min-width: 0; border-left: 1px solid var(--border, rgba(255,255,255,0.08)); padding-left: 16px; }
+.prot-apps-added-header { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 8px; }
+.prot-apps-added-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 4px; font-size: 13px; }
+.prot-apps-added-item:hover { background: var(--surface-hover, rgba(255,255,255,0.04)); }
+.prot-apps-added-item.prot-apps-added-custom { opacity: 0.75; }
+.prot-apps-added-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prot-apps-remove-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 15px; padding: 0 4px; line-height: 1; opacity: 0; transition: opacity 0.15s, color 0.15s; }
+.prot-apps-added-item:hover .prot-apps-remove-btn { opacity: 1; }
+.prot-apps-remove-btn:hover { color: var(--danger, #ff4444); }
+.prot-apps-empty-warn { font-size: 12px; color: var(--warning, #f0ad4e); padding: 10px; background: rgba(240,173,78,0.08); border: 1px solid rgba(240,173,78,0.2); border-radius: 6px; line-height: 1.4; }
+@media (max-width: 600px) { .prot-apps-layout { flex-direction: column; } .prot-apps-added-col { border-left: none; padding-left: 0; border-top: 1px solid var(--border, rgba(255,255,255,0.08)); padding-top: 12px; } }

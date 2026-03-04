@@ -710,6 +710,35 @@ pub async fn set_device_highways(
     info!(devices = ?device_names, path = %config_path, "Device highways updated in config");
     *state.inner.configured_devices.write().await = device_names;
 
+    // ── Eligibility check: block if any client has protected MIDI apps running ──
+    {
+        let clients = state.inner.clients.read().await;
+        let blocking: Vec<_> = clients
+            .iter()
+            .filter(|c| c.midi_apps_active)
+            .map(|c| json!({ "id": c.id, "hostname": c.hostname, "ip": c.ip }))
+            .collect();
+        if !blocking.is_empty() {
+            let names: Vec<_> = clients
+                .iter()
+                .filter(|c| c.midi_apps_active)
+                .map(|c| c.hostname.as_str())
+                .collect();
+            warn!(
+                blocking = ?names,
+                "Highway change blocked — MIDI apps active on clients"
+            );
+            return Json(json!({
+                "success": false,
+                "error": format!(
+                    "Cannot apply highway changes while MIDI applications are running on {} client(s). Close protected apps first.",
+                    blocking.len()
+                ),
+                "blocking_clients": blocking,
+            }));
+        }
+    }
+
     // Restart host to pick up new device config
     let trigger = format!("highways\n{:?}\n", std::time::SystemTime::now());
     if let Err(e) = std::fs::write(RESTART_TRIGGER_PATH, &trigger) {
@@ -717,11 +746,26 @@ pub async fn set_device_highways(
     }
     let sigterm_ok = signal_host_process();
 
-    info!(sigterm = sigterm_ok, "Host restart initiated for highway change");
+    // Schedule all connected clients for restart so they pick up the new highways
+    let client_count = {
+        let clients = state.inner.clients.read().await;
+        let ids: Vec<u32> = clients.iter().map(|c| c.id).collect();
+        let count = ids.len();
+        let mut pending = state.inner.pending_restarts.write().await;
+        pending.extend(ids);
+        count
+    };
+
+    info!(
+        sigterm = sigterm_ok,
+        clients_to_restart = client_count,
+        "Host restart initiated for highway change"
+    );
     Json(json!({
         "success": true,
         "restarting": true,
         "device_count": body.devices.len(),
+        "clients_restarting": client_count,
     }))
 }
 

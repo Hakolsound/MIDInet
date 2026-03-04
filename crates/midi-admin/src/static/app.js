@@ -1697,10 +1697,12 @@ function ProtectedAppsCard() {
   const [enabled, setEnabled] = useState([]);
   const [customProcs, setCustomProcs] = useState([]);
   const [installedOn, setInstalledOn] = useState({});
-  const [customInput, setCustomInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const wrapperRef = useRef(null);
 
   useEffect(() => {
     apiFetch('/api/settings/protected-apps').then(d => {
@@ -1712,18 +1714,38 @@ function ProtectedAppsCard() {
     });
   }, []);
 
-  const toggle = (id) => {
-    setEnabled(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e) => { if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setDropdownOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const addApp = (id) => {
+    if (!enabled.includes(id)) {
+      setEnabled(prev => [...prev, id]);
+      setDirty(true);
+    }
+    setSearch('');
+    setDropdownOpen(false);
+  };
+
+  const removeApp = (id) => {
+    setEnabled(prev => prev.filter(x => x !== id));
     setDirty(true);
   };
 
   const addCustom = () => {
-    const val = customInput.trim();
+    const val = search.trim();
     if (val && !customProcs.includes(val)) {
+      // Check it's not a catalog app name
+      const match = catalog.find(a => a.name.toLowerCase() === val.toLowerCase());
+      if (match) { addApp(match.id); return; }
       setCustomProcs(prev => [...prev, val]);
-      setCustomInput('');
       setDirty(true);
     }
+    setSearch('');
+    setDropdownOpen(false);
   };
 
   const removeCustom = (proc) => {
@@ -1748,78 +1770,104 @@ function ProtectedAppsCard() {
 
   if (!loaded) return html`<div class="card-body"><span class="dim">Loading...</span></div>`;
 
-  // Group catalog by category
-  const categories = {};
-  catalog.forEach(app => {
-    if (!categories[app.category]) categories[app.category] = [];
-    categories[app.category].push(app);
-  });
+  // Group catalog by category (for dropdown)
+  const categoryIcons = { 'VJ / Media Server': '\u{1F3AC}', 'DAW': '\u{1F3B9}', 'Lighting': '\u{1F4A1}', 'Playback': '\u{25B6}\u{FE0F}' };
 
-  const categoryIcons = {
-    'VJ / Media Server': '\u{1F3AC}',
-    'DAW': '\u{1F3B9}',
-    'Lighting': '\u{1F4A1}',
-    'Playback': '\u{25B6}\u{FE0F}',
-  };
+  // Filter catalog for dropdown: not already enabled, matches search
+  const q = search.toLowerCase();
+  const available = catalog.filter(a => !enabled.includes(a.id) && (a.win_process || a.mac_process || a.linux_process));
+  const filtered = q ? available.filter(a => a.name.toLowerCase().includes(q) || a.category.toLowerCase().includes(q)) : available;
+  const grouped = {};
+  filtered.forEach(a => { if (!grouped[a.category]) grouped[a.category] = []; grouped[a.category].push(a); });
+
+  // Resolve enabled app details
+  const enabledApps = enabled.map(id => catalog.find(a => a.id === id)).filter(Boolean);
+  const totalCount = enabledApps.length + customProcs.length;
+
+  // Check if search could be a custom process (not matching any catalog app)
+  const isCustomCandidate = q && !catalog.some(a => a.name.toLowerCase().includes(q));
 
   return html`
-    <div class="card-header">Protected Applications</div>
+    <div class="card-header">
+      Protected Applications
+      ${totalCount > 0 && html`<span class="protected-count-badge">${totalCount}</span>`}
+      ${dirty && html`<div class="card-header-right">
+        <button class="btn btn-sm btn-accent" onClick=${save} disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
+      </div>`}
+    </div>
     <div class="card-body">
-      <p class="dim" style="margin:0 0 12px">Block mode changes and client restarts while these apps are running. Detected apps are marked with a badge.</p>
-      ${Object.entries(categories).map(([cat, apps]) => html`
-        <div class="protected-apps-category" key=${cat}>
-          <div class="protected-apps-cat-header">${categoryIcons[cat] || ''} ${cat}</div>
-          <div class="protected-apps-grid">
-            ${apps.map(app => {
-              const checked = enabled.includes(app.id);
-              const clients = installedOn[app.id];
-              const hasProcess = app.win_process || app.mac_process || app.linux_process;
-              return html`
-                <label class="protected-app-item ${checked ? 'active' : ''} ${!hasProcess ? 'no-process' : ''}" key=${app.id}>
-                  <input type="checkbox" checked=${checked} onChange=${() => toggle(app.id)} disabled=${!hasProcess} />
-                  <span class="protected-app-name">${app.name}</span>
-                  ${clients && clients.length > 0 && html`
-                    <span class="protected-app-badge" title=${clients.map(c => c.hostname).join(', ')}>
-                      ${clients.length} client${clients.length > 1 ? 's' : ''}
-                    </span>
-                  `}
-                </label>
-              `;
-            })}
-          </div>
-        </div>
-      `)}
+      <p class="dim" style="margin:0 0 12px">Block mode changes and client restarts while these apps are running.</p>
 
-      <div class="protected-apps-category">
-        <div class="protected-apps-cat-header">Custom Processes</div>
-        <p class="dim" style="margin:0 0 8px;font-size:12px">Add custom process names to protect (e.g. "MyApp.exe" on Windows, "MyApp" on macOS)</p>
-        <div style="display:flex;gap:6px;margin-bottom:8px">
-          <input class="input-sm" style="flex:1"
-            placeholder="Process name..."
-            value=${customInput}
-            onInput=${e => setCustomInput(e.target.value)}
-            onKeyDown=${e => e.key === 'Enter' && addCustom()} />
-          <button class="btn btn-sm btn-accent" onClick=${addCustom} disabled=${!customInput.trim()}>Add</button>
-        </div>
-        ${customProcs.length > 0 && html`
-          <div class="protected-apps-custom-list">
-            ${customProcs.map(proc => html`
-              <span class="protected-app-custom-tag" key=${proc}>
-                ${proc}
-                <button class="protected-app-remove" onClick=${() => removeCustom(proc)}>\u00D7</button>
-              </span>
-            `)}
+      <div class="prot-apps-layout">
+        <!-- Left: search/add -->
+        <div class="prot-apps-search-col" ref=${wrapperRef}>
+          <div class="prot-apps-input-wrap">
+            <input class="input-sm prot-apps-search"
+              placeholder="Search apps or add custom process..."
+              value=${search}
+              onInput=${e => { setSearch(e.target.value); setDropdownOpen(true); }}
+              onFocus=${() => setDropdownOpen(true)}
+              onKeyDown=${e => { if (e.key === 'Enter' && isCustomCandidate) addCustom(); if (e.key === 'Escape') setDropdownOpen(false); }} />
           </div>
-        `}
+          ${dropdownOpen && html`
+            <div class="prot-apps-dropdown">
+              ${Object.entries(grouped).map(([cat, apps]) => html`
+                <div class="prot-apps-dd-group" key=${cat}>
+                  <div class="prot-apps-dd-cat">${categoryIcons[cat] || ''} ${cat}</div>
+                  ${apps.map(app => html`
+                    <div class="prot-apps-dd-item" key=${app.id} onClick=${() => addApp(app.id)}>
+                      <span>${app.name}</span>
+                      ${installedOn[app.id] && installedOn[app.id].length > 0 && html`
+                        <span class="protected-app-badge" title=${installedOn[app.id].map(c => c.hostname).join(', ')}>
+                          ${installedOn[app.id].length} client${installedOn[app.id].length > 1 ? 's' : ''}
+                        </span>
+                      `}
+                    </div>
+                  `)}
+                </div>
+              `)}
+              ${isCustomCandidate && html`
+                <div class="prot-apps-dd-item prot-apps-dd-custom" onClick=${addCustom}>
+                  Add custom process: <strong>${search.trim()}</strong>
+                </div>
+              `}
+              ${filtered.length === 0 && !isCustomCandidate && html`
+                <div class="prot-apps-dd-empty">No matching apps</div>
+              `}
+            </div>
+          `}
+        </div>
+
+        <!-- Right: added list -->
+        <div class="prot-apps-added-col">
+          <div class="prot-apps-added-header">Added${totalCount > 0 ? ` (${totalCount})` : ''}</div>
+          ${totalCount === 0 && html`
+            <div class="prot-apps-empty-warn">
+              No protected apps configured. Mode changes and restarts will proceed without safety checks.
+            </div>
+          `}
+          ${enabledApps.map(app => {
+            const clients = installedOn[app.id];
+            return html`
+              <div class="prot-apps-added-item" key=${app.id}>
+                <span class="prot-apps-added-name">${app.name}</span>
+                ${clients && clients.length > 0 && html`
+                  <span class="protected-app-badge" title=${clients.map(c => c.hostname).join(', ')}>
+                    ${clients.length}
+                  </span>
+                `}
+                <button class="prot-apps-remove-btn" onClick=${() => removeApp(app.id)}>\u00D7</button>
+              </div>
+            `;
+          })}
+          ${customProcs.map(proc => html`
+            <div class="prot-apps-added-item prot-apps-added-custom" key=${proc}>
+              <span class="prot-apps-added-name mono">${proc}</span>
+              <button class="prot-apps-remove-btn" onClick=${() => removeCustom(proc)}>\u00D7</button>
+            </div>
+          `)}
+        </div>
       </div>
-
-      ${dirty && html`
-        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn btn-sm btn-accent" onClick=${save} disabled=${saving}>
-            ${saving ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
-      `}
     </div>
   `;
 }
@@ -1877,8 +1925,8 @@ function MultiDeviceSettings({ midiDevices, activity, identifying, isActive, doI
     if (!highways || highways.length === 0) return;
     dispatch({ type: 'MODAL', modal: {
       title: 'Apply Device Highways',
-      message: `Set ${highways.length} device highway${highways.length > 1 ? 's' : ''}:\n\n${highways.map((h, i) => `  #${i}  ${h.name}`).join('\n')}\n\nThe host will restart. MIDI output will briefly interrupt.`,
-      ok: 'Apply & Restart',
+      message: `Set ${highways.length} device highway${highways.length > 1 ? 's' : ''}:\n\n${highways.map((h, i) => `  #${i}  ${h.name}`).join('\n')}\n\nThe host and all connected clients will restart. MIDI output will briefly interrupt.\n\nProtected apps on clients will be checked before proceeding.`,
+      ok: 'Apply & Restart All',
       cls: 'btn-danger',
       onConfirm: async () => {
         setSaving(true);
@@ -1887,8 +1935,12 @@ function MultiDeviceSettings({ midiDevices, activity, identifying, isActive, doI
           body: JSON.stringify({ devices: highways }),
         });
         if (r.success) {
-          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `${r.device_count} highway${r.device_count > 1 ? 's' : ''} configured. Host restarting...`) });
+          const clientMsg = r.clients_restarting > 0 ? ` Restarting ${r.clients_restarting} client(s)...` : '';
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('success', `${r.device_count} highway${r.device_count > 1 ? 's' : ''} configured. Host restarting.${clientMsg}`) });
           setDirty(false);
+        } else if (r.blocking_clients && r.blocking_clients.length > 0) {
+          const names = r.blocking_clients.map(c => c.hostname || c.ip).join(', ');
+          dispatch({ type: 'ADD_TOAST', toast: mkToast('error', `Close protected apps on: ${names}`) });
         } else {
           dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed') });
         }
