@@ -56,7 +56,7 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
         let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         s.set_reuse_address(true)?;
 
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(not(target_os = "windows"))]
         s.set_reuse_port(true)?;
 
         let addr = std::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, heartbeat_port);

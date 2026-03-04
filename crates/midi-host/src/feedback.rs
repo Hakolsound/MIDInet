@@ -70,7 +70,7 @@ pub async fn run(
     let recv_socket = {
         let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         sock.set_reuse_address(true)?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(not(target_os = "windows"))]
         sock.set_reuse_port(true)?;
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, control_port);
         sock.bind(&addr.into())?;

@@ -25,7 +25,7 @@ fn create_multicast_listener(
     socket.set_reuse_address(true)?;
 
     // On macOS/BSD, we also need SO_REUSEPORT for multiple listeners on same port
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(not(target_os = "windows"))]
     socket.set_reuse_port(true)?;
 
     // Bind to the multicast port

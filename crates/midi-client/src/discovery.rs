@@ -38,45 +38,58 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
         "Browsing for MIDInet hosts via mDNS"
     );
 
+    // Tick the pulse periodically even when no mDNS events arrive,
+    // so the watchdog knows the discovery task is alive (not hung).
+    let mut idle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+
     loop {
-        // Use recv_async() so we yield to the tokio runtime instead of
-        // blocking the executor thread. The flume receiver returned by
-        // mdns_sd::ServiceDaemon::browse() supports this natively.
-        let event = match receiver.recv_async().await {
-            Ok(event) => event,
-            Err(e) => {
-                error!("mDNS browse channel closed: {}", e);
-                // Channel closed — daemon was shut down. Back off and retry.
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                return Err(anyhow::anyhow!("mDNS browse channel closed unexpectedly"));
+        tokio::select! {
+            biased;
+
+            // Use recv_async() so we yield to the tokio runtime instead of
+            // blocking the executor thread. The flume receiver returned by
+            // mdns_sd::ServiceDaemon::browse() supports this natively.
+            event = receiver.recv_async() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(e) => {
+                        error!("mDNS browse channel closed: {}", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        return Err(anyhow::anyhow!("mDNS browse channel closed unexpectedly"));
+                    }
+                };
+
+                pulse.tick();
+
+                match event {
+                    ServiceEvent::ServiceResolved(info) => {
+                        handle_service_resolved(&state, &info).await;
+                    }
+
+                    ServiceEvent::ServiceRemoved(service_type, fullname) => {
+                        handle_service_removed(&state, &service_type, &fullname).await;
+                    }
+
+                    ServiceEvent::SearchStarted(service_type) => {
+                        info!(service_type = %service_type, "mDNS search started");
+                    }
+
+                    ServiceEvent::SearchStopped(service_type) => {
+                        info!(service_type = %service_type, "mDNS search stopped");
+                    }
+
+                    ServiceEvent::ServiceFound(service_type, fullname) => {
+                        debug!(
+                            service_type = %service_type,
+                            name = %fullname,
+                            "mDNS service found (awaiting resolution)"
+                        );
+                    }
+                }
             }
-        };
 
-        pulse.tick();
-
-        match event {
-            ServiceEvent::ServiceResolved(info) => {
-                handle_service_resolved(&state, &info).await;
-            }
-
-            ServiceEvent::ServiceRemoved(service_type, fullname) => {
-                handle_service_removed(&state, &service_type, &fullname).await;
-            }
-
-            ServiceEvent::SearchStarted(service_type) => {
-                info!(service_type = %service_type, "mDNS search started");
-            }
-
-            ServiceEvent::SearchStopped(service_type) => {
-                info!(service_type = %service_type, "mDNS search stopped");
-            }
-
-            ServiceEvent::ServiceFound(service_type, fullname) => {
-                debug!(
-                    service_type = %service_type,
-                    name = %fullname,
-                    "mDNS service found (awaiting resolution)"
-                );
+            _ = idle_tick.tick() => {
+                pulse.tick();
             }
         }
     }
