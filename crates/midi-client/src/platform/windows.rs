@@ -90,12 +90,18 @@ impl WindowsVirtualDevice {
     /// Path of the crash-sentinel file.  Written before attempting MIDI Services
     /// device creation and deleted on success.  If it exists at startup, the
     /// previous attempt crashed the process → skip MIDI Services entirely.
+    /// Uses %LOCALAPPDATA%\MIDInet — Program Files is read-only.
     fn crash_sentinel() -> std::path::PathBuf {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".midinet-midi-services-crash")
+        let dir = std::env::var("LOCALAPPDATA")
+            .map(|d| std::path::PathBuf::from(d).join("MIDInet"))
+            .unwrap_or_else(|_| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+            });
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(".midinet-midi-services-crash")
     }
 
     /// Windows 11+: try MIDI Services first, fall back to teVirtualMIDI.

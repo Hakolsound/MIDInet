@@ -155,11 +155,16 @@ impl ProcessManager {
         {
             cmd.creation_flags(CREATE_NO_WINDOW);
 
-            // Redirect client output to a log file so diagnostics aren't lost
-            let log_dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("logs")))
-                .unwrap_or_else(|| PathBuf::from("."));
+            // Redirect client output to a log file so diagnostics aren't lost.
+            // Use %LOCALAPPDATA%\MIDInet\logs — Program Files is read-only.
+            let log_dir = std::env::var("LOCALAPPDATA")
+                .map(|d| PathBuf::from(d).join("MIDInet").join("logs"))
+                .unwrap_or_else(|_| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|d| d.join("logs")))
+                        .unwrap_or_else(|| PathBuf::from("."))
+                });
             let _ = std::fs::create_dir_all(&log_dir);
             let log_path = log_dir.join("client.log");
             match std::fs::File::create(&log_path) {
