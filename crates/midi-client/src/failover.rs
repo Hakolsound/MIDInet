@@ -11,6 +11,7 @@ use tokio::net::UdpSocket;
 use tracing::{error, info, warn};
 
 use midi_protocol::packets::HeartbeatPacket;
+use midi_protocol::OperationalMode;
 
 use crate::health::TaskPulse;
 use crate::ClientState;
@@ -111,8 +112,18 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
                 let primary_alive = primary_tracker.is_alive(heartbeat_timeout_ms);
                 let standby_alive = standby_tracker.is_alive(heartbeat_timeout_ms);
 
+                // In single mode, no standby is expected — only monitor primary
+                let detected = state.detected_mode.read().await;
+                let is_single = *detected == Some(OperationalMode::Single);
+                drop(detected);
+
                 // Failover logic
-                if current_active == 1 && !primary_alive && standby_alive {
+                if is_single {
+                    // Single mode: no standby, just track primary
+                    if !primary_alive && primary_tracker.last_heartbeat.is_some() {
+                        warn!("Host unreachable!");
+                    }
+                } else if current_active == 1 && !primary_alive && standby_alive {
                     warn!("Primary host lost! Switching to standby");
                     *state.active_host_id.write().await = Some(2);
                     send_all_notes_off(&state).await;
@@ -133,16 +144,28 @@ pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()
 }
 
 /// Send All Sound Off (CC 120) and All Notes Off (CC 123) on all 16
-/// channels to the virtual device, preventing stuck notes during failover.
+/// channels to all virtual devices, preventing stuck notes during failover.
 async fn send_all_notes_off(state: &Arc<ClientState>) {
+    // Single device
     let device_ready = *state.device_ready.read().await;
-    if !device_ready {
-        return;
+    if device_ready {
+        let vdev = state.virtual_device.read().await;
+        for ch in 0..16u8 {
+            let _ = vdev.send(&[0xB0 | ch, 120, 0]); // All Sound Off
+            let _ = vdev.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+        }
     }
-    let vdev = state.virtual_device.read().await;
-    for ch in 0..16u8 {
-        let _ = vdev.send(&[0xB0 | ch, 120, 0]); // All Sound Off
-        let _ = vdev.send(&[0xB0 | ch, 123, 0]); // All Notes Off
+
+    // Multi-device slots
+    let multi = state.multi_devices.read().await;
+    for slot in multi.iter() {
+        if slot.ready {
+            for ch in 0..16u8 {
+                let _ = slot.device.send(&[0xB0 | ch, 120, 0]);
+                let _ = slot.device.send(&[0xB0 | ch, 123, 0]);
+            }
+        }
     }
+
     info!("Sent All Notes Off on all channels (failover safety)");
 }

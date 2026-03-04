@@ -21,7 +21,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, error, info, warn};
 
 use midi_protocol::packets::{DiscoverRequest, DiscoverResponse};
-use midi_protocol::{DEFAULT_DISCOVERY_PORT, MDNS_SERVICE_TYPE, PROTOCOL_VERSION};
+use midi_protocol::{DEFAULT_DISCOVERY_PORT, MDNS_SERVICE_TYPE, OperationalMode, PROTOCOL_VERSION};
 
 use midi_protocol::identity::DeviceIdentity;
 
@@ -125,9 +125,30 @@ async fn handle_service_resolved(
         .get_property_val_str("admin")
         .map(|s| s.to_string());
 
+    let operational_mode = properties
+        .get_property_val_str("mode")
+        .and_then(|s| s.parse::<OperationalMode>().ok());
+
+    let extra_device_names: Vec<String> = properties
+        .get_property_val_str("extra")
+        .map(|s| {
+            s.split(';')
+                .filter(|name| !name.is_empty())
+                .map(|name| name.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let host_redundancy = properties
+        .get_property_val_str("host_redundancy")
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
     // ── Extract resolved network addresses ────────────────────────────
 
     let addresses = info.get_addresses().iter().copied().collect();
+
+    let extra_for_init = extra_device_names.clone();
 
     let discovered = DiscoveredHost {
         id: host_id,
@@ -140,7 +161,9 @@ async fn handle_service_resolved(
         device_name: device_name.clone(),
         protocol_version,
         admin_url: admin_url.clone(),
-        extra_device_names: vec![],
+        extra_device_names,
+        operational_mode,
+        host_redundancy,
     };
 
     info!(
@@ -153,6 +176,9 @@ async fn handle_service_resolved(
         multicast = %multicast_group,
         version = ?protocol_version,
         admin = ?admin_url,
+        mode = ?operational_mode,
+        extra_devices = extra_for_init.len(),
+        host_redundancy = host_redundancy,
         "Discovered MIDInet host"
     );
 
@@ -227,12 +253,27 @@ async fn handle_service_resolved(
                 host_id = host_id,
                 "Updating device identity from discovered host"
             );
-            identity.name = device_name;
+            identity.name = device_name.clone();
             // The host advertises the device name via mDNS TXT records.
             // Full identity (manufacturer, VID/PID, SysEx) comes via the
             // control channel after the receiver connects. For now, setting
             // the name is enough for the virtual device to be created with
             // the correct name visible to DAWs/media servers.
+        }
+        drop(identity);
+
+        // ── Set detected mode from the active host ────────────────────
+        if let Some(mode) = operational_mode {
+            let mut detected = state.detected_mode.write().await;
+            if *detected != Some(mode) {
+                info!(mode = %mode, "Detected operational mode from active host");
+                *detected = Some(mode);
+            }
+        }
+
+        // ── Multi-device init from mDNS (mirrors broadcast path) ──────
+        if !extra_for_init.is_empty() {
+            init_multi_devices(state, &device_name, &extra_for_init).await;
         }
     }
 }
@@ -251,6 +292,10 @@ struct HttpHostInfo {
     multicast_group: String,
     #[serde(default)]
     data_port: u16,
+    #[serde(default)]
+    operational_mode: String,
+    #[serde(default)]
+    extra_device_names: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +351,8 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
             let mut addresses = HashSet::new();
             addresses.insert(ip_addr);
 
+            let operational_mode = host.operational_mode.parse::<OperationalMode>().ok();
+
             let discovered = DiscoveredHost {
                 id: host.id,
                 name: host.name.clone(),
@@ -325,7 +372,9 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                 device_name: host.device_name.clone(),
                 protocol_version: None,
                 admin_url: Some(admin_url.clone()),
-                extra_device_names: vec![],
+                extra_device_names: host.extra_device_names.clone(),
+                operational_mode,
+                host_redundancy: false,
             };
 
             // Upsert into discovered hosts
@@ -381,6 +430,21 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                         "Updating device identity from HTTP-discovered host"
                     );
                     identity.name = host.device_name.clone();
+                }
+                drop(identity);
+
+                // Set detected mode
+                if let Some(mode) = operational_mode {
+                    let mut detected = state.detected_mode.write().await;
+                    if *detected != Some(mode) {
+                        info!(mode = %mode, "Detected operational mode via HTTP discovery");
+                        *detected = Some(mode);
+                    }
+                }
+
+                // Multi-device init from HTTP (mirrors broadcast path)
+                if !host.extra_device_names.is_empty() {
+                    init_multi_devices(&state, &host.device_name, &host.extra_device_names).await;
                 }
             }
         }
@@ -466,6 +530,14 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
 
     let multicast_group = Ipv4Addr::from(resp.multicast_group).to_string();
 
+    // Infer mode from the response: if extra_device_names is non-empty, it's MultiDevice.
+    // Broadcast DiscoverResponse doesn't carry explicit mode yet.
+    let inferred_mode = if !resp.extra_device_names.is_empty() {
+        Some(OperationalMode::MultiDevice)
+    } else {
+        None // Cannot distinguish Single vs Redundant from broadcast alone
+    };
+
     let discovered = DiscoveredHost {
         id: resp.host_id,
         name: format!("MIDInet host-{}", resp.host_id),
@@ -482,6 +554,8 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
         protocol_version: Some(resp.protocol_version),
         admin_url: Some(admin_url),
         extra_device_names: resp.extra_device_names.clone(),
+        operational_mode: inferred_mode,
+        host_redundancy: false,
     };
 
     // Upsert into discovered hosts
@@ -561,11 +635,23 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
     if !resp.extra_device_names.is_empty() {
         init_multi_devices(state, &resp.device_name, &resp.extra_device_names).await;
     }
+
+    // Set detected mode
+    let active_id = state.active_host_id.read().await.unwrap_or(1);
+    if resp.host_id == active_id {
+        if let Some(mode) = inferred_mode {
+            let mut detected = state.detected_mode.write().await;
+            if *detected != Some(mode) {
+                info!(mode = %mode, "Detected operational mode via broadcast discovery");
+                *detected = Some(mode);
+            }
+        }
+    }
 }
 
 /// Initialize multi-device virtual MIDI devices when a host reports multiple controllers.
 /// Creates one virtual device per device_id (including device_id=0 for the primary).
-async fn init_multi_devices(
+pub(crate) async fn init_multi_devices(
     state: &Arc<ClientState>,
     primary_name: &str,
     extra_names: &[String],

@@ -238,6 +238,15 @@ impl HealthCollector {
         let device_name = identity.name.clone();
         drop(identity);
 
+        // Device names (all controllers)
+        let multi = state.multi_devices.read().await;
+        let device_names = if multi.is_empty() {
+            if device_name.is_empty() { vec![] } else { vec![device_name.clone()] }
+        } else {
+            multi.iter().map(|s| s.identity.name.clone()).collect()
+        };
+        drop(multi);
+
         // Rates
         let midi_rate_in =
             f32::from_bits(self.midi_rate_in.load(Ordering::Relaxed) as u32);
@@ -280,6 +289,9 @@ impl HealthCollector {
         let version_mismatch =
             !host_git_hash.is_empty() && host_git_hash != client_git_hash;
 
+        // Detected operational mode
+        let operational_mode = state.detected_mode.read().await.map(|m| m.to_string());
+
         ClientHealthSnapshot {
             timestamp_ms: now_ms,
             connection_state,
@@ -287,6 +299,7 @@ impl HealthCollector {
             hosts_discovered,
             device_ready,
             device_name,
+            device_names,
             midi_rate_in,
             midi_rate_out,
             packet_loss_percent,
@@ -301,6 +314,7 @@ impl HealthCollector {
                 memory_mb,
                 restart_count: self.restart_count.load(Ordering::Relaxed),
             },
+            operational_mode,
             version_mismatch,
             host_git_hash,
             client_git_hash,

@@ -22,8 +22,11 @@ pub struct ClientHealthSnapshot {
     pub hosts_discovered: u8,
     /// Whether the virtual MIDI device has been created
     pub device_ready: bool,
-    /// Virtual device name as seen by DAWs
+    /// Virtual device name as seen by DAWs (primary / single device)
     pub device_name: String,
+    /// All active device/controller names (includes primary; populated in multi mode)
+    #[serde(default)]
+    pub device_names: Vec<String>,
     /// Incoming MIDI messages per second (from host)
     pub midi_rate_in: f32,
     /// Outgoing MIDI messages per second (feedback to host)
@@ -42,6 +45,9 @@ pub struct ClientHealthSnapshot {
     pub admin_url: Option<String>,
     /// Watchdog / task health summary
     pub watchdog: WatchdogStatus,
+    /// Detected operational mode of the host network ("single", "redundant", "multi")
+    #[serde(default)]
+    pub operational_mode: Option<String>,
     /// True if the host and client are running different git hashes
     #[serde(default)]
     pub version_mismatch: bool,

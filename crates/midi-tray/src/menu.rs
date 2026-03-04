@@ -31,6 +31,8 @@ pub struct MenuState {
     pub has_dashboard: bool,
     pub auto_start: bool,
     pub version_mismatch: bool,
+    pub operational_mode: Option<String>,
+    pub device_names: Vec<String>,
 }
 
 impl MenuState {
@@ -47,6 +49,8 @@ impl MenuState {
             has_dashboard: snapshot.admin_url.is_some(),
             auto_start,
             version_mismatch: snapshot.version_mismatch,
+            operational_mode: snapshot.operational_mode.clone(),
+            device_names: snapshot.device_names.clone(),
         }
     }
 }
@@ -154,6 +158,32 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, auto_start: bool) -> M
         ConnectionState::Disconnected => "Disconnected".to_string(),
     };
     let _ = menu.append(&MenuItem::with_id("status_line", &status_text, false, None::<Accelerator>));
+
+    // ── Mode & Controllers ──
+    let mode_text = match snapshot.operational_mode.as_deref() {
+        Some("single") => "Mode: Single",
+        Some("redundant") => "Mode: Redundant",
+        Some("multi") => "Mode: Multi",
+        _ => "Mode: —",
+    };
+    let _ = menu.append(&MenuItem::with_id("mode_line", mode_text, false, None::<Accelerator>));
+
+    if !snapshot.device_names.is_empty() {
+        let controllers = snapshot.device_names.join(", ");
+        let _ = menu.append(&MenuItem::with_id(
+            "controllers_line",
+            &format!("Controllers: {}", controllers),
+            false,
+            None::<Accelerator>,
+        ));
+    } else if !snapshot.device_name.is_empty() {
+        let _ = menu.append(&MenuItem::with_id(
+            "controllers_line",
+            &format!("Controller: {}", snapshot.device_name),
+            false,
+            None::<Accelerator>,
+        ));
+    }
 
     // ── Metrics ──
     let _ = menu.append(&MenuItem::with_id(

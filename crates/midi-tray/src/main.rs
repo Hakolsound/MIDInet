@@ -886,6 +886,12 @@ fn main() {
 }
 
 fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
+    let mode_label = snapshot
+        .operational_mode
+        .as_deref()
+        .map(|m| capitalize(m))
+        .unwrap_or_else(|| "—".to_string());
+
     let state = match snapshot.connection_state {
         ConnectionState::Connected => {
             let role = snapshot
@@ -893,11 +899,14 @@ fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
                 .as_ref()
                 .map(|h| capitalize(&h.role))
                 .unwrap_or_else(|| "?".to_string());
-            if snapshot.device_ready && !snapshot.device_name.is_empty() {
-                format!("{} | {}", role, snapshot.device_name)
+            let devices = if !snapshot.device_names.is_empty() {
+                snapshot.device_names.join(", ")
+            } else if snapshot.device_ready && !snapshot.device_name.is_empty() {
+                snapshot.device_name.clone()
             } else {
-                format!("{} | No MIDI device", role)
-            }
+                "No MIDI device".to_string()
+            };
+            format!("{} | {} | {}", mode_label, role, devices)
         }
         ConnectionState::Discovering => "Discovering hosts...".to_string(),
         ConnectionState::Reconnecting => "Reconnecting...".to_string(),

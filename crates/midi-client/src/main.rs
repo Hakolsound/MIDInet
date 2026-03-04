@@ -28,6 +28,7 @@ use tracing::{error, info, warn};
 
 use midi_protocol::identity::DeviceIdentity;
 use midi_protocol::pipeline::PipelineConfig;
+use midi_protocol::OperationalMode;
 
 use crate::health::{task_pulse, HealthCollector, TaskPulse};
 use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
@@ -119,6 +120,10 @@ pub struct DiscoveredHost {
     pub admin_url: Option<String>,
     /// Extra device names (multi-device mode). Does not include the primary device_name.
     pub extra_device_names: Vec<String>,
+    /// Operational mode reported by this host (None if host doesn't advertise it)
+    pub operational_mode: Option<OperationalMode>,
+    /// Whether host-pair redundancy is enabled on this host
+    pub host_redundancy: bool,
 }
 
 /// Commands the tray or health API can send to the focus task.
@@ -167,6 +172,9 @@ pub struct ClientState {
     /// Indexed by device_id. When non-empty, the receiver routes packets by device_id.
     /// When empty, falls through to the single `virtual_device` (backward compat).
     pub multi_devices: RwLock<Vec<MultiDeviceSlot>>,
+    /// Detected operational mode from the host network.
+    /// None until the first host reports its mode.
+    pub detected_mode: RwLock<Option<OperationalMode>>,
 }
 
 #[tokio::main]
@@ -238,6 +246,7 @@ async fn main() -> anyhow::Result<()> {
         focus_rx: std::sync::Mutex::new(Some(focus_rx)),
         cancel: cancel.clone(),
         multi_devices: RwLock::new(Vec::new()),
+        detected_mode: RwLock::new(None),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
