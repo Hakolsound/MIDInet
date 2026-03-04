@@ -2,6 +2,7 @@
 name = "midi-protocol"
 version.workspace = true
 edition.workspace = true
+license = "MIT"
 
 [dependencies]
 serde = { workspace = true }

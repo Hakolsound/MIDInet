@@ -1,0 +1,38 @@
+[package]
+name = "midi-license"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Crypto
+ed25519-dalek = { version = "2", features = ["std"] }
+hmac = "0.12"
+sha2 = "0.10"
+
+# Encoding
+data-encoding = "2"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# HTTP client (for activation API)
+reqwest = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Platform-specific
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+
+[dev-dependencies]
+tokio = { workspace = true }
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+rand = "0.8"

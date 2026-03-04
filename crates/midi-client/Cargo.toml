@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 midi-protocol = { workspace = true }
+midi-license = { workspace = true }
 tokio = { workspace = true }
 socket2 = { workspace = true }
 mdns-sd = { workspace = true }

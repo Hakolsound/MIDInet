@@ -69,6 +69,12 @@ pub struct RegisterClientBody {
     pub connection_state: String,
     #[serde(default)]
     pub git_hash: String,
+    #[serde(default)]
+    pub license_state: String,
+    #[serde(default)]
+    pub license_tier: String,
+    #[serde(default)]
+    pub trial_remaining_secs: u64,
 }
 
 /// POST /api/clients/register — client self-registers on startup
@@ -127,6 +133,9 @@ pub async fn register_client(
             manual: false,
             midi_apps_active: false,
             installed_apps: Vec::new(),
+            license_state: body.license_state,
+            license_tier: body.license_tier,
+            trial_remaining_secs: body.trial_remaining_secs,
         });
     }
     drop(clients);
@@ -164,6 +173,12 @@ pub struct ClientHeartbeatBody {
     pub midi_apps_active: bool,
     #[serde(default)]
     pub installed_apps: Vec<String>,
+    #[serde(default)]
+    pub license_state: String,
+    #[serde(default)]
+    pub license_tier: String,
+    #[serde(default)]
+    pub trial_remaining_secs: u64,
 }
 
 /// POST /api/clients/:id/heartbeat — periodic health update from client
@@ -195,6 +210,13 @@ pub async fn client_heartbeat(
         if !body.git_hash.is_empty() {
             client.git_hash = body.git_hash;
         }
+        if !body.license_state.is_empty() {
+            client.license_state = body.license_state;
+        }
+        if !body.license_tier.is_empty() {
+            client.license_tier = body.license_tier;
+        }
+        client.trial_remaining_secs = body.trial_remaining_secs;
         let client_os = client.os.clone();
         drop(clients);
 
@@ -335,6 +357,9 @@ pub async fn add_client_manual(
         manual: true,
         midi_apps_active: false,
         installed_apps: Vec::new(),
+        license_state: String::new(),
+        license_tier: String::new(),
+        trial_remaining_secs: 0,
     });
 
     Json(json!({ "success": true, "id": id }))

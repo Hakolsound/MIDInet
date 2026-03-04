@@ -52,6 +52,28 @@ enum Commands {
         #[command(subcommand)]
         action: Option<NetworkAction>,
     },
+    /// License management
+    License {
+        #[command(subcommand)]
+        action: LicenseAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LicenseAction {
+    /// Show current license status
+    Status,
+    /// Activate a license key
+    Activate {
+        /// The license key (MIDINET-XXXX-XXXX-...)
+        key: String,
+    },
+    /// Deactivate this machine's license
+    Deactivate,
+    /// Show trial information
+    Trial,
+    /// Show machine fingerprint (for support)
+    Fingerprint,
 }
 
 #[derive(Subcommand, Debug)]
@@ -289,8 +311,151 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::License { action } => {
+            handle_license(action).await?;
+        }
         Commands::Network { action } => {
             handle_network(action.unwrap_or(NetworkAction::Show))?;
+        }
+    }
+
+    Ok(())
+}
+
+// ── License subcommand (local, all platforms) ───────────────────────────
+
+async fn handle_license(action: LicenseAction) -> anyhow::Result<()> {
+    let data_dir = midi_license::default_data_dir();
+
+    match action {
+        LicenseAction::Status => {
+            let state = midi_license::init(&data_dir).await?;
+            println!("License Status");
+            println!("══════════════════════════════");
+            match state {
+                midi_license::state::LicenseState::Licensed {
+                    tier,
+                    update_expires_in_secs,
+                } => {
+                    println!("  State:  Licensed");
+                    println!("  Tier:   {}", tier.label());
+                    match update_expires_in_secs {
+                        Some(secs) if secs > 0 => {
+                            let days = secs / 86400;
+                            println!("  Updates: {} days remaining", days);
+                        }
+                        Some(_) => {
+                            println!("  Updates: expired (software still works)");
+                        }
+                        None => {
+                            println!("  Updates: lifetime (Pioneer)");
+                        }
+                    }
+                }
+                midi_license::state::LicenseState::Trial {
+                    remaining_secs,
+                    total_secs,
+                } => {
+                    let mins = remaining_secs / 60;
+                    let total_mins = total_secs / 60;
+                    let pct = if total_secs > 0 {
+                        (remaining_secs as f64 / total_secs as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("  State:     Trial");
+                    println!("  Remaining: {} min / {} min ({:.0}%)", mins, total_mins, pct);
+                }
+                midi_license::state::LicenseState::Degraded { reason } => {
+                    println!("  State:  Degraded");
+                    println!("  Reason: {:?}", reason);
+                    println!();
+                    println!("  Activate a license to restore full functionality:");
+                    println!("    midinet license activate <YOUR-KEY>");
+                }
+                midi_license::state::LicenseState::Unlicensed => {
+                    println!("  State: Unlicensed");
+                    println!();
+                    println!("  A trial will start automatically when MIDInet runs.");
+                    println!("  To activate a license:");
+                    println!("    midinet license activate <YOUR-KEY>");
+                }
+            }
+        }
+        LicenseAction::Activate { key } => {
+            midi_license::init(&data_dir).await?;
+            println!("Activating license...");
+            match midi_license::activate(&key, "cli", None).await {
+                Ok(state) => {
+                    println!("License activated successfully!");
+                    if let midi_license::state::LicenseState::Licensed { tier, .. } = state {
+                        println!("  Tier: {}", tier.label());
+                    }
+                }
+                Err(e) => {
+                    println!("Activation failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        LicenseAction::Deactivate => {
+            midi_license::init(&data_dir).await?;
+            println!("Deactivating license...");
+            match midi_license::deactivate(None).await {
+                Ok(()) => {
+                    println!("License deactivated. This machine's seat is now free.");
+                }
+                Err(e) => {
+                    println!("Deactivation failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        LicenseAction::Trial => {
+            midi_license::init(&data_dir).await?;
+            let trial = midi_license::trial::read_trial(&data_dir);
+            println!("Trial Information");
+            println!("══════════════════════════════");
+            match trial {
+                Some(t) => {
+                    let remaining = t.remaining_secs();
+                    let total = midi_license::key::TRIAL_BUDGET_SECS;
+                    let used = total.saturating_sub(remaining);
+                    let pct_remaining = if total > 0 {
+                        (remaining as f64 / total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    println!("  Total budget: {} min", total / 60);
+                    println!("  Used:         {} min", used / 60);
+                    println!("  Remaining:    {} min ({:.0}%)", remaining / 60, pct_remaining);
+
+                    if t.is_expired() {
+                        println!();
+                        println!("  Trial expired. Activate a license:");
+                        println!("    midinet license activate <YOUR-KEY>");
+                    }
+                }
+                None => {
+                    let state = midi_license::current_state();
+                    if state.is_licensed() {
+                        println!("  No trial — this machine is licensed.");
+                    } else {
+                        println!("  No trial started yet.");
+                        println!("  A {} min trial begins when MIDInet first runs.",
+                            midi_license::key::TRIAL_BUDGET_SECS / 60);
+                    }
+                }
+            }
+        }
+        LicenseAction::Fingerprint => {
+            let fp = midi_license::fingerprint::hex_fingerprint();
+            println!("Machine Fingerprint");
+            println!("══════════════════════════════");
+            println!("  {}", fp);
+            println!();
+            println!("  Share this with support if asked for machine identification.");
         }
     }
 

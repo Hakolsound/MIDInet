@@ -37,9 +37,9 @@ use midi_protocol::health::{ClientHealthSnapshot, ConnectionState, TrayCommand};
 
 use crate::icons::{color_for_snapshot, IconCache, IconColor};
 use crate::menu::{
-    build_disconnected_menu, build_initial_menu, build_status_menu, MenuState, ID_AUTO_START,
-    ID_CHECK_UPDATE, ID_CLAIM_FOCUS, ID_OPEN_DASHBOARD, ID_QUIT, ID_RELEASE_FOCUS,
-    ID_RESTART_CLIENT,
+    build_disconnected_menu, build_initial_menu, build_status_menu, MenuState,
+    ID_ACTIVATE_LICENSE, ID_AUTO_START, ID_CHECK_UPDATE, ID_CLAIM_FOCUS, ID_OPEN_DASHBOARD,
+    ID_QUIT, ID_RELEASE_FOCUS, ID_RESTART_CLIENT,
 };
 #[cfg(target_os = "windows")]
 use crate::process_manager::ProcessStatus;
@@ -672,6 +672,9 @@ fn main() {
                         }
                     }
                 }
+                ID_ACTIVATE_LICENSE => {
+                    let _ = open::that("https://midinet.io/pricing");
+                }
                 ID_RESTART_CLIENT => {
                     #[cfg(target_os = "windows")]
                     {
@@ -930,10 +933,48 @@ fn format_tooltip(snapshot: &ClientHealthSnapshot) -> String {
         snapshot.packet_loss_percent
     );
 
-    if snapshot.version_mismatch {
-        format!("{} | !! VERSION MISMATCH", base)
-    } else {
+    // Append license status
+    let license_suffix = format_license_tooltip(snapshot);
+    let with_license = if license_suffix.is_empty() {
         base
+    } else {
+        format!("{} | {}", base, license_suffix)
+    };
+
+    if snapshot.version_mismatch {
+        format!("{} | !! VERSION MISMATCH", with_license)
+    } else {
+        with_license
+    }
+}
+
+/// Format license state for the tooltip line.
+fn format_license_tooltip(snapshot: &ClientHealthSnapshot) -> String {
+    match snapshot.license_state.as_str() {
+        "licensed" => {
+            if snapshot.license_tier.is_empty() {
+                "Licensed".to_string()
+            } else {
+                format!("License: {}", snapshot.license_tier)
+            }
+        }
+        "trial" => {
+            let remaining = snapshot.trial_remaining_secs;
+            if remaining >= 3600 {
+                let hours = remaining / 3600;
+                let mins = (remaining % 3600) / 60;
+                format!("Trial: {}h {}m remaining", hours, mins)
+            } else if remaining >= 60 {
+                let mins = remaining / 60;
+                format!("Trial: {} min remaining", mins)
+            } else {
+                "Trial: <1 min remaining".to_string()
+            }
+        }
+        "degraded" => "LICENSE EXPIRED".to_string(),
+        "unlicensed" => "No License".to_string(),
+        "" => String::new(), // field not yet populated by daemon
+        other => format!("License: {}", other),
     }
 }
 

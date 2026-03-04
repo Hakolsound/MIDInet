@@ -8,6 +8,7 @@ mod failover;
 mod focus;
 mod health;
 mod health_server;
+mod license_enforcer;
 mod platform;
 mod receiver;
 mod virtual_device;
@@ -204,6 +205,8 @@ pub struct ClientState {
     pub protected_processes: RwLock<Vec<String>>,
     /// Catalog app IDs detected as installed on this machine (scanned in background on startup).
     pub installed_apps: RwLock<Vec<String>>,
+    /// Current license state (readable by health/admin endpoints).
+    pub license_state: std::sync::RwLock<midi_license::state::LicenseState>,
 }
 
 #[tokio::main]
@@ -241,6 +244,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Initialize license system
+    let license_data_dir = midi_license::default_data_dir();
+    let initial_license_state = midi_license::init(&license_data_dir).await
+        .unwrap_or_else(|e| {
+            warn!("License init failed: {e}");
+            midi_license::state::LicenseState::Unlicensed
+        });
+    info!(state = initial_license_state.label(), "License state");
+
     let client_id: u32 = rand_client_id();
     let virtual_device = create_virtual_device();
     let health = Arc::new(HealthCollector::new());
@@ -254,12 +266,14 @@ async fn main() -> anyhow::Result<()> {
     let (receiver_pulse, receiver_monitor) = task_pulse("receiver");
     let (failover_pulse, failover_monitor) = task_pulse("failover");
     let (focus_pulse, focus_monitor) = task_pulse("focus");
+    let (license_pulse, license_monitor) = task_pulse("license_enforcer");
 
     // Register monitors with the health collector
     health.register_monitor(discovery_monitor);
     health.register_monitor(receiver_monitor);
     health.register_monitor(failover_monitor);
     health.register_monitor(focus_monitor);
+    health.register_monitor(license_monitor);
 
     let state = Arc::new(ClientState {
         config: config.clone(),
@@ -280,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         restart_requested: AtomicBool::new(false),
         protected_processes: RwLock::new(Vec::new()),
         installed_apps: RwLock::new(Vec::new()),
+        license_state: std::sync::RwLock::new(initial_license_state),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
@@ -322,6 +337,10 @@ async fn main() -> anyhow::Result<()> {
     let focus_handle = spawn_supervised(
         "focus", Arc::clone(&state), focus_pulse,
         Arc::clone(&health), cancel.clone(), focus::run,
+    );
+    let license_handle = spawn_supervised(
+        "license_enforcer", Arc::clone(&state), license_pulse,
+        Arc::clone(&health), cancel.clone(), license_enforcer::run,
     );
 
     // Spawn virtual device init loop
@@ -505,6 +524,7 @@ async fn main() -> anyhow::Result<()> {
     receiver_handle.abort();
     failover_handle.abort();
     focus_handle.abort();
+    license_handle.abort();
     init_handle.abort();
     health_server_handle.abort();
     watchdog_handle.abort();

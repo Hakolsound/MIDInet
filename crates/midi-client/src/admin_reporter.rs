@@ -64,6 +64,7 @@ pub async fn run(state: Arc<ClientState>) {
 
     // Build registration body
     let hostname = gethostname();
+    let init_license = midi_license::current_state();
     let register_body = json!({
         "id": state.client_id,
         "ip": local_ipv4().unwrap_or_default(),
@@ -73,6 +74,15 @@ pub async fn run(state: Arc<ClientState>) {
         "device_ready": *state.device_ready.read().await,
         "connection_state": connection_state_str(&state).await,
         "git_hash": midi_protocol::GIT_HASH,
+        "license_state": init_license.label(),
+        "license_tier": match &init_license {
+            midi_license::state::LicenseState::Licensed { tier, .. } => tier.label(),
+            _ => "",
+        },
+        "trial_remaining_secs": match &init_license {
+            midi_license::state::LicenseState::Trial { remaining_secs, .. } => *remaining_secs,
+            _ => 0u64,
+        },
     });
 
     match http.post(format!("{}/api/clients/register", admin_url))
@@ -105,6 +115,9 @@ pub async fn run(state: Arc<ClientState>) {
             "git_hash": midi_protocol::GIT_HASH,
             "midi_apps_active": check_midi_apps_active(&state).await,
             "installed_apps": &*state.installed_apps.read().await,
+            "license_state": snapshot.license_state,
+            "license_tier": snapshot.license_tier,
+            "trial_remaining_secs": snapshot.trial_remaining_secs,
         });
 
         match http.post(format!("{}/api/clients/{}/heartbeat", admin_url, state.client_id))
@@ -126,6 +139,9 @@ pub async fn run(state: Arc<ClientState>) {
                             "device_ready": snapshot.device_ready,
                             "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
                             "git_hash": midi_protocol::GIT_HASH,
+                            "license_state": snapshot.license_state,
+                            "license_tier": snapshot.license_tier,
+                            "trial_remaining_secs": snapshot.trial_remaining_secs,
                         });
                         let _ = http.post(format!("{}/api/clients/register", admin_url))
                             .json(&register_body)

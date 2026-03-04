@@ -1363,6 +1363,20 @@ a { color: var(--accent); text-decoration: none; }
     font-variant-numeric: tabular-nums;
 }
 
+/* ── License Badge ── */
+.lic-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 4px;
+    margin-left: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.lic-ok { background: rgba(48, 209, 88, 0.12); color: var(--green); }
+.lic-trial { background: rgba(255, 159, 10, 0.12); color: var(--orange); }
+.lic-expired { background: rgba(255, 69, 58, 0.12); color: var(--red); }
+
 /* ── Alert Row ── */
 .alert-row {
     display: flex;
@@ -2225,3 +2239,53 @@ a { color: var(--accent); text-decoration: none; }
 .prot-apps-remove-btn:hover { color: var(--danger, #ff4444); }
 .prot-apps-empty-warn { font-size: 12px; color: var(--warning, #f0ad4e); padding: 10px; background: rgba(240,173,78,0.08); border: 1px solid rgba(240,173,78,0.2); border-radius: 6px; line-height: 1.4; }
 @media (max-width: 600px) { .prot-apps-layout { flex-direction: column; } .prot-apps-added-col { border-left: none; padding-left: 0; border-top: 1px solid var(--border, rgba(255,255,255,0.08)); padding-top: 12px; } }
+
+/* ── Inline Tips ── */
+.inline-tip {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-2);
+    margin-bottom: 12px;
+    position: relative;
+}
+.inline-tip-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+    opacity: 0.8;
+}
+.inline-tip-icon svg { width: 14px; height: 14px; }
+.inline-tip-text { flex: 1; }
+.inline-tip-text strong { color: var(--text-1); font-weight: 600; }
+.inline-tip-dismiss {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+.inline-tip-dismiss:hover { opacity: 1; }
+.inline-tip--info {
+    background: rgba(10, 132, 255, 0.06);
+    border: 1px solid rgba(10, 132, 255, 0.12);
+}
+.inline-tip--info .inline-tip-icon { color: var(--accent); }
+.inline-tip--warn {
+    background: rgba(255, 159, 10, 0.06);
+    border: 1px solid rgba(255, 159, 10, 0.12);
+}
+.inline-tip--warn .inline-tip-icon { color: var(--orange); }
+.inline-tip--success {
+    background: rgba(48, 209, 88, 0.06);
+    border: 1px solid rgba(48, 209, 88, 0.12);
+}
+.inline-tip--success .inline-tip-icon { color: var(--green); }

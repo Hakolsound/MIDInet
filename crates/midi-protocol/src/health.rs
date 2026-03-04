@@ -57,6 +57,15 @@ pub struct ClientHealthSnapshot {
     /// Git hash of this client binary (compiled in)
     #[serde(default)]
     pub client_git_hash: String,
+    /// License state: "licensed", "trial", "degraded", or "unlicensed"
+    #[serde(default)]
+    pub license_state: String,
+    /// Trial remaining seconds (0 if not in trial)
+    #[serde(default)]
+    pub trial_remaining_secs: u64,
+    /// License tier label (e.g., "Pro", "Solo", "Fleet")
+    #[serde(default)]
+    pub license_tier: String,
 }
 
 /// High-level connection state for the tray icon color.

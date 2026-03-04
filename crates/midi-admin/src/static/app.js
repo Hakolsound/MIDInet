@@ -85,6 +85,22 @@ const apiFetch = async (url, opts = {}) => {
   return res.json();
 };
 
+// ── Inline Tips ──────────────────────────────────────────────
+const _dismissedTips = new Set(JSON.parse(sessionStorage.getItem('dismissed-tips') || '[]'));
+const dismissTip = (id) => { _dismissedTips.add(id); sessionStorage.setItem('dismissed-tips', JSON.stringify([..._dismissedTips])); };
+
+function InlineTip({ id, type = 'info', icon, children }) {
+  const [visible, setVisible] = useState(!_dismissedTips.has(id));
+  if (!visible) return null;
+  const iconMap = { info: ICO.help, warn: ICO.bell, success: ICO.wifi };
+  const IconFn = icon || iconMap[type] || ICO.help;
+  return html`<div class="inline-tip inline-tip--${type}">
+    <span class="inline-tip-icon">${IconFn()}</span>
+    <span class="inline-tip-text">${children}</span>
+    <button class="inline-tip-dismiss" onClick=${() => { dismissTip(id); setVisible(false); }} title="Dismiss">×</button>
+  </div>`;
+}
+
 // ── State Management ──────────────────────────────────────────
 const AppContext = createContext();
 
@@ -367,7 +383,7 @@ function Header() {
           onClick=${() => { window.location.hash = '#' + t.id; }}>${t.label}</button>
       `)}
     </nav>
-    <a class="header-donate" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener" title="Support MIDInet">♥ Donate</a>
+    <a class="header-donate" href="https://midinet.io/pricing/" target="_blank" rel="noopener" title="Get a MIDInet License">⚡ Get License</a>
     <div class="header-spacer" />
     <div class="header-role" data-role=${role}>${role.toUpperCase()}</div>
     <div class="header-health">
@@ -771,7 +787,16 @@ function SnifferDrawer() {
 
 // ── Overview Page ─────────────────────────────────────────────
 function OverviewPage() {
+  const { state } = useContext(AppContext);
+  const noClients = state.clients.length === 0;
+  const noDevice = (state.status.settings?.midi_device_status || 'disconnected') === 'disconnected';
   return html`<div class="overview-grid">
+    ${noDevice && html`<div class="card-wide" style="grid-column:1/-1"><${InlineTip} id="tip-no-device" type="warn" icon=${ICO.usb}>
+      <strong>No MIDI device detected.</strong> Connect a USB MIDI controller to the host and it will be picked up automatically.
+    <//></div>`}
+    ${!noDevice && noClients && html`<div class="card-wide" style="grid-column:1/-1"><${InlineTip} id="tip-no-clients" type="warn" icon=${ICO.wifi}>
+      <strong>No clients connected.</strong> All machines must be on the same network subnet — multicast traffic doesn't cross routers or VLANs. Make sure clients can ping this host.
+    <//></div>`}
     <${ControllersCard} />
     <${MidiDataCard} />
     <${NetworkCard} />
@@ -1102,9 +1127,14 @@ function ClientsCard() {
           const connStatus = c.connection_state === 'connected' ? 'ok' : c.connection_state === 'manual' ? 'warn' : c.connection_state === 'discovering' ? 'warn' : 'error';
           const hostHash = state.status.git_hash || '';
           const verMismatch = hostHash && c.git_hash && c.git_hash !== hostHash;
+          const licBadge = c.license_state === 'licensed' ? { cls: 'lic-ok', label: c.license_tier || 'Licensed' }
+            : c.license_state === 'trial' ? { cls: 'lic-trial', label: 'Trial ' + (c.trial_remaining_secs > 0 ? Math.ceil(c.trial_remaining_secs / 60) + 'm' : '') }
+            : c.license_state === 'degraded' ? { cls: 'lic-expired', label: 'Expired' }
+            : c.license_state === 'unlicensed' ? { cls: 'lic-expired', label: 'No License' }
+            : null;
           return html`<div class="client-row" key=${c.id}>
             <span class="status-dot" data-status=${connStatus} />
-            <span class="client-name">${c.hostname || 'Client ' + c.id}${verMismatch ? html`<span class="ver-mismatch-badge" title=${'Client: ' + c.git_hash + ' | Host: ' + hostHash}>v!</span>` : ''}</span>
+            <span class="client-name">${c.hostname || 'Client ' + c.id}${verMismatch ? html`<span class="ver-mismatch-badge" title=${'Client: ' + c.git_hash + ' | Host: ' + hostHash}>v!</span>` : ''}${licBadge ? html`<span class="lic-badge ${licBadge.cls}">${licBadge.label}</span>` : ''}</span>
             <span class="client-ip">${c.ip}</span>
             <span class="client-stat">${c.device_ready ? (c.device_name || 'Ready') : c.manual ? 'Manual' : 'No device'}</span>
             <span class="client-stat">${c.latency_ms?.toFixed(1) || '—'}ms</span>
@@ -1123,11 +1153,19 @@ function ClientsCard() {
 
 // ── Control Page ──────────────────────────────────────────────
 function ControlPage() {
-  const { dispatch } = useContext(AppContext);
+  const { state, dispatch } = useContext(AppContext);
   useEffect(() => {
     apiFetch('/api/failover').then(d => dispatch({ type: 'SET_FAILOVER', data: d }));
   }, []);
+  const fo = state.status.failover || {};
+  const hasMultipleClients = state.clients.length > 1;
   return html`<div class="control-layout">
+    ${hasMultipleClients && html`<${InlineTip} id="tip-focus" type="info" icon=${ICO.users}>
+      <strong>Focus</strong> determines which client receives MIDI feedback (LEDs, motorized faders). Click a client in the diagram to switch focus, or ⌘+Click to copy the OSC command.
+    <//>`}
+    ${fo.active_host === 'primary' && !fo.standby_healthy && html`<${InlineTip} id="tip-no-standby" type="info" icon=${ICO.server}>
+      No standby host detected. For redundancy, set up a second Raspberry Pi — it will sync automatically via mDNS.
+    <//>`}
     <${SignalFlowDiagram} />
     <${FailoverPanel} />
   </div>`;
@@ -1884,6 +1922,9 @@ function SettingsPage() {
   }, []);
   return html`<div class="page-scroll">
     <div class="page-grid">
+      <${InlineTip} id="tip-settings-modes" type="info" icon=${ICO.sliders}>
+        <strong>Single</strong> mode for one controller, <strong>Redundant</strong> for primary + backup with automatic failover, <strong>Multi-Device</strong> for up to 16 controllers. Switching modes is live — no restart needed.
+      <//>
       <div class="card-wide"><${ModeSelector} /></div>
       <${HostRedundancyCard} />
       <${DeviceSettings} />
@@ -2311,13 +2352,13 @@ function HelpPage() {
   return html`<div class="page-scroll">
     <div class="help-support-banner">
       <div class="help-support-banner-inner">
-        <span class="help-support-banner-heart">♥</span>
+        <span class="help-support-banner-heart">⚡</span>
         <div class="help-support-banner-text">
-          <strong>Support MIDInet</strong> — Free, open-source, and community-funded. No ads, no tracking.
+          <strong>MIDInet Licensing</strong> — Free 120-min trial. Perpetual license from $79. Hardware (Pi) not included.
         </div>
         <div class="help-support-banner-btns">
-          <a class="btn btn-support-banner" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">Donate</a>
-          <a class="btn btn-support-banner btn-support-banner-accent" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Support Monthly</a>
+          <a class="btn btn-support-banner" href="https://midinet.io/pricing/" target="_blank" rel="noopener">View Pricing</a>
+          <a class="btn btn-support-banner btn-support-banner-accent" href="https://midinet.io/account/licenses/" target="_blank" rel="noopener">My Licenses</a>
         </div>
       </div>
     </div>
@@ -2380,10 +2421,10 @@ function HelpPage() {
 
 // ── Support Popup (once per day, random delay) ───────────────
 const SUPPORT_MESSAGES = [
-  { heading: 'Enjoying MIDInet?', body: 'This project is built and maintained independently. If MIDInet is part of your live rig or studio setup, a small contribution keeps development going.' },
-  { heading: 'MIDInet is free. Keeping it alive isn\'t.', body: 'Server costs, hardware testing, late-night debugging sessions — your support makes a real difference.' },
-  { heading: 'Help keep MIDInet growing', body: 'Every contribution funds new features, better reliability, and more supported hardware. Even a coffee helps.' },
-  { heading: 'Built for the stage. Funded by users.', body: 'No VC money, no ads, no telemetry. Just a tool that works — backed by people who use it.' },
+  { heading: 'Enjoying MIDInet?', body: 'Your trial has limited runtime. Get a perpetual license starting at $79 — one price, yours forever, with 12 months of free updates.' },
+  { heading: 'Go Pro with MIDInet', body: 'Unlock unlimited runtime, redundant mode, and multi-device support. Perpetual license — no subscriptions, no recurring fees.' },
+  { heading: 'Don\'t let the trial run out mid-show', body: 'MIDInet enters degraded mode after your 120-minute trial expires. Get a license now and perform with confidence every night.' },
+  { heading: 'Built for the stage. Licensed for pros.', body: 'Solo ($79), Pro ($149), or Fleet ($349). One-time purchase, perpetual use. Hardware (Raspberry Pi) not included.' },
 ];
 
 function SupportPopup() {
@@ -2415,12 +2456,12 @@ function SupportPopup() {
   return html`<div class="modal-backdrop open" onClick=${close}>
     <div class="support-popup" onClick=${(e) => e.stopPropagation()}>
       <button class="support-popup-close" onClick=${close}>${ICO.x()}</button>
-      <div class="support-popup-heart">♥</div>
+      <div class="support-popup-heart">⚡</div>
       <div class="support-popup-heading">${msg.heading}</div>
       <div class="support-popup-body">${msg.body}</div>
       <div class="support-popup-actions">
-        <a class="btn btn-support-popup" href="https://payplus.co.il/PLACEHOLDER-ONE-TIME" target="_blank" rel="noopener">One-time donation</a>
-        <a class="btn btn-support-popup btn-support-popup-primary" href="https://payplus.co.il/PLACEHOLDER-RECURRING" target="_blank" rel="noopener">Support monthly</a>
+        <a class="btn btn-support-popup" href="https://midinet.io/pricing/" target="_blank" rel="noopener">View Pricing</a>
+        <a class="btn btn-support-popup btn-support-popup-primary" href="https://midinet.io/account/licenses/" target="_blank" rel="noopener">My Licenses</a>
       </div>
       <button class="support-popup-dismiss" onClick=${close}>Maybe later</button>
     </div>

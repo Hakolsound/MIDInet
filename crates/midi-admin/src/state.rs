@@ -491,6 +491,15 @@ pub struct ClientInfo {
     /// Catalog app IDs the client detected as installed on its machine.
     #[serde(default)]
     pub installed_apps: Vec<String>,
+    /// License state: "licensed", "trial", "degraded", "unlicensed"
+    #[serde(default)]
+    pub license_state: String,
+    /// License tier: "solo", "pro", "fleet", "pioneer", or empty
+    #[serde(default)]
+    pub license_tier: String,
+    /// Remaining trial seconds (0 if not in trial)
+    #[serde(default)]
+    pub trial_remaining_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

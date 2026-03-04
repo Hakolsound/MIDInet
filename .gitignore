@@ -21,3 +21,4 @@ Thumbs.db
 # Credentials
 *.pem
 *.key
+keys/

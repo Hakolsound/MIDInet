@@ -103,3 +103,9 @@ pub const DEFAULT_OSC_PORT: u16 = 5588;
 /// Heartbeat defaults
 pub const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 3;
 pub const DEFAULT_HEARTBEAT_MISS_THRESHOLD: u8 = 3;
+
+/// Ed25519 public key used to verify license tokens (32 bytes, raw)
+pub const LICENSE_PUBLIC_KEY: &[u8; 32] = include_bytes!("../license_public_key.bin");
+
+/// Base URL for the license-validation Cloud Function
+pub const LICENSE_API_URL: &str = "https://europe-west1-ledconfigtool.cloudfunctions.net";

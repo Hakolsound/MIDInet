@@ -1,0 +1,63 @@
+MIDInet Software License Agreement
+
+Copyright (c) 2024-2026 Hakol Fine AV Services. All rights reserved.
+
+This software and associated documentation files (the "Software") are proprietary
+and confidential. The Software is licensed, not sold.
+
+GRANT OF LICENSE
+
+Subject to the terms of this Agreement and upon purchase of a valid license key,
+Hakol Fine AV Services grants you a non-exclusive, non-transferable, perpetual
+license to use the Software on the number of devices specified by your license
+tier (Solo, Pro, or Fleet).
+
+RESTRICTIONS
+
+You may not:
+  - Distribute, sublicense, lease, or lend the Software to third parties
+  - Reverse engineer, decompile, or disassemble the Software
+  - Remove or alter any proprietary notices or labels on the Software
+  - Use the Software to create a competing product or service
+  - Circumvent or disable any license enforcement mechanisms
+
+UPDATES
+
+Your license includes 12 months of free updates from the date of purchase.
+After this period, you may continue using the last version you received.
+Additional update entitlements may be purchased separately.
+
+TRIAL
+
+The Software may be used without a license for evaluation purposes, subject to
+the cumulative runtime limit specified in the trial terms (120 minutes).
+
+OPEN SOURCE COMPONENTS
+
+The midi-protocol crate is licensed separately under the MIT License.
+See crates/midi-protocol/LICENSE for details.
+
+DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL HAKOL FINE AV SERVICES BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+TERMINATION
+
+This license is effective until terminated. It will terminate automatically if
+you fail to comply with any term of this Agreement. Upon termination, you must
+destroy all copies of the Software.
+
+GOVERNING LAW
+
+This Agreement shall be governed by the laws of the State of Israel.
+
+For licensing inquiries: hello@midinet.io

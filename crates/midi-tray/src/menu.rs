@@ -15,6 +15,7 @@ pub const ID_OPEN_DASHBOARD: &str = "open_dashboard";
 pub const ID_RESTART_CLIENT: &str = "restart_client";
 pub const ID_AUTO_START: &str = "auto_start";
 pub const ID_CHECK_UPDATE: &str = "check_update";
+pub const ID_ACTIVATE_LICENSE: &str = "activate_license";
 pub const ID_QUIT: &str = "quit";
 
 /// Snapshot of menu-driving state for diffing. Menu is only rebuilt when this changes.
@@ -33,6 +34,9 @@ pub struct MenuState {
     pub version_mismatch: bool,
     pub operational_mode: Option<String>,
     pub device_names: Vec<String>,
+    pub license_state: String,
+    pub trial_remaining_mins: u64,
+    pub license_tier: String,
 }
 
 impl MenuState {
@@ -51,6 +55,10 @@ impl MenuState {
             version_mismatch: snapshot.version_mismatch,
             operational_mode: snapshot.operational_mode.clone(),
             device_names: snapshot.device_names.clone(),
+            license_state: snapshot.license_state.clone(),
+            // Quantize to minutes for diffing — avoids menu rebuild every second
+            trial_remaining_mins: snapshot.trial_remaining_secs / 60,
+            license_tier: snapshot.license_tier.clone(),
         }
     }
 }
@@ -223,6 +231,33 @@ pub fn build_status_menu(snapshot: &ClientHealthSnapshot, auto_start: bool) -> M
         false,
         None::<Accelerator>,
     ));
+
+    // ── License ──
+    if !snapshot.license_state.is_empty() {
+        let _ = menu.append(&PredefinedMenuItem::separator());
+
+        let license_label = format_license_label(snapshot);
+        let _ = menu.append(&MenuItem::with_id(
+            "license_line",
+            &license_label,
+            false,
+            None::<Accelerator>,
+        ));
+
+        // Show "Activate License" action for trial, degraded, or unlicensed states
+        let needs_activation = matches!(
+            snapshot.license_state.as_str(),
+            "trial" | "degraded" | "unlicensed"
+        );
+        if needs_activation {
+            let _ = menu.append(&MenuItem::with_id(
+                ID_ACTIVATE_LICENSE,
+                "Activate License...",
+                true,
+                None::<Accelerator>,
+            ));
+        }
+    }
 
     let _ = menu.append(&PredefinedMenuItem::separator());
 
@@ -445,5 +480,34 @@ fn format_duration(secs: u64) -> String {
         format!("{}h {}m", hours, mins)
     } else {
         format!("{}m", mins)
+    }
+}
+
+/// Format the license label for the context menu.
+fn format_license_label(snapshot: &ClientHealthSnapshot) -> String {
+    match snapshot.license_state.as_str() {
+        "licensed" => {
+            if snapshot.license_tier.is_empty() {
+                "License: Active".to_string()
+            } else {
+                format!("License: {}", snapshot.license_tier)
+            }
+        }
+        "trial" => {
+            let remaining = snapshot.trial_remaining_secs;
+            if remaining >= 3600 {
+                let hours = remaining / 3600;
+                let mins = (remaining % 3600) / 60;
+                format!("Trial: {}h {}m remaining", hours, mins)
+            } else if remaining >= 60 {
+                let mins = remaining / 60;
+                format!("Trial: {} min remaining", mins)
+            } else {
+                "Trial: <1 min remaining".to_string()
+            }
+        }
+        "degraded" => "LICENSE EXPIRED".to_string(),
+        "unlicensed" => "No License".to_string(),
+        other => format!("License: {}", capitalize(other)),
     }
 }

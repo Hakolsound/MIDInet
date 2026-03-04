@@ -292,6 +292,19 @@ impl HealthCollector {
         // Detected operational mode
         let operational_mode = state.detected_mode.read().await.map(|m| m.to_string());
 
+        // License state
+        let current_license = midi_license::current_state();
+        let license_state_label = current_license.label().to_string();
+        let (license_tier_label, trial_remaining) = match &current_license {
+            midi_license::state::LicenseState::Licensed { tier, .. } => {
+                (tier.label().to_string(), 0u64)
+            }
+            midi_license::state::LicenseState::Trial { remaining_secs, .. } => {
+                (String::new(), *remaining_secs)
+            }
+            _ => (String::new(), 0u64),
+        };
+
         ClientHealthSnapshot {
             timestamp_ms: now_ms,
             connection_state,
@@ -318,6 +331,9 @@ impl HealthCollector {
             version_mismatch,
             host_git_hash,
             client_git_hash,
+            license_state: license_state_label,
+            trial_remaining_secs: trial_remaining,
+            license_tier: license_tier_label,
         }
     }
 }
