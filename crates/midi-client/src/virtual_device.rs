@@ -75,8 +75,8 @@ pub fn create_virtual_device() -> Box<dyn VirtualMidiDevice> {
 ///
 /// This prevents Windows MIDI Services COM calls from blocking the tokio async
 /// runtime. If `MidiSession::Create()` or `CreateVirtualDevice()` hangs (due to
-/// stale midisrv.exe state), the timeout fires and we retry — the crash sentinel
-/// forces a fallback to teVirtualMIDI on the second attempt.
+/// stale midisrv.exe state), the timeout fires, we kill midisrv.exe to unblock
+/// the hung COM call and reset state, then retry with a fresh MIDI Services session.
 pub async fn create_virtual_device_async(
     identity: &DeviceIdentity,
 ) -> (Box<dyn VirtualMidiDevice>, bool) {
@@ -103,16 +103,30 @@ pub async fn create_virtual_device_async(
         Err(_) => {
             tracing::warn!(
                 device = %identity.name,
-                "Virtual device creation timed out (15s) — MIDI backend may be hung, retrying..."
+                "Virtual device creation timed out (15s) — MIDI Services COM call is hung"
             );
+
+            // Kill midisrv.exe to unblock the hung COM call and reset MIDI Services.
+            // Also remove the crash sentinel so the retry goes straight to MIDI Services
+            // (not the kill-and-wait path which would add another 3s delay).
+            #[cfg(target_os = "windows")]
+            {
+                crate::platform::windows::kill_midi_services();
+                let sentinel = crate::platform::windows::WindowsVirtualDevice::crash_sentinel();
+                let _ = std::fs::remove_file(&sentinel);
+            }
+
+            // Wait for Service Control Manager to restart midisrv.exe
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     }
 
-    // Retry after timeout. On Windows, the crash sentinel from the hung attempt
-    // causes create_win11() to skip MIDI Services and use teVirtualMIDI instead.
+    // Retry with fresh midisrv.exe. On Windows 11 this retries MIDI Services
+    // (the only viable backend). The killed midisrv.exe should have been
+    // auto-restarted by SCM during the 3s wait above.
     let id = identity.clone();
     match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(15),
         tokio::task::spawn_blocking(move || {
             let mut dev = create_virtual_device();
             dev.create(&id).map(|_| dev)
@@ -121,7 +135,7 @@ pub async fn create_virtual_device_async(
     .await
     {
         Ok(Ok(Ok(device))) => {
-            tracing::info!(device = %identity.name, "Virtual device created on retry (fallback backend)");
+            tracing::info!(device = %identity.name, "Virtual device created on retry (after midisrv.exe restart)");
             (device, true)
         }
         Ok(Ok(Err(e))) => {

@@ -1,11 +1,12 @@
-/// Windows virtual MIDI device — orchestrator with dual-backend fallback.
+/// Windows virtual MIDI device — orchestrator with backend selection.
 ///
 /// Strategy (Windows 11+):
-/// 1. Try Windows MIDI Services first (native, no driver install needed)
-/// 2. If that fails → try teVirtualMIDI (requires driver install)
+/// 1. Use Windows MIDI Services (native, no driver install needed)
+/// 2. If midisrv.exe is hung → kill it, wait for restart, retry
+///    (teVirtualMIDI does NOT work on Windows 11)
 ///
 /// Strategy (Windows 10 and below):
-/// 1. Try teVirtualMIDI (requires driver install)
+/// 1. Use teVirtualMIDI (requires driver install)
 /// 2. No MIDI Services fallback available
 ///
 /// The selected backend is transparent to the rest of the codebase —
@@ -60,6 +61,32 @@ fn is_windows_11() -> bool {
     false
 }
 
+// ── MIDI Services recovery ──
+
+/// Kill midisrv.exe to reset stale MIDI Services state.
+/// Service Control Manager will auto-restart it after a few seconds.
+/// Called when MIDI Services device creation hangs or the crash sentinel exists.
+#[cfg(target_os = "windows")]
+pub(crate) fn kill_midi_services() {
+    use std::os::windows::process::CommandExt;
+    info!("Killing midisrv.exe to reset MIDI Services state...");
+    let output = std::process::Command::new("taskkill")
+        .args(["/F", "/IM", "midisrv.exe"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+    match output {
+        Ok(o) if o.status.success() => info!("midisrv.exe killed successfully"),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!("taskkill midisrv.exe exit {}: {}", o.status, stderr.trim());
+        }
+        Err(e) => warn!("Failed to run taskkill: {}", e),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn kill_midi_services() {}
+
 // ── Backend enum ──
 
 enum Backend {
@@ -89,9 +116,9 @@ impl WindowsVirtualDevice {
 impl WindowsVirtualDevice {
     /// Path of the crash-sentinel file.  Written before attempting MIDI Services
     /// device creation and deleted on success.  If it exists at startup, the
-    /// previous attempt crashed the process → skip MIDI Services entirely.
+    /// previous attempt crashed or hung → kill midisrv.exe before retrying.
     /// Uses %LOCALAPPDATA%\MIDInet — Program Files is read-only.
-    fn crash_sentinel() -> std::path::PathBuf {
+    pub(crate) fn crash_sentinel() -> std::path::PathBuf {
         let dir = std::env::var("LOCALAPPDATA")
             .map(|d| std::path::PathBuf::from(d).join("MIDInet"))
             .unwrap_or_else(|_| {
@@ -104,70 +131,53 @@ impl WindowsVirtualDevice {
         dir.join(".midinet-midi-services-crash")
     }
 
-    /// Windows 11+: try MIDI Services first, fall back to teVirtualMIDI.
+    /// Windows 11+: MIDI Services only (teVirtualMIDI does NOT work on Win 11).
+    /// If the previous attempt crashed or hung, kill midisrv.exe to reset state.
     fn create_win11(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
         let sentinel = Self::crash_sentinel();
 
-        // If the crash sentinel exists, a previous MIDI Services attempt crashed
-        // the process (e.g. stale midisrv.exe state after unclean shutdown).
-        // Skip MIDI Services and go straight to teVirtualMIDI.
-        let skip_midi_services = sentinel.exists()
-            || std::env::var("MIDINET_SKIP_MIDI_SERVICES").as_deref() == Ok("1");
-
-        if skip_midi_services {
+        // If crash sentinel exists or env var is set, the previous attempt failed
+        // or hung. Kill midisrv.exe to reset stale state before retrying.
+        // teVirtualMIDI is NOT available on Windows 11 — we must use MIDI Services.
+        if sentinel.exists()
+            || std::env::var("MIDINET_SKIP_MIDI_SERVICES").as_deref() == Ok("1")
+        {
             warn!(
                 name = %identity.name,
-                "Skipping MIDI Services (previous attempt crashed or MIDINET_SKIP_MIDI_SERVICES=1) \
-                 — trying teVirtualMIDI directly"
+                "Previous MIDI Services attempt failed — killing midisrv.exe to reset state"
             );
-        } else {
-            info!(name = %identity.name, "Windows 11 — attempting Windows MIDI Services backend...");
-
-            // Write crash sentinel BEFORE attempting creation.
-            // Deleted on success; if we crash, it stays and next startup skips.
-            let _ = std::fs::write(&sentinel, b"crash during MIDI Services init");
-
-            let mut ms_device = MidiServicesDevice::new();
-            match ms_device.create(identity) {
-                Ok(()) => {
-                    // Success — remove sentinel and any teVirtualMIDI skip marker
-                    let _ = std::fs::remove_file(&sentinel);
-                    info!(name = %identity.name, "Using Windows MIDI Services backend");
-                    self.backend = Backend::MidiServices(ms_device);
-                    return Ok(());
-                }
-                Err(e) => {
-                    // Creation returned an error (didn't crash) — remove sentinel,
-                    // it's safe to try MIDI Services again next time.
-                    let _ = std::fs::remove_file(&sentinel);
-                    warn!(
-                        name = %identity.name,
-                        error = %e,
-                        "Windows MIDI Services failed, trying teVirtualMIDI..."
-                    );
-                }
-            }
+            kill_midi_services();
+            let _ = std::fs::remove_file(&sentinel);
+            // Wait for Service Control Manager to restart midisrv.exe
+            std::thread::sleep(std::time::Duration::from_secs(3));
         }
 
-        // Fallback: teVirtualMIDI
-        let mut te_device = TeVirtualMidiDevice::new();
-        match te_device.create(identity) {
+        info!(name = %identity.name, "Windows 11 — attempting Windows MIDI Services backend...");
+
+        // Write crash sentinel BEFORE attempting creation.
+        // Deleted on success or recoverable error. If we crash or hang, it persists.
+        let _ = std::fs::write(&sentinel, b"crash during MIDI Services init");
+
+        let mut ms_device = MidiServicesDevice::new();
+        match ms_device.create(identity) {
             Ok(()) => {
-                info!(name = %identity.name, "Using teVirtualMIDI backend (fallback)");
-                self.backend = Backend::TeVirtualMidi(te_device);
+                let _ = std::fs::remove_file(&sentinel);
+                info!(name = %identity.name, "Using Windows MIDI Services backend");
+                self.backend = Backend::MidiServices(ms_device);
                 Ok(())
             }
             Err(e) => {
+                let _ = std::fs::remove_file(&sentinel);
                 error!(
                     name = %identity.name,
                     error = %e,
-                    "Both backends failed. Options:\n\
-                     1. Install Windows MIDI Services: winget install Microsoft.WindowsMIDIServicesSDK\n\
-                     2. Install teVirtualMIDI: https://www.tobias-erichsen.de/software/virtualmidi.html"
+                    "Windows MIDI Services failed. Options:\n\
+                     1. Restart MIDI Services: taskkill /F /IM midisrv.exe (then retry)\n\
+                     2. Install Windows MIDI Services SDK: winget install Microsoft.WindowsMIDIServicesSDK"
                 );
                 Err(anyhow::anyhow!(
-                    "No virtual MIDI backend available. \
-                     Install Windows MIDI Services SDK or teVirtualMIDI."
+                    "Windows MIDI Services failed. \
+                     MIDI Services may need to be restarted (taskkill /F /IM midisrv.exe)."
                 ))
             }
         }
