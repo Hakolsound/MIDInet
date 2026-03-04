@@ -52,8 +52,19 @@ async fn main() -> anyhow::Result<()> {
 
     info!(listen = %args.listen, config = %args.config, "MIDInet admin panel starting");
 
-    // Initialize license system so /api/license endpoints work
-    let license_dir = midi_license::default_data_dir();
+    // Initialize license system so /api/license endpoints work.
+    // On read-only filesystems (Pi), fall back to a dir alongside the config file.
+    let default_license_dir = midi_license::default_data_dir();
+    let license_dir = if std::fs::create_dir_all(&default_license_dir).is_ok() {
+        default_license_dir
+    } else {
+        let fallback = std::path::Path::new(&args.config)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("license");
+        info!(path = %fallback.display(), "Default license dir not writable, using config-relative path");
+        fallback
+    };
     if let Err(e) = midi_license::init(&license_dir).await {
         tracing::warn!("License system init failed: {e} (license endpoints will be degraded)");
     }
