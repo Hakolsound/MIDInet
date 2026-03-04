@@ -281,8 +281,25 @@ async fn main() -> anyhow::Result<()> {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
+                // If multi-device mode already created devices, mark ready and exit.
+                // init_multi_devices (called from discovery) handles device creation
+                // in multi mode — we must NOT also create a single device here or
+                // the duplicate name will cause one of them to fail.
+                if !state.multi_devices.read().await.is_empty() {
+                    info!("Multi-device virtual MIDI devices ready (created by discovery)");
+                    *state.device_ready.write().await = true;
+                    return;
+                }
+
                 let identity = state.identity.read().await;
                 if !identity.is_valid() {
+                    continue;
+                }
+
+                // In multi-device mode, wait for init_multi_devices to create devices
+                // rather than creating a conflicting single device here.
+                if *state.detected_mode.read().await == Some(OperationalMode::MultiDevice) {
+                    drop(identity);
                     continue;
                 }
 
@@ -382,6 +399,18 @@ async fn main() -> anyhow::Result<()> {
     // This prevents crashes in apps like Resolume that hold open MIDI handles —
     // explicit close() triggers a bug in Windows MIDI Services (midisrv.exe).
     {
+        // Silence multi-device slots first
+        let mut multi = state.multi_devices.write().await;
+        for slot in multi.iter_mut() {
+            if slot.ready {
+                if let Err(e) = slot.device.silence_and_detach() {
+                    warn!(device = %slot.identity.name, "Error during multi-device shutdown: {}", e);
+                }
+            }
+        }
+        drop(multi);
+
+        // Silence single device (only relevant in single/redundant mode)
         let mut vdev = state.virtual_device.write().await;
         if let Err(e) = vdev.silence_and_detach() {
             warn!("Error during graceful device shutdown: {}", e);
