@@ -2199,3 +2199,19 @@ a { color: var(--accent); text-decoration: none; }
         transition-duration: 0.01ms !important;
     }
 }
+
+/* Protected Apps */
+.protected-apps-category { margin-bottom: 16px; }
+.protected-apps-cat-header { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin-bottom: 6px; }
+.protected-apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px; }
+.protected-app-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: background 0.15s; }
+.protected-app-item:hover { background: var(--surface-hover, rgba(255,255,255,0.05)); }
+.protected-app-item.active { color: var(--accent, #00d4ff); }
+.protected-app-item.no-process { opacity: 0.35; cursor: not-allowed; }
+.protected-app-item input[type="checkbox"] { accent-color: var(--accent, #00d4ff); margin: 0; }
+.protected-app-name { flex: 1; }
+.protected-app-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent, #00d4ff); color: #000; font-weight: 600; white-space: nowrap; }
+.protected-apps-custom-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.protected-app-custom-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: var(--surface-alt, rgba(255,255,255,0.08)); border-radius: 4px; font-size: 12px; font-family: monospace; }
+.protected-app-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+.protected-app-remove:hover { color: var(--danger, #ff4444); }

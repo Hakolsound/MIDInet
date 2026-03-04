@@ -168,6 +168,7 @@ pub fn build_router(state: AppState, api_token: Option<String>) -> Router {
         .route("/api/system/mode", post(system::set_mode))
         .route("/api/system/host-redundancy", get(system::get_host_redundancy).post(system::set_host_redundancy))
         .route("/api/settings/device-highways", get(system::get_device_highways).put(system::set_device_highways))
+        .route("/api/settings/protected-apps", get(system::get_protected_apps).put(system::set_protected_apps))
         // Settings
         .route("/api/settings", get(settings::get_settings))
         .route("/api/settings/midi-device", put(settings::set_midi_device))

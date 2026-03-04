@@ -179,6 +179,11 @@ pub struct ClientState {
     /// After graceful shutdown, main() exits with code 42 so the tray
     /// (Windows) or service manager (Linux/macOS) auto-restarts.
     pub restart_requested: AtomicBool,
+    /// List of OS-specific process names to check for protected app detection.
+    /// Updated from admin heartbeat response.
+    pub protected_processes: RwLock<Vec<String>>,
+    /// Catalog app IDs detected as installed on this machine (scanned once on startup).
+    pub installed_apps: Vec<String>,
 }
 
 #[tokio::main]
@@ -252,6 +257,8 @@ async fn main() -> anyhow::Result<()> {
         multi_devices: RwLock::new(Vec::new()),
         detected_mode: RwLock::new(None),
         restart_requested: AtomicBool::new(false),
+        protected_processes: RwLock::new(Vec::new()),
+        installed_apps: crate::health::detect_installed_apps(),
     });
 
     info!(client_id = client_id, "MIDInet client starting");

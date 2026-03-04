@@ -322,29 +322,153 @@ impl HealthCollector {
     }
 }
 
-/// Check if MIDI applications (e.g. Resolume Arena) are currently running.
-/// Used by admin heartbeat to report whether it's safe to restart this client.
-pub fn is_midi_app_active() -> bool {
+/// Check if any protected MIDI application is currently running.
+/// Takes a list of OS-specific process names to check.
+/// Returns false if the list is empty (no protection configured).
+pub fn is_midi_app_active(processes: &[String]) -> bool {
+    if processes.is_empty() {
+        return false;
+    }
+
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        std::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq Arena.exe", "/NH"])
+        // Single tasklist call — check all process names against output
+        if let Ok(out) = std::process::Command::new("tasklist")
+            .args(["/NH", "/FO", "CSV"])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map(|out| {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout.contains("Arena.exe")
-            })
-            .unwrap_or(false)
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return processes.iter().any(|p| stdout.contains(p));
+        }
+        false
     }
+
     #[cfg(not(target_os = "windows"))]
     {
-        std::process::Command::new("pgrep")
-            .args(["-x", "Arena"])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+        processes.iter().any(|p| {
+            std::process::Command::new("pgrep")
+                .args(["-xi", p])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        })
     }
+}
+
+/// Scan the local system for installed applications from the catalog.
+/// Returns a list of catalog app IDs that appear to be installed.
+/// This is a best-effort check based on common install locations.
+pub fn detect_installed_apps() -> Vec<String> {
+    let mut found = Vec::new();
+
+    // App catalog: (id, win_install_hint, mac_install_hint)
+    // win_install_hint: substring to search in Program Files directory names
+    // mac_install_hint: app bundle name prefix in /Applications/
+    let catalog: &[(&str, &str, &str)] = &[
+        ("resolume-arena", "Resolume Arena", "Resolume Arena"),
+        ("resolume-avenue", "Resolume Avenue", "Resolume Avenue"),
+        ("touchdesigner", "TouchDesigner", "TouchDesigner"),
+        ("madmapper", "MadMapper", "MadMapper"),
+        ("vdmx", "", "VDMX5"),
+        ("millumin", "", "Millumin"),
+        ("disguise", "d3 Designer", ""),
+        ("notch", "Notch", ""),
+        ("ableton-live", "Ableton", "Ableton Live"),
+        ("logic-pro", "", "Logic Pro"),
+        ("cubase", "Cubase", "Cubase"),
+        ("fl-studio", "FL Studio", "FL Studio"),
+        ("reaper", "REAPER", "REAPER"),
+        ("bitwig", "Bitwig Studio", "Bitwig Studio"),
+        ("pro-tools", "Pro Tools", "Pro Tools"),
+        ("grandma3", "MALightingTechnology", "grandMA3"),
+        ("grandma2", "MALightingTechnology", ""),
+        ("hog4", "Hog 4", ""),
+        ("chamsys", "ChamSys", "MagicQ"),
+        ("eos", "ETC", ""),
+        ("capture", "Capture", "Capture"),
+        ("onyx", "ONYX", ""),
+        ("vista", "Vista", ""),
+        ("lightkey", "", "Lightkey"),
+        ("qlcplus", "QLC+", "QLC+"),
+        ("qlab", "", "QLab"),
+        ("playbackpro", "PlayBack Pro", "PlayBack Pro"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        // Scan Program Files directories for known app folders
+        let search_dirs = [
+            "C:\\Program Files",
+            "C:\\Program Files (x86)",
+        ];
+        for (id, win_hint, _) in catalog {
+            if win_hint.is_empty() {
+                continue;
+            }
+            for dir in &search_dirs {
+                let path = std::path::Path::new(dir);
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.contains(win_hint) {
+                                found.push(id.to_string());
+                                break;
+                            }
+                        }
+                    }
+                    if found.last().map(|s| s.as_str()) == Some(id) {
+                        break; // Already found this app
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Scan /Applications for .app bundles
+        let apps_dir = std::path::Path::new("/Applications");
+        if let Ok(entries) = std::fs::read_dir(apps_dir) {
+            let app_names: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(String::from))
+                .collect();
+
+            for (id, _, mac_hint) in catalog {
+                if mac_hint.is_empty() {
+                    continue;
+                }
+                if app_names.iter().any(|name| name.contains(mac_hint)) {
+                    found.push(id.to_string());
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Check if executables exist in PATH
+        let linux_bins = [
+            ("reaper", "reaper"),
+            ("bitwig", "bitwig-studio"),
+            ("qlcplus", "qlcplus"),
+            ("chamsys", "MagicQ"),
+            ("grandma3", "gma3"),
+        ];
+        for (id, bin) in &linux_bins {
+            if std::process::Command::new("which")
+                .arg(bin)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                found.push(id.to_string());
+            }
+        }
+    }
+
+    found
 }

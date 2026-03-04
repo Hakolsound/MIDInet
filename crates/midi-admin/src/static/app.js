@@ -1690,6 +1690,140 @@ function HostRedundancyCard() {
   </div>`;
 }
 
+// ── Protected Apps Card ───────────────────────────────────────
+function ProtectedAppsCard() {
+  const { dispatch } = useContext(AppContext);
+  const [catalog, setCatalog] = useState([]);
+  const [enabled, setEnabled] = useState([]);
+  const [customProcs, setCustomProcs] = useState([]);
+  const [installedOn, setInstalledOn] = useState({});
+  const [customInput, setCustomInput] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    apiFetch('/api/settings/protected-apps').then(d => {
+      if (d.catalog) setCatalog(d.catalog);
+      if (d.enabled) setEnabled(d.enabled);
+      if (d.custom_processes) setCustomProcs(d.custom_processes);
+      if (d.installed_on) setInstalledOn(d.installed_on);
+      setLoaded(true);
+    });
+  }, []);
+
+  const toggle = (id) => {
+    setEnabled(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    setDirty(true);
+  };
+
+  const addCustom = () => {
+    const val = customInput.trim();
+    if (val && !customProcs.includes(val)) {
+      setCustomProcs(prev => [...prev, val]);
+      setCustomInput('');
+      setDirty(true);
+    }
+  };
+
+  const removeCustom = (proc) => {
+    setCustomProcs(prev => prev.filter(x => x !== proc));
+    setDirty(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    const r = await apiFetch('/api/settings/protected-apps', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, custom_processes: customProcs }),
+    });
+    if (r.success) {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('success', 'Protected apps updated') });
+      setDirty(false);
+    } else {
+      dispatch({ type: 'ADD_TOAST', toast: mkToast('error', r.error || 'Failed to save') });
+    }
+    setSaving(false);
+  };
+
+  if (!loaded) return html`<div class="card-body"><span class="dim">Loading...</span></div>`;
+
+  // Group catalog by category
+  const categories = {};
+  catalog.forEach(app => {
+    if (!categories[app.category]) categories[app.category] = [];
+    categories[app.category].push(app);
+  });
+
+  const categoryIcons = {
+    'VJ / Media Server': '\u{1F3AC}',
+    'DAW': '\u{1F3B9}',
+    'Lighting': '\u{1F4A1}',
+    'Playback': '\u{25B6}\u{FE0F}',
+  };
+
+  return html`
+    <div class="card-header">Protected Applications</div>
+    <div class="card-body">
+      <p class="dim" style="margin:0 0 12px">Block mode changes and client restarts while these apps are running. Detected apps are marked with a badge.</p>
+      ${Object.entries(categories).map(([cat, apps]) => html`
+        <div class="protected-apps-category" key=${cat}>
+          <div class="protected-apps-cat-header">${categoryIcons[cat] || ''} ${cat}</div>
+          <div class="protected-apps-grid">
+            ${apps.map(app => {
+              const checked = enabled.includes(app.id);
+              const clients = installedOn[app.id];
+              const hasProcess = app.win_process || app.mac_process || app.linux_process;
+              return html`
+                <label class="protected-app-item ${checked ? 'active' : ''} ${!hasProcess ? 'no-process' : ''}" key=${app.id}>
+                  <input type="checkbox" checked=${checked} onChange=${() => toggle(app.id)} disabled=${!hasProcess} />
+                  <span class="protected-app-name">${app.name}</span>
+                  ${clients && clients.length > 0 && html`
+                    <span class="protected-app-badge" title=${clients.map(c => c.hostname).join(', ')}>
+                      ${clients.length} client${clients.length > 1 ? 's' : ''}
+                    </span>
+                  `}
+                </label>
+              `;
+            })}
+          </div>
+        </div>
+      `)}
+
+      <div class="protected-apps-category">
+        <div class="protected-apps-cat-header">Custom Processes</div>
+        <p class="dim" style="margin:0 0 8px;font-size:12px">Add custom process names to protect (e.g. "MyApp.exe" on Windows, "MyApp" on macOS)</p>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input class="input-sm" style="flex:1"
+            placeholder="Process name..."
+            value=${customInput}
+            onInput=${e => setCustomInput(e.target.value)}
+            onKeyDown=${e => e.key === 'Enter' && addCustom()} />
+          <button class="btn btn-sm btn-accent" onClick=${addCustom} disabled=${!customInput.trim()}>Add</button>
+        </div>
+        ${customProcs.length > 0 && html`
+          <div class="protected-apps-custom-list">
+            ${customProcs.map(proc => html`
+              <span class="protected-app-custom-tag" key=${proc}>
+                ${proc}
+                <button class="protected-app-remove" onClick=${() => removeCustom(proc)}>\u00D7</button>
+              </span>
+            `)}
+          </div>
+        `}
+      </div>
+
+      ${dirty && html`
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-sm btn-accent" onClick=${save} disabled=${saving}>
+            ${saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 // ── Settings Page ─────────────────────────────────────────────
 function SettingsPage() {
   const { state, dispatch } = useContext(AppContext);
@@ -1707,6 +1841,7 @@ function SettingsPage() {
       <${DeviceSettings} />
       <${OscSettings} />
       ${hostRedundancy && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
+      <div class="card-wide"><${ProtectedAppsCard} /></div>
       <div class="card-wide"><${PresetGrid} /></div>
     </div>
   </div>`;

@@ -308,6 +308,12 @@ pub struct AppStateInner {
     /// Heartbeat response includes `restart_command: "restart"` while in this set.
     /// Cleared when client re-registers (indicating successful restart).
     pub pending_restarts: RwLock<HashSet<u32>>,
+    /// Enabled protected app IDs from the catalog (e.g. ["resolume-arena", "ableton-live"]).
+    /// Persisted in host.toml [safety].protected_apps.
+    pub protected_apps: RwLock<Vec<String>>,
+    /// User-defined custom process names to protect (e.g. ["MyApp.exe"]).
+    /// Persisted in host.toml [safety].custom_processes.
+    pub custom_processes: RwLock<Vec<String>>,
 }
 
 impl AppState {
@@ -350,6 +356,8 @@ impl AppState {
                 configured_devices: RwLock::new(Vec::new()),
                 per_device_midi: RwLock::new(HashMap::new()),
                 pending_restarts: RwLock::new(HashSet::new()),
+                protected_apps: RwLock::new(Vec::new()),
+                custom_processes: RwLock::new(Vec::new()),
             }),
         }
     }
@@ -480,6 +488,9 @@ pub struct ClientInfo {
     /// Reported via heartbeat. Used to block mode changes that require client restart.
     #[serde(default)]
     pub midi_apps_active: bool,
+    /// Catalog app IDs the client detected as installed on its machine.
+    #[serde(default)]
+    pub installed_apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

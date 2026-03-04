@@ -904,3 +904,204 @@ fn find_src_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+// ── Protected Apps Catalog ──
+
+#[allow(dead_code)]
+struct CatalogApp {
+    id: &'static str,
+    name: &'static str,
+    category: &'static str,
+    win_process: &'static str,
+    mac_process: &'static str,
+    linux_process: &'static str,
+    win_install_hint: &'static str,
+    mac_install_hint: &'static str,
+}
+
+const PROTECTED_APPS_CATALOG: &[CatalogApp] = &[
+    // VJ / Media Server
+    CatalogApp { id: "resolume-arena", name: "Resolume Arena", category: "VJ / Media Server", win_process: "Arena.exe", mac_process: "Arena", linux_process: "", win_install_hint: "Resolume Arena", mac_install_hint: "Resolume Arena" },
+    CatalogApp { id: "resolume-avenue", name: "Resolume Avenue", category: "VJ / Media Server", win_process: "Avenue.exe", mac_process: "Avenue", linux_process: "", win_install_hint: "Resolume Avenue", mac_install_hint: "Resolume Avenue" },
+    CatalogApp { id: "touchdesigner", name: "TouchDesigner", category: "VJ / Media Server", win_process: "TouchDesigner.exe", mac_process: "TouchDesigner", linux_process: "", win_install_hint: "TouchDesigner", mac_install_hint: "TouchDesigner" },
+    CatalogApp { id: "madmapper", name: "MadMapper", category: "VJ / Media Server", win_process: "MadMapper.exe", mac_process: "MadMapper", linux_process: "", win_install_hint: "MadMapper", mac_install_hint: "MadMapper" },
+    CatalogApp { id: "vdmx", name: "VDMX", category: "VJ / Media Server", win_process: "", mac_process: "VDMX5", linux_process: "", win_install_hint: "", mac_install_hint: "VDMX5" },
+    CatalogApp { id: "millumin", name: "Millumin", category: "VJ / Media Server", win_process: "", mac_process: "Millumin", linux_process: "", win_install_hint: "", mac_install_hint: "Millumin" },
+    CatalogApp { id: "disguise", name: "Disguise (d3)", category: "VJ / Media Server", win_process: "d3designer.exe", mac_process: "", linux_process: "", win_install_hint: "d3 Designer", mac_install_hint: "" },
+    CatalogApp { id: "notch", name: "Notch", category: "VJ / Media Server", win_process: "Notch.exe", mac_process: "", linux_process: "", win_install_hint: "Notch", mac_install_hint: "" },
+    // DAW
+    CatalogApp { id: "ableton-live", name: "Ableton Live", category: "DAW", win_process: "Ableton Live", mac_process: "Live", linux_process: "", win_install_hint: "Ableton", mac_install_hint: "Ableton Live" },
+    CatalogApp { id: "logic-pro", name: "Logic Pro", category: "DAW", win_process: "", mac_process: "Logic Pro", linux_process: "", win_install_hint: "", mac_install_hint: "Logic Pro" },
+    CatalogApp { id: "cubase", name: "Cubase", category: "DAW", win_process: "Cubase", mac_process: "Cubase", linux_process: "", win_install_hint: "Cubase", mac_install_hint: "Cubase" },
+    CatalogApp { id: "fl-studio", name: "FL Studio", category: "DAW", win_process: "FL64.exe", mac_process: "FL Studio", linux_process: "", win_install_hint: "FL Studio", mac_install_hint: "FL Studio" },
+    CatalogApp { id: "reaper", name: "Reaper", category: "DAW", win_process: "reaper.exe", mac_process: "REAPER", linux_process: "reaper", win_install_hint: "REAPER", mac_install_hint: "REAPER" },
+    CatalogApp { id: "bitwig", name: "Bitwig Studio", category: "DAW", win_process: "BitwigStudio.exe", mac_process: "Bitwig Studio", linux_process: "bitwig-studio", win_install_hint: "Bitwig Studio", mac_install_hint: "Bitwig Studio" },
+    CatalogApp { id: "pro-tools", name: "Pro Tools", category: "DAW", win_process: "ProTools.exe", mac_process: "Pro Tools", linux_process: "", win_install_hint: "Pro Tools", mac_install_hint: "Pro Tools" },
+    // Lighting
+    CatalogApp { id: "grandma3", name: "grandMA3", category: "Lighting", win_process: "gma3.exe", mac_process: "gma3", linux_process: "gma3", win_install_hint: "MALightingTechnology", mac_install_hint: "grandMA3" },
+    CatalogApp { id: "grandma2", name: "grandMA2", category: "Lighting", win_process: "gma2.exe", mac_process: "", linux_process: "", win_install_hint: "MALightingTechnology", mac_install_hint: "" },
+    CatalogApp { id: "hog4", name: "Hog 4 PC", category: "Lighting", win_process: "Hog4PC.exe", mac_process: "", linux_process: "", win_install_hint: "Hog 4", mac_install_hint: "" },
+    CatalogApp { id: "chamsys", name: "ChamSys MagicQ", category: "Lighting", win_process: "MagicQ.exe", mac_process: "MagicQ", linux_process: "MagicQ", win_install_hint: "ChamSys", mac_install_hint: "MagicQ" },
+    CatalogApp { id: "eos", name: "ETC Eos Family", category: "Lighting", win_process: "Eos.exe", mac_process: "", linux_process: "", win_install_hint: "ETC", mac_install_hint: "" },
+    CatalogApp { id: "capture", name: "Capture", category: "Lighting", win_process: "Capture.exe", mac_process: "Capture", linux_process: "", win_install_hint: "Capture", mac_install_hint: "Capture" },
+    CatalogApp { id: "onyx", name: "ONYX (Obsidian)", category: "Lighting", win_process: "M-PC.exe", mac_process: "", linux_process: "", win_install_hint: "ONYX", mac_install_hint: "" },
+    CatalogApp { id: "vista", name: "Chroma-Q Vista", category: "Lighting", win_process: "vista.exe", mac_process: "", linux_process: "", win_install_hint: "Vista", mac_install_hint: "" },
+    CatalogApp { id: "lightkey", name: "Lightkey", category: "Lighting", win_process: "", mac_process: "Lightkey", linux_process: "", win_install_hint: "", mac_install_hint: "Lightkey" },
+    CatalogApp { id: "qlcplus", name: "QLC+", category: "Lighting", win_process: "qlcplus.exe", mac_process: "qlcplus", linux_process: "qlcplus", win_install_hint: "QLC+", mac_install_hint: "QLC+" },
+    // Playback
+    CatalogApp { id: "qlab", name: "QLab", category: "Playback", win_process: "", mac_process: "QLab", linux_process: "", win_install_hint: "", mac_install_hint: "QLab" },
+    CatalogApp { id: "playbackpro", name: "PlayBack Pro", category: "Playback", win_process: "PlayBackPro.exe", mac_process: "PlayBack Pro", linux_process: "", win_install_hint: "PlayBack Pro", mac_install_hint: "PlayBack Pro" },
+];
+
+/// Resolve a catalog app ID to the OS-specific process name.
+pub fn resolve_process_name(app_id: &str, os: &str) -> Option<String> {
+    PROTECTED_APPS_CATALOG.iter().find(|a| a.id == app_id).and_then(|a| {
+        let name = match os {
+            "windows" => a.win_process,
+            "macos" | "darwin" => a.mac_process,
+            "linux" => a.linux_process,
+            _ => a.win_process, // default to windows (most common client OS)
+        };
+        if name.is_empty() { None } else { Some(name.to_string()) }
+    })
+}
+
+/// Build the list of OS-specific process names for a given client OS,
+/// combining catalog selections and custom process names.
+pub fn resolve_protected_processes(
+    enabled_ids: &[String],
+    custom: &[String],
+    os: &str,
+) -> Vec<String> {
+    let mut procs: Vec<String> = enabled_ids
+        .iter()
+        .filter_map(|id| resolve_process_name(id, os))
+        .collect();
+    procs.extend(custom.iter().cloned());
+    procs
+}
+
+#[derive(Deserialize)]
+pub struct SetProtectedAppsBody {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    #[serde(default)]
+    pub custom_processes: Vec<String>,
+}
+
+/// GET /api/settings/protected-apps — return the full catalog + current selections.
+pub async fn get_protected_apps(State(state): State<AppState>) -> Json<Value> {
+    let enabled = state.inner.protected_apps.read().await;
+    let custom = state.inner.custom_processes.read().await;
+
+    // Build catalog JSON
+    let catalog: Vec<Value> = PROTECTED_APPS_CATALOG
+        .iter()
+        .map(|a| json!({
+            "id": a.id,
+            "name": a.name,
+            "category": a.category,
+            "win_process": a.win_process,
+            "mac_process": a.mac_process,
+            "linux_process": a.linux_process,
+        }))
+        .collect();
+
+    // Aggregate installed apps across all clients
+    let clients = state.inner.clients.read().await;
+    let mut installed_on: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+    for client in clients.iter() {
+        for app_id in &client.installed_apps {
+            installed_on
+                .entry(app_id.clone())
+                .or_default()
+                .push(json!({ "id": client.id, "hostname": &client.hostname }));
+        }
+    }
+
+    Json(json!({
+        "catalog": catalog,
+        "enabled": *enabled,
+        "custom_processes": *custom,
+        "installed_on": installed_on,
+    }))
+}
+
+/// PUT /api/settings/protected-apps — update the enabled app list + custom processes.
+pub async fn set_protected_apps(
+    State(state): State<AppState>,
+    Json(body): Json<SetProtectedAppsBody>,
+) -> Json<Value> {
+    // Validate enabled IDs against catalog
+    let valid_ids: Vec<&str> = PROTECTED_APPS_CATALOG.iter().map(|a| a.id).collect();
+    let invalid: Vec<_> = body.enabled.iter()
+        .filter(|id| !valid_ids.contains(&id.as_str()))
+        .collect();
+    if !invalid.is_empty() {
+        return Json(json!({
+            "success": false,
+            "error": format!("Unknown app IDs: {}", invalid.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+        }));
+    }
+
+    // Persist to config file
+    let config_path = state.inner.config_path.read().await.clone();
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(path = %config_path, error = %e, "Failed to read config file");
+            return Json(json!({ "success": false, "error": format!("Cannot read config: {}", e) }));
+        }
+    };
+
+    let mut table: toml::Table = match toml::from_str(&contents) {
+        Ok(t) => t,
+        Err(e) => {
+            error!(error = %e, "Failed to parse config TOML");
+            return Json(json!({ "success": false, "error": format!("Config parse error: {}", e) }));
+        }
+    };
+
+    // Build [safety] section
+    let safety = table
+        .entry("safety")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let toml::Value::Table(ref mut t) = safety {
+        t.insert(
+            "protected_apps".to_string(),
+            toml::Value::Array(body.enabled.iter().map(|s| toml::Value::String(s.clone())).collect()),
+        );
+        t.insert(
+            "custom_processes".to_string(),
+            toml::Value::Array(body.custom_processes.iter().map(|s| toml::Value::String(s.clone())).collect()),
+        );
+    }
+
+    let new_contents = match toml::to_string_pretty(&table) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(json!({ "success": false, "error": format!("Failed to serialize config: {}", e) }));
+        }
+    };
+
+    // Atomic write
+    let tmp_path = format!("{}.tmp", config_path);
+    if let Err(e) = std::fs::write(&tmp_path, &new_contents) {
+        return Json(json!({ "success": false, "error": format!("Failed to write config: {}", e) }));
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Json(json!({ "success": false, "error": format!("Failed to apply config: {}", e) }));
+    }
+
+    // Update in-memory state
+    info!(
+        enabled = ?body.enabled,
+        custom = ?body.custom_processes,
+        "Protected apps configuration updated"
+    );
+    *state.inner.protected_apps.write().await = body.enabled;
+    *state.inner.custom_processes.write().await = body.custom_processes;
+
+    Json(json!({ "success": true }))
+}
+

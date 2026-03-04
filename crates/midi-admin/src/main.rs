@@ -122,6 +122,28 @@ async fn main() -> anyhow::Result<()> {
                     info!(devices = ?device_names, "Configured devices from config");
                     *state.inner.configured_devices.write().await = device_names;
                 }
+
+                // Read [safety] protected apps config
+                if let Some(safety_table) = table.get("safety").and_then(|s| s.as_table()) {
+                    if let Some(apps) = safety_table.get("protected_apps").and_then(|v| v.as_array()) {
+                        let ids: Vec<String> = apps.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !ids.is_empty() {
+                            info!(apps = ?ids, "Protected apps loaded from config");
+                            *state.inner.protected_apps.write().await = ids;
+                        }
+                    }
+                    if let Some(custom) = safety_table.get("custom_processes").and_then(|v| v.as_array()) {
+                        let procs: Vec<String> = custom.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !procs.is_empty() {
+                            info!(custom = ?procs, "Custom protected processes loaded from config");
+                            *state.inner.custom_processes.write().await = procs;
+                        }
+                    }
+                }
             }
         }
     } else {

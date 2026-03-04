@@ -126,6 +126,7 @@ pub async fn register_client(
             git_hash: body.git_hash,
             manual: false,
             midi_apps_active: false,
+            installed_apps: Vec::new(),
         });
     }
     drop(clients);
@@ -161,6 +162,8 @@ pub struct ClientHeartbeatBody {
     pub git_hash: String,
     #[serde(default)]
     pub midi_apps_active: bool,
+    #[serde(default)]
+    pub installed_apps: Vec<String>,
 }
 
 /// POST /api/clients/:id/heartbeat — periodic health update from client
@@ -180,6 +183,9 @@ pub async fn client_heartbeat(
         client.midi_rate_out = body.midi_rate_out;
         client.device_ready = body.device_ready;
         client.midi_apps_active = body.midi_apps_active;
+        if !body.installed_apps.is_empty() {
+            client.installed_apps = body.installed_apps;
+        }
         if !body.device_name.is_empty() {
             client.device_name = body.device_name;
         }
@@ -189,6 +195,7 @@ pub async fn client_heartbeat(
         if !body.git_hash.is_empty() {
             client.git_hash = body.git_hash;
         }
+        let client_os = client.os.clone();
         drop(clients);
 
         // Include focus command based on designated_focus
@@ -205,11 +212,19 @@ pub async fn client_heartbeat(
             if pending.contains(&id) { Some("restart") } else { None }
         };
 
+        // Resolve protected process names for this client's OS
+        let protected = {
+            let enabled = state.inner.protected_apps.read().await;
+            let custom = state.inner.custom_processes.read().await;
+            crate::api::system::resolve_protected_processes(&enabled, &custom, &client_os)
+        };
+
         Json(json!({
             "success": true,
             "focus_command": focus_cmd,
             "host_git_hash": midi_protocol::GIT_HASH,
             "restart_command": restart_cmd,
+            "protected_processes": protected,
         }))
     } else {
         Json(json!({ "success": false, "error": "Client not registered" }))
@@ -319,6 +334,7 @@ pub async fn add_client_manual(
         git_hash: String::new(),
         manual: true,
         midi_apps_active: false,
+        installed_apps: Vec::new(),
     });
 
     Json(json!({ "success": true, "id": id }))
