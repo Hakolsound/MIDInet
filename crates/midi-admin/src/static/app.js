@@ -147,6 +147,7 @@ const INIT = {
   modal: null, updateModal: null,
   deviceActivity: {}, identifyActive: {},
   mutedAlerts: {},  // { [source]: true } — cleared on page reload
+  license: null,  // global license state for header pill visibility
 };
 
 function reducer(state, action) {
@@ -199,6 +200,7 @@ function reducer(state, action) {
     case 'SET_SETTINGS': return { ...state, settings: action.data };
     case 'SET_PRESETS': return { ...state, presets: action.data || [] };
     case 'SET_FAILOVER': return { ...state, failoverDetail: action.data };
+    case 'SET_LICENSE': return { ...state, license: action.data };
     case 'ADD_TOAST': return { ...state, toasts: [...state.toasts, action.toast].slice(-5) };
     case 'RM_TOAST': return { ...state, toasts: state.toasts.filter(t => t.id !== action.id) };
     case 'WARNING_SHOW': {
@@ -405,7 +407,11 @@ function Header() {
           onClick=${() => { window.location.hash = '#' + t.id; }}>${t.label}</button>
       `)}
     </nav>
-    <a class="header-donate" href="https://midinet.io/pricing/" target="_blank" rel="noopener" title="Get a MIDInet License">⚡ Get License</a>
+    ${!state.license ? html`
+      <a class="header-donate" href="https://midinet.io/pricing/" target="_blank" rel="noopener" title="Get a MIDInet License">⚡ Get License</a>
+    ` : state.license.state !== 'licensed' ? html`
+      <a class="header-donate" href="#settings" title="Activate your MIDInet license">⚡ Activate</a>
+    ` : null}
     <div class="header-spacer" />
     <div class="header-role" data-role=${role}>${role.toUpperCase()}</div>
     <div class="header-health">
@@ -818,6 +824,7 @@ function LicenseCard() {
   const fetchLicense = async () => {
     const data = await apiFetch('/api/license');
     setLic(data);
+    dispatch({ type: 'SET_LICENSE', data });
   };
   useEffect(() => { fetchLicense(); const t = setInterval(fetchLicense, 5000); return () => clearInterval(t); }, []);
 
@@ -912,7 +919,6 @@ function OverviewPage() {
     <${MidiDataCard} />
     <${NetworkCard} />
     <${ClientsCard} />
-    <${LicenseCard} />
   </div>`;
 }
 
@@ -2033,6 +2039,7 @@ function SettingsPage() {
       ${hostRedundancy && html`<div class="card-wide"><${FailoverSettingsPanel} /></div>`}
       <div class="card-wide"><${ProtectedAppsCard} /></div>
       <div class="card-wide"><${PresetGrid} /></div>
+      <div class="card-wide"><${LicenseCard} /></div>
     </div>
   </div>`;
 }
