@@ -85,6 +85,8 @@ ok "Stopped"
 
 # ── 3. Build ────────────────────────────────────────────────
 step 3 "Building release binaries (this may take a while on Pi)..."
+echo -e "    ${CYAN}ℹ${NC}  Expect high CPU usage during compilation — this is normal"
+echo -e "    ${CYAN}ℹ${NC}  The final linking step uses low CPU and may look stuck — this is normal on ARM"
 cargo build --release -p midi-host -p midi-cli -p midi-admin
 ok "Build complete"
 

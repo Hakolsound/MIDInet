@@ -47,6 +47,25 @@ impl std::fmt::Display for OperationalMode {
     }
 }
 
+impl OperationalMode {
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Single => 1,
+            Self::Redundant => 2,
+            Self::MultiDevice => 3,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Self::Single),
+            2 => Some(Self::Redundant),
+            3 => Some(Self::MultiDevice),
+            _ => None,
+        }
+    }
+}
+
 impl std::str::FromStr for OperationalMode {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

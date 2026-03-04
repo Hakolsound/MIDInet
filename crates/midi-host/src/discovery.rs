@@ -42,10 +42,16 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
         state.config.network.control_group.clone(),
     );
 
-    // Device name from current identity
+    // Device name: prefer device_identities[0] (accurate in multi-device mode),
+    // fall back to state.identity for single/redundant
     {
-        let identity = state.identity.read().await;
-        properties.insert("device".to_string(), identity.name.clone());
+        let identities = state.device_identities.read().await;
+        let device_name = if let Some(first) = identities.first() {
+            first.name.clone()
+        } else {
+            state.identity.read().await.name.clone()
+        };
+        properties.insert("device".to_string(), device_name);
     }
 
     properties.insert(

@@ -154,6 +154,7 @@ fi
 STEP=2
 if [ "$NEED_BUILD" = true ]; then
     echo -e "${CYAN}[2/4]${NC} Building release (first build may take 15+ min on ARM)..."
+    echo -e "    ${CYAN}ℹ${NC}  Expect high CPU usage during compilation — this is normal"
     echo -e "    ${CYAN}ℹ${NC}  The final linking step uses low CPU and may look stuck — this is normal on ARM"
     BUILD_START=$SECONDS
     cargo build --release -p midi-host -p midi-admin -p midi-cli

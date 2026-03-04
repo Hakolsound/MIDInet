@@ -14,7 +14,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, error, info};
 
 use midi_protocol::packets::{DiscoverRequest, DiscoverResponse};
-use midi_protocol::{DEFAULT_DISCOVERY_PORT, PROTOCOL_VERSION};
+use midi_protocol::{DEFAULT_DISCOVERY_PORT, OperationalMode, PROTOCOL_VERSION};
 
 use crate::SharedState;
 
@@ -86,17 +86,22 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
 
         // Build response from current state
         let role = *state.role.borrow();
-        let device_name = state.identity.read().await.name.clone();
 
-        // In multi-device mode, include extra device names
-        let extra_device_names = {
+        // In multi-device mode, use device_identities for accurate names
+        let (device_name, extra_device_names) = {
             let identities = state.device_identities.read().await;
             if identities.len() > 1 {
-                identities.iter().skip(1).map(|id| id.name.clone()).collect()
+                let primary = identities[0].name.clone();
+                let extras = identities.iter().skip(1).map(|id| id.name.clone()).collect();
+                (primary, extras)
+            } else if let Some(first) = identities.first() {
+                (first.name.clone(), vec![])
             } else {
-                vec![]
+                (state.identity.read().await.name.clone(), vec![])
             }
         };
+
+        let operational_mode: Option<OperationalMode> = Some(state.config.host.mode);
 
         let response = DiscoverResponse {
             host_id: state.config.host.id,
@@ -108,6 +113,7 @@ pub async fn run(state: Arc<SharedState>) -> anyhow::Result<()> {
             multicast_group: mcast_octets,
             device_name,
             extra_device_names,
+            operational_mode,
         };
 
         response.serialize(&mut resp_buf);

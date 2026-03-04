@@ -498,7 +498,8 @@ impl DiscoverRequest {
 /// Sent by hosts as a unicast reply to a discovery broadcast.
 ///
 /// V2 appends device_count + additional device names after the primary device_name.
-/// V1 code ignores trailing bytes (reads only up to device_name).
+/// V3 appends operational_mode (1 byte) after the V2 block.
+/// Older code ignores trailing bytes it doesn't understand.
 #[derive(Debug, Clone)]
 pub struct DiscoverResponse {
     pub host_id: u8,
@@ -511,6 +512,8 @@ pub struct DiscoverResponse {
     pub device_name: String,
     /// Additional device names (MultiDevice mode). Empty in Single/Redundant.
     pub extra_device_names: Vec<String>,
+    /// Operational mode of the host (0=unknown, 1=single, 2=redundant, 3=multi).
+    pub operational_mode: Option<crate::OperationalMode>,
 }
 
 impl DiscoverResponse {
@@ -540,6 +543,9 @@ impl DiscoverResponse {
             buf.push(nb.len() as u8);
             buf.extend_from_slice(nb);
         }
+
+        // V3: append operational_mode (0 = unknown)
+        buf.push(self.operational_mode.map(|m| m.to_u8()).unwrap_or(0));
     }
 
     pub fn deserialize(data: &[u8]) -> Option<Self> {
@@ -589,6 +595,13 @@ impl DiscoverResponse {
             }
         }
 
+        // V3: read operational_mode if present
+        let operational_mode = if offset < data.len() {
+            crate::OperationalMode::from_u8(data[offset])
+        } else {
+            None
+        };
+
         Some(Self {
             host_id,
             role,
@@ -599,6 +612,7 @@ impl DiscoverResponse {
             multicast_group,
             device_name,
             extra_device_names,
+            operational_mode,
         })
     }
 }
@@ -946,6 +960,7 @@ mod tests {
             multicast_group: [239, 69, 83, 1],
             device_name: "APC40".to_string(),
             extra_device_names: vec![],
+            operational_mode: Some(crate::OperationalMode::Redundant),
         };
 
         let mut buf = Vec::new();
@@ -954,6 +969,7 @@ mod tests {
 
         assert_eq!(decoded.device_name, "APC40");
         assert!(decoded.extra_device_names.is_empty());
+        assert_eq!(decoded.operational_mode, Some(crate::OperationalMode::Redundant));
     }
 
     #[test]
@@ -968,6 +984,7 @@ mod tests {
             multicast_group: [239, 69, 83, 1],
             device_name: "APC40".to_string(),
             extra_device_names: vec!["nanoKONTROL2".to_string(), "Launchpad".to_string()],
+            operational_mode: Some(crate::OperationalMode::MultiDevice),
         };
 
         let mut buf = Vec::new();
@@ -978,11 +995,12 @@ mod tests {
         assert_eq!(decoded.extra_device_names.len(), 2);
         assert_eq!(decoded.extra_device_names[0], "nanoKONTROL2");
         assert_eq!(decoded.extra_device_names[1], "Launchpad");
+        assert_eq!(decoded.operational_mode, Some(crate::OperationalMode::MultiDevice));
     }
 
     #[test]
     fn test_discover_response_v1_compat() {
-        // V1 packet has no device_count or extra names
+        // V1 packet has no device_count, extra names, or mode
         let mut v1_buf = Vec::new();
         v1_buf.extend_from_slice(&MAGIC_DISCOVER_RESP);
         v1_buf.push(1); // host_id
@@ -999,6 +1017,52 @@ mod tests {
         let decoded = DiscoverResponse::deserialize(&v1_buf).unwrap();
         assert_eq!(decoded.device_name, "APC40");
         assert!(decoded.extra_device_names.is_empty());
+        assert_eq!(decoded.operational_mode, None);
+    }
+
+    #[test]
+    fn test_discover_response_single_mode() {
+        let packet = DiscoverResponse {
+            host_id: 1,
+            role: HostRole::Primary,
+            protocol_version: 2,
+            data_port: 5004,
+            heartbeat_port: 5005,
+            admin_port: 8080,
+            multicast_group: [239, 69, 83, 1],
+            device_name: "APC40".to_string(),
+            extra_device_names: vec![],
+            operational_mode: Some(crate::OperationalMode::Single),
+        };
+
+        let mut buf = Vec::new();
+        packet.serialize(&mut buf);
+        let decoded = DiscoverResponse::deserialize(&buf).unwrap();
+
+        assert_eq!(decoded.operational_mode, Some(crate::OperationalMode::Single));
+    }
+
+    #[test]
+    fn test_discover_response_no_mode() {
+        let packet = DiscoverResponse {
+            host_id: 1,
+            role: HostRole::Primary,
+            protocol_version: 2,
+            data_port: 5004,
+            heartbeat_port: 5005,
+            admin_port: 8080,
+            multicast_group: [239, 69, 83, 1],
+            device_name: "APC40".to_string(),
+            extra_device_names: vec![],
+            operational_mode: None,
+        };
+
+        let mut buf = Vec::new();
+        packet.serialize(&mut buf);
+        let decoded = DiscoverResponse::deserialize(&buf).unwrap();
+
+        // operational_mode=None serializes as 0, which deserializes back to None
+        assert_eq!(decoded.operational_mode, None);
     }
 
     // -- Rejection tests --

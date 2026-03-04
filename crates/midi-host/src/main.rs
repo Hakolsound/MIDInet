@@ -452,6 +452,12 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&state),
             ).await?;
 
+            // Update state.identity to match the first highway device so mDNS
+            // and broadcast discovery advertise the correct primary device name.
+            if let Some(first) = state.device_identities.read().await.first() {
+                *state.identity.write().await = first.clone();
+            }
+
             task_handles.extend(handles);
         }
         _ => {

@@ -530,13 +530,14 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
 
     let multicast_group = Ipv4Addr::from(resp.multicast_group).to_string();
 
-    // Infer mode from the response: if extra_device_names is non-empty, it's MultiDevice.
-    // Broadcast DiscoverResponse doesn't carry explicit mode yet.
-    let inferred_mode = if !resp.extra_device_names.is_empty() {
-        Some(OperationalMode::MultiDevice)
-    } else {
-        None // Cannot distinguish Single vs Redundant from broadcast alone
-    };
+    // Use explicit mode from V3 DiscoverResponse, fall back to inference for older hosts
+    let discovered_mode = resp.operational_mode.or_else(|| {
+        if !resp.extra_device_names.is_empty() {
+            Some(OperationalMode::MultiDevice)
+        } else {
+            None
+        }
+    });
 
     let discovered = DiscoveredHost {
         id: resp.host_id,
@@ -554,7 +555,7 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
         protocol_version: Some(resp.protocol_version),
         admin_url: Some(admin_url),
         extra_device_names: resp.extra_device_names.clone(),
-        operational_mode: inferred_mode,
+        operational_mode: discovered_mode,
         host_redundancy: false,
     };
 
@@ -639,7 +640,7 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
     // Set detected mode
     let active_id = state.active_host_id.read().await.unwrap_or(1);
     if resp.host_id == active_id {
-        if let Some(mode) = inferred_mode {
+        if let Some(mode) = discovered_mode {
             let mut detected = state.detected_mode.write().await;
             if *detected != Some(mode) {
                 info!(mode = %mode, "Detected operational mode via broadcast discovery");
