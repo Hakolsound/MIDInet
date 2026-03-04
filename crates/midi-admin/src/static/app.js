@@ -1808,34 +1808,34 @@ function ProtectedAppsCard() {
               onInput=${e => { setSearch(e.target.value); setDropdownOpen(true); }}
               onFocus=${() => setDropdownOpen(true)}
               onKeyDown=${e => { if (e.key === 'Enter' && isCustomCandidate) addCustom(); if (e.key === 'Escape') setDropdownOpen(false); }} />
+            ${dropdownOpen && html`
+              <div class="prot-apps-dropdown">
+                ${Object.entries(grouped).map(([cat, apps]) => html`
+                  <div class="prot-apps-dd-group" key=${cat}>
+                    <div class="prot-apps-dd-cat">${categoryIcons[cat] || ''} ${cat}</div>
+                    ${apps.map(app => html`
+                      <div class="prot-apps-dd-item" key=${app.id} onClick=${() => addApp(app.id)}>
+                        <span>${app.name}</span>
+                        ${installedOn[app.id] && installedOn[app.id].length > 0 && html`
+                          <span class="protected-app-badge" title=${installedOn[app.id].map(c => c.hostname).join(', ')}>
+                            ${installedOn[app.id].length} client${installedOn[app.id].length > 1 ? 's' : ''}
+                          </span>
+                        `}
+                      </div>
+                    `)}
+                  </div>
+                `)}
+                ${isCustomCandidate && html`
+                  <div class="prot-apps-dd-item prot-apps-dd-custom" onClick=${addCustom}>
+                    Add custom process: <strong>${search.trim()}</strong>
+                  </div>
+                `}
+                ${filtered.length === 0 && !isCustomCandidate && html`
+                  <div class="prot-apps-dd-empty">No matching apps</div>
+                `}
+              </div>
+            `}
           </div>
-          ${dropdownOpen && html`
-            <div class="prot-apps-dropdown">
-              ${Object.entries(grouped).map(([cat, apps]) => html`
-                <div class="prot-apps-dd-group" key=${cat}>
-                  <div class="prot-apps-dd-cat">${categoryIcons[cat] || ''} ${cat}</div>
-                  ${apps.map(app => html`
-                    <div class="prot-apps-dd-item" key=${app.id} onClick=${() => addApp(app.id)}>
-                      <span>${app.name}</span>
-                      ${installedOn[app.id] && installedOn[app.id].length > 0 && html`
-                        <span class="protected-app-badge" title=${installedOn[app.id].map(c => c.hostname).join(', ')}>
-                          ${installedOn[app.id].length} client${installedOn[app.id].length > 1 ? 's' : ''}
-                        </span>
-                      `}
-                    </div>
-                  `)}
-                </div>
-              `)}
-              ${isCustomCandidate && html`
-                <div class="prot-apps-dd-item prot-apps-dd-custom" onClick=${addCustom}>
-                  Add custom process: <strong>${search.trim()}</strong>
-                </div>
-              `}
-              ${filtered.length === 0 && !isCustomCandidate && html`
-                <div class="prot-apps-dd-empty">No matching apps</div>
-              `}
-            </div>
-          `}
         </div>
 
         <!-- Right: added list -->

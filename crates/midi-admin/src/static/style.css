@@ -2204,7 +2204,7 @@ a { color: var(--accent); text-decoration: none; }
 .protected-count-badge { font-size: 11px; padding: 1px 7px; border-radius: 8px; background: var(--accent, #00d4ff); color: #000; font-weight: 600; margin-left: 8px; vertical-align: middle; }
 .protected-app-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent, #00d4ff); color: #000; font-weight: 600; white-space: nowrap; }
 .prot-apps-layout { display: flex; gap: 16px; min-height: 180px; }
-.prot-apps-search-col { flex: 1; position: relative; min-width: 0; }
+.prot-apps-search-col { flex: 1; min-width: 0; }
 .prot-apps-input-wrap { position: relative; }
 .prot-apps-search { width: 100%; box-sizing: border-box; }
 .prot-apps-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; max-height: 260px; overflow-y: auto; background: var(--surface, #1a1a2e); border: 1px solid var(--border, rgba(255,255,255,0.1)); border-radius: 6px; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
