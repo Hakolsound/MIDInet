@@ -1,0 +1,18 @@
+[Unit]
+Description=MIDInet Avahi hostname aliases (companion.local)
+After=avahi-daemon.service network-online.target
+Requires=avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/midinet-avahi-alias
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midinet-avahi-alias
+
+[Install]
+WantedBy=multi-user.target

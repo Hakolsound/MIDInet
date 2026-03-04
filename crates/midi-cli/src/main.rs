@@ -47,6 +47,30 @@ enum Commands {
         #[arg(long)]
         switch: bool,
     },
+    /// View or reconfigure Pi network settings (Linux only, requires root for changes)
+    Network {
+        #[command(subcommand)]
+        action: Option<NetworkAction>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum NetworkAction {
+    /// Show current network configuration
+    Show,
+    /// Set the static fallback IP address (requires root)
+    SetIp {
+        /// Static fallback IP address (e.g., 192.168.50.1)
+        ip: String,
+        /// Subnet mask in CIDR notation
+        #[arg(long, default_value = "24")]
+        subnet: String,
+    },
+    /// Set the hostname (requires root)
+    SetHostname {
+        /// New hostname (will be reachable as <name>.local)
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -265,7 +289,164 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::Network { action } => {
+            handle_network(action.unwrap_or(NetworkAction::Show))?;
+        }
     }
 
     Ok(())
+}
+
+// ── Network subcommand (local, Linux-only) ──────────────────────────────
+
+fn handle_network(action: NetworkAction) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = action;
+        println!("The 'network' command is only available on Linux (Raspberry Pi).");
+        println!("Use your OS network settings to configure this machine.");
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match action {
+            NetworkAction::Show => {
+                let hostname = std::process::Command::new("hostname")
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|_| "unknown".into());
+
+                let ip_output = std::process::Command::new("hostname")
+                    .arg("-I")
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+
+                let fallback_ip = parse_midinet_fallback();
+
+                println!("Network Configuration");
+                println!("══════════════════════════════");
+                println!("  Hostname:    {}", hostname);
+                println!("  mDNS:        {}.local", hostname);
+                println!("  IP(s):       {}", if ip_output.is_empty() { "none".into() } else { ip_output });
+                println!("  Fallback IP: {}", fallback_ip.as_deref().unwrap_or("not configured"));
+            }
+            NetworkAction::SetIp { ip, subnet } => {
+                ensure_root()?;
+                ip.parse::<std::net::Ipv4Addr>()
+                    .map_err(|_| anyhow::anyhow!("Invalid IP address: {}", ip))?;
+
+                let dhcpcd_conf = "/etc/dhcpcd.conf";
+                let iface = detect_interface();
+                let marker_start = "# >>> MIDInet static fallback";
+                let marker_end = "# <<< MIDInet static fallback";
+
+                let mut contents = std::fs::read_to_string(dhcpcd_conf)
+                    .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", dhcpcd_conf, e))?;
+
+                // Remove existing MIDInet block
+                if let (Some(start), Some(end)) = (contents.find(marker_start), contents.find(marker_end)) {
+                    let end = end + marker_end.len();
+                    // Trim trailing newline
+                    let end = if contents[end..].starts_with('\n') { end + 1 } else { end };
+                    contents.replace_range(start..end, "");
+                }
+
+                // Append new block
+                let block = format!(
+                    "\n{}\nprofile static_{iface}\nstatic ip_address={ip}/{subnet}\n\ninterface {iface}\nfallback static_{iface}\n{}\n",
+                    marker_start, marker_end, iface = iface, ip = ip, subnet = subnet
+                );
+                contents.push_str(&block);
+
+                std::fs::write(dhcpcd_conf, contents)?;
+                println!("Static fallback IP set to {}/{} on {}", ip, subnet, iface);
+                println!("Run 'sudo systemctl restart dhcpcd' to apply.");
+            }
+            NetworkAction::SetHostname { name } => {
+                ensure_root()?;
+
+                let status = std::process::Command::new("hostnamectl")
+                    .args(["set-hostname", &name])
+                    .status()?;
+                if !status.success() {
+                    anyhow::bail!("hostnamectl failed");
+                }
+
+                // Update /etc/hosts
+                let hosts_path = "/etc/hosts";
+                let contents = std::fs::read_to_string(hosts_path)?;
+                let mut updated = false;
+                let new_contents: String = contents.lines().map(|line| {
+                    if line.starts_with("127.0.1.1") {
+                        updated = true;
+                        format!("127.0.1.1\t{}", name)
+                    } else {
+                        line.to_string()
+                    }
+                }).collect::<Vec<_>>().join("\n");
+
+                let mut final_contents = new_contents;
+                if !updated {
+                    final_contents.push_str(&format!("\n127.0.1.1\t{}", name));
+                }
+                if !final_contents.ends_with('\n') {
+                    final_contents.push('\n');
+                }
+                std::fs::write(hosts_path, final_contents)?;
+
+                println!("Hostname set to '{}'", name);
+                println!("Reachable at: {}.local", name);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_root() -> anyhow::Result<()> {
+    let is_root = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "0")
+        .unwrap_or(false);
+
+    if !is_root {
+        anyhow::bail!("This command requires root privileges. Run with: sudo midinet network ...");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn detect_interface() -> String {
+    std::process::Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            let out = String::from_utf8_lossy(&o.stdout).to_string();
+            out.split_whitespace().nth(4).map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "eth0".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_midinet_fallback() -> Option<String> {
+    let contents = std::fs::read_to_string("/etc/dhcpcd.conf").ok()?;
+    let mut in_block = false;
+    for line in contents.lines() {
+        if line.contains("MIDInet static fallback") && line.starts_with('#') && line.contains(">>>") {
+            in_block = true;
+        }
+        if in_block && line.starts_with("static ip_address=") {
+            return Some(line.trim_start_matches("static ip_address=").to_string());
+        }
+        if line.contains("<<< MIDInet static fallback") {
+            in_block = false;
+        }
+    }
+    None
 }

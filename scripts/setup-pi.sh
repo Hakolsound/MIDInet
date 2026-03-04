@@ -58,7 +58,10 @@ done
 # 6. Disable unnecessary services
 echo "[6/7] Disabling unnecessary services..."
 systemctl disable bluetooth 2>/dev/null || true
-systemctl disable avahi-daemon 2>/dev/null || true  # We use our own mDNS
+# NOTE: Avahi is needed for <hostname>.local mDNS resolution.
+# If you ran pi-network-setup.sh, it will have enabled avahi-daemon.
+# Only disable if you don't need .local hostname access.
+# systemctl disable avahi-daemon 2>/dev/null || true
 systemctl disable triggerhappy 2>/dev/null || true
 systemctl disable hciuart 2>/dev/null || true
 

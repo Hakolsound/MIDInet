@@ -1,10 +1,11 @@
-/// Lightweight local-only health endpoint for the system tray and CLI tools.
+/// Lightweight health endpoint for the system tray, CLI tools, and admin redirect.
 ///
-/// Binds to `127.0.0.1:5009` (not externally reachable).
+/// Listen address is configurable (default `0.0.0.0:5009`).
 ///
 /// Endpoints:
-///   GET  /health   — JSON `ClientHealthSnapshot`
-///   WS   /ws       — push snapshot every 500ms
+///   GET  /health        — JSON `ClientHealthSnapshot`
+///   GET  /admin         — 302 redirect to discovered admin panel URL
+///   WS   /ws            — push snapshot every 500ms
 ///   POST /focus/claim   — tell the daemon to claim focus
 ///   POST /focus/release — tell the daemon to release focus
 
@@ -28,26 +29,29 @@ struct HealthState {
 }
 
 /// Start the health server.  Should be spawned as a tokio task.
-pub async fn run(state: Arc<ClientState>) {
+pub async fn run(state: Arc<ClientState>, listen_addr: String) {
     let health_state = HealthState {
         client: state,
     };
 
     let app = axum::Router::new()
         .route("/health", get(health_handler))
+        .route("/admin", get(admin_redirect_handler))
         .route("/ws", get(ws_handler))
         .route("/focus/claim", post(focus_claim_handler))
         .route("/focus/release", post(focus_release_handler))
         .route("/shutdown", post(shutdown_handler))
         .with_state(health_state);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], DEFAULT_HEALTH_PORT));
-    info!(port = DEFAULT_HEALTH_PORT, "Health server listening on localhost");
+    let addr: std::net::SocketAddr = listen_addr
+        .parse()
+        .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], DEFAULT_HEALTH_PORT)));
+    info!(%addr, "Health server listening");
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            error!("Failed to bind health server on port {}: {}", DEFAULT_HEALTH_PORT, e);
+            error!("Failed to bind health server on {}: {}", addr, e);
             return;
         }
     };
@@ -62,6 +66,37 @@ pub async fn run(state: Arc<ClientState>) {
 async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
     let snapshot = state.client.health.snapshot(&state.client).await;
     Json(snapshot)
+}
+
+// ── Admin redirect handler ──────────────────────────────────────────────
+
+async fn admin_redirect_handler(State(state): State<HealthState>) -> axum::response::Response {
+    let admin_url = {
+        let active_id = state.client.active_host_id.read().await;
+        let hosts = state.client.discovered_hosts.read().await;
+        active_id.and_then(|id| {
+            hosts.iter()
+                .find(|h| h.id == id)
+                .and_then(|h| h.admin_url.clone())
+        })
+    };
+
+    match admin_url {
+        Some(url) => {
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::FOUND)
+                .header(axum::http::header::LOCATION, url)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+        None => {
+            let body = serde_json::json!({
+                "error": "admin_url_not_discovered",
+                "message": "No admin panel URL has been discovered yet. Ensure a MIDInet host is running on the network."
+            });
+            (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response()
+        }
+    }
 }
 
 // ── WebSocket handler ───────────────────────────────────────────────────

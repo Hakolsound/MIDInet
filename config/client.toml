@@ -22,3 +22,7 @@ jitter_buffer_us = 0               # 0 = no buffer (lowest latency, for wired LA
 
 [focus]
 auto_claim = true                   # Automatically claim focus on startup
+
+[health]
+listen = "0.0.0.0:5009"             # Health + admin redirect endpoint
+# listen = "127.0.0.1:5009"         # Restrict to localhost only (disables /admin redirect from network)
