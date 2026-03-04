@@ -12,6 +12,29 @@ use tracing::{debug, info, warn};
 use crate::{ClientState, FocusCommand};
 use crate::health::is_midi_app_active;
 
+/// Check if MIDI apps are active, off-loading the blocking process scan
+/// to a thread pool so it can't stall the async runtime.
+/// Returns `false` on timeout (assumes apps not active — safe default for restarts).
+async fn check_midi_apps_active(state: &Arc<ClientState>) -> bool {
+    let procs = state.protected_processes.read().await.clone();
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || is_midi_app_active(&procs)),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
+            warn!("is_midi_app_active task panicked: {}", e);
+            false
+        }
+        Err(_) => {
+            warn!("is_midi_app_active timed out after 5s — assuming inactive");
+            false
+        }
+    }
+}
+
 /// Run the admin reporter. Waits for a discovered host with an admin_url,
 /// then registers and sends periodic heartbeats.
 pub async fn run(state: Arc<ClientState>) {
@@ -80,8 +103,8 @@ pub async fn run(state: Arc<ClientState>) {
             "device_name": snapshot.device_name,
             "connection_state": format!("{:?}", snapshot.connection_state).to_lowercase(),
             "git_hash": midi_protocol::GIT_HASH,
-            "midi_apps_active": is_midi_app_active(&*state.protected_processes.read().await),
-            "installed_apps": &state.installed_apps,
+            "midi_apps_active": check_midi_apps_active(&state).await,
+            "installed_apps": &*state.installed_apps.read().await,
         });
 
         match http.post(format!("{}/api/clients/{}/heartbeat", admin_url, state.client_id))
@@ -128,7 +151,7 @@ pub async fn run(state: Arc<ClientState>) {
 
                     // Process restart commands from admin panel (e.g. after mode change)
                     if resp_body.get("restart_command").and_then(|v| v.as_str()) == Some("restart") {
-                        if is_midi_app_active(&*state.protected_processes.read().await) {
+                        if check_midi_apps_active(&state).await {
                             warn!("Admin requested restart but MIDI apps are active — deferring");
                         } else {
                             info!("Admin requested restart — initiating graceful shutdown");

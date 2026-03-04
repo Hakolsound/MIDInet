@@ -48,6 +48,8 @@ pub struct ClientConfig {
     pub failover: FailoverSection,
     #[serde(default)]
     pub focus: FocusSection,
+    #[serde(default)]
+    pub health: HealthSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -92,6 +94,24 @@ impl Default for FocusSection {
     fn default() -> Self {
         Self { auto_claim: true }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HealthSection {
+    #[serde(default = "default_health_listen")]
+    pub listen: String,
+}
+
+impl Default for HealthSection {
+    fn default() -> Self {
+        Self {
+            listen: default_health_listen(),
+        }
+    }
+}
+
+fn default_health_listen() -> String {
+    format!("0.0.0.0:{}", midi_protocol::health::DEFAULT_HEALTH_PORT)
 }
 
 fn default_primary_group() -> String { midi_protocol::DEFAULT_PRIMARY_GROUP.to_string() }
@@ -182,8 +202,8 @@ pub struct ClientState {
     /// List of OS-specific process names to check for protected app detection.
     /// Updated from admin heartbeat response.
     pub protected_processes: RwLock<Vec<String>>,
-    /// Catalog app IDs detected as installed on this machine (scanned once on startup).
-    pub installed_apps: Vec<String>,
+    /// Catalog app IDs detected as installed on this machine (scanned in background on startup).
+    pub installed_apps: RwLock<Vec<String>>,
 }
 
 #[tokio::main]
@@ -217,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
             midi: MidiSection::default(),
             failover: FailoverSection { jitter_buffer_us: 0 },
             focus: FocusSection::default(),
+            health: HealthSection::default(),
         }
     };
 
@@ -258,10 +279,31 @@ async fn main() -> anyhow::Result<()> {
         detected_mode: RwLock::new(None),
         restart_requested: AtomicBool::new(false),
         protected_processes: RwLock::new(Vec::new()),
-        installed_apps: crate::health::detect_installed_apps(),
+        installed_apps: RwLock::new(Vec::new()),
     });
 
     info!(client_id = client_id, "MIDInet client starting");
+
+    // Scan for installed apps in a background thread (filesystem I/O can
+    // hang on Windows 11 with antivirus / network drives). Timeout after 10s.
+    {
+        let state_bg = Arc::clone(&state);
+        tokio::spawn(async move {
+            match tokio::time::timeout(
+                Duration::from_secs(10),
+                tokio::task::spawn_blocking(crate::health::detect_installed_apps),
+            )
+            .await
+            {
+                Ok(Ok(apps)) => {
+                    info!(count = apps.len(), "Installed apps scan complete");
+                    *state_bg.installed_apps.write().await = apps;
+                }
+                Ok(Err(e)) => warn!("Installed apps scan panicked: {}", e),
+                Err(_) => warn!("Installed apps scan timed out after 10s"),
+            }
+        });
+    }
 
     // Spawn supervised tasks — auto-restart on error/panic with backoff.
     // The virtual MIDI device is unaffected since it lives at process level.
@@ -347,11 +389,12 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    // Spawn health server (localhost-only WebSocket + REST)
+    // Spawn health server (WebSocket + REST + admin redirect)
     let health_server_handle = {
         let state = Arc::clone(&state);
+        let listen_addr = config.health.listen.clone();
         tokio::spawn(async move {
-            health_server::run(state).await;
+            health_server::run(state, listen_addr).await;
         })
     };
 
@@ -406,26 +449,54 @@ async fn main() -> anyhow::Result<()> {
     // Signal all tasks to stop
     cancel.cancel();
 
-    // Graceful shutdown: silence the device (All Notes Off / All Sound Off)
-    // and detach the port handle so it stays alive until process exit.
-    // This prevents crashes in apps like Resolume that hold open MIDI handles —
-    // explicit close() triggers a bug in Windows MIDI Services (midisrv.exe).
+    // Graceful shutdown: silence the device (All Notes Off / All Sound Off).
+    //
+    // Two strategies depending on shutdown reason:
+    //
+    // Admin-requested restart (exit code 42): Explicitly close() the device
+    // to release handles before respawning. We already verified no MIDI apps
+    // are active before accepting the restart command, so explicit teardown
+    // is safe. Without this, Windows MIDI Services (midisrv.exe) keeps the
+    // device registered and the respawned process can't create a new one
+    // with the same name — requiring a full Windows reboot.
+    //
+    // Normal shutdown (Ctrl+C / API): Use silence_and_detach() to keep the
+    // port alive until process exit. This prevents crashes in apps like
+    // Resolume that hold open MIDI handles — explicit close() can trigger
+    // a bug in Midi2.VirtualMidiTransport.dll (midisrv.exe access violation).
+    let is_admin_restart = state.restart_requested.load(Ordering::Relaxed);
     {
-        // Silence multi-device slots first
         let mut multi = state.multi_devices.write().await;
         for slot in multi.iter_mut() {
             if slot.ready {
-                if let Err(e) = slot.device.silence_and_detach() {
-                    warn!(device = %slot.identity.name, "Error during multi-device shutdown: {}", e);
+                if is_admin_restart {
+                    // Admin restart: explicit close to release handles for respawn.
+                    // send_all_off first, then close. If close fails, fall back to detach.
+                    let _ = slot.device.send_all_off();
+                    if let Err(e) = slot.device.close() {
+                        warn!(device = %slot.identity.name, "Error closing multi-device (falling back to detach): {}", e);
+                        let _ = slot.device.silence_and_detach();
+                    }
+                } else {
+                    if let Err(e) = slot.device.silence_and_detach() {
+                        warn!(device = %slot.identity.name, "Error during multi-device shutdown: {}", e);
+                    }
                 }
             }
         }
         drop(multi);
 
-        // Silence single device (only relevant in single/redundant mode)
         let mut vdev = state.virtual_device.write().await;
-        if let Err(e) = vdev.silence_and_detach() {
-            warn!("Error during graceful device shutdown: {}", e);
+        if is_admin_restart {
+            let _ = vdev.send_all_off();
+            if let Err(e) = vdev.close() {
+                warn!("Error closing device (falling back to detach): {}", e);
+                let _ = vdev.silence_and_detach();
+            }
+        } else {
+            if let Err(e) = vdev.silence_and_detach() {
+                warn!("Error during graceful device shutdown: {}", e);
+            }
         }
     }
 
@@ -447,6 +518,10 @@ async fn main() -> anyhow::Result<()> {
     // so the tray (Windows) auto-restarts immediately. On Linux/macOS, the
     // service manager (systemd/launchd) restarts regardless of exit code.
     if state.restart_requested.load(Ordering::Relaxed) {
+        // Brief delay to let the OS fully release MIDI device handles and ports.
+        // Without this, the respawned process may fail to bind the health port
+        // or re-create virtual MIDI devices (especially on Windows 11).
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         info!("Exiting with code 42 for admin-requested restart");
         std::process::exit(42);
     }

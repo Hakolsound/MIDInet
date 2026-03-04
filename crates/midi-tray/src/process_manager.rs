@@ -87,10 +87,12 @@ impl ProcessManager {
                     .output();
             }
 
-            // Wait for the health port to become available (up to 3 seconds).
-            // Killed processes may hold the port briefly while the OS reclaims the socket.
+            // Wait for the health port to become available (up to 10 seconds).
+            // Killed processes may hold the port while the OS reclaims the socket
+            // and virtual MIDI device handles. Windows 11 MIDI Services cleanup
+            // can take longer than teVirtualMIDI on Windows 10.
             let port = midi_protocol::health::DEFAULT_HEALTH_PORT;
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 match std::net::TcpListener::bind(("127.0.0.1", port)) {
                     Ok(_listener) => {
@@ -99,7 +101,7 @@ impl ProcessManager {
                     }
                     Err(_) => {
                         if Instant::now() >= deadline {
-                            warn!(port = port, "Health port still in use after 3s — proceeding anyway");
+                            warn!(port = port, "Health port still in use after 10s — proceeding anyway");
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(200));
