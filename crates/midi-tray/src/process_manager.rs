@@ -140,6 +140,17 @@ impl ProcessManager {
         if let Some(ref config) = self.config_path {
             cmd.args(["-c", &config.to_string_lossy()]);
         }
+
+        // After 3+ rapid crashes, tell the client to skip MIDI Services
+        // (the crash is likely caused by stale midisrv.exe state).
+        if self.restart_count >= 3 {
+            warn!(
+                restart_count = self.restart_count,
+                "Multiple crashes — setting MIDINET_SKIP_MIDI_SERVICES=1"
+            );
+            cmd.env("MIDINET_SKIP_MIDI_SERVICES", "1");
+        }
+
         #[cfg(target_os = "windows")]
         {
             cmd.creation_flags(CREATE_NO_WINDOW);

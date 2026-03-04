@@ -87,22 +87,59 @@ impl WindowsVirtualDevice {
 }
 
 impl WindowsVirtualDevice {
+    /// Path of the crash-sentinel file.  Written before attempting MIDI Services
+    /// device creation and deleted on success.  If it exists at startup, the
+    /// previous attempt crashed the process → skip MIDI Services entirely.
+    fn crash_sentinel() -> std::path::PathBuf {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".midinet-midi-services-crash")
+    }
+
     /// Windows 11+: try MIDI Services first, fall back to teVirtualMIDI.
     fn create_win11(&mut self, identity: &DeviceIdentity) -> anyhow::Result<()> {
-        info!(name = %identity.name, "Windows 11 — attempting Windows MIDI Services backend...");
-        let mut ms_device = MidiServicesDevice::new();
-        match ms_device.create(identity) {
-            Ok(()) => {
-                info!(name = %identity.name, "Using Windows MIDI Services backend");
-                self.backend = Backend::MidiServices(ms_device);
-                return Ok(());
-            }
-            Err(e) => {
-                warn!(
-                    name = %identity.name,
-                    error = %e,
-                    "Windows MIDI Services failed, trying teVirtualMIDI..."
-                );
+        let sentinel = Self::crash_sentinel();
+
+        // If the crash sentinel exists, a previous MIDI Services attempt crashed
+        // the process (e.g. stale midisrv.exe state after unclean shutdown).
+        // Skip MIDI Services and go straight to teVirtualMIDI.
+        let skip_midi_services = sentinel.exists()
+            || std::env::var("MIDINET_SKIP_MIDI_SERVICES").as_deref() == Ok("1");
+
+        if skip_midi_services {
+            warn!(
+                name = %identity.name,
+                "Skipping MIDI Services (previous attempt crashed or MIDINET_SKIP_MIDI_SERVICES=1) \
+                 — trying teVirtualMIDI directly"
+            );
+        } else {
+            info!(name = %identity.name, "Windows 11 — attempting Windows MIDI Services backend...");
+
+            // Write crash sentinel BEFORE attempting creation.
+            // Deleted on success; if we crash, it stays and next startup skips.
+            let _ = std::fs::write(&sentinel, b"crash during MIDI Services init");
+
+            let mut ms_device = MidiServicesDevice::new();
+            match ms_device.create(identity) {
+                Ok(()) => {
+                    // Success — remove sentinel and any teVirtualMIDI skip marker
+                    let _ = std::fs::remove_file(&sentinel);
+                    info!(name = %identity.name, "Using Windows MIDI Services backend");
+                    self.backend = Backend::MidiServices(ms_device);
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Creation returned an error (didn't crash) — remove sentinel,
+                    // it's safe to try MIDI Services again next time.
+                    let _ = std::fs::remove_file(&sentinel);
+                    warn!(
+                        name = %identity.name,
+                        error = %e,
+                        "Windows MIDI Services failed, trying teVirtualMIDI..."
+                    );
+                }
             }
         }
 
