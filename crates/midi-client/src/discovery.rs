@@ -246,6 +246,19 @@ async fn handle_service_resolved(
 
     let active_id = state.active_host_id.read().await.unwrap_or(1);
     if host_id == active_id {
+        // ── Set detected mode BEFORE identity ──────────────────────────
+        // The init loop in main.rs gates on identity.is_valid() then
+        // checks detected_mode. Setting mode first prevents a race where
+        // the init loop sees a valid identity but no MultiDevice mode and
+        // creates a conflicting single virtual device.
+        if let Some(mode) = operational_mode {
+            let mut detected = state.detected_mode.write().await;
+            if *detected != Some(mode) {
+                info!(mode = %mode, "Detected operational mode from active host");
+                *detected = Some(mode);
+            }
+        }
+
         let mut identity = state.identity.write().await;
         if !identity.is_valid() || identity.name != device_name {
             info!(
@@ -254,22 +267,8 @@ async fn handle_service_resolved(
                 "Updating device identity from discovered host"
             );
             identity.name = device_name.clone();
-            // The host advertises the device name via mDNS TXT records.
-            // Full identity (manufacturer, VID/PID, SysEx) comes via the
-            // control channel after the receiver connects. For now, setting
-            // the name is enough for the virtual device to be created with
-            // the correct name visible to DAWs/media servers.
         }
         drop(identity);
-
-        // ── Set detected mode from the active host ────────────────────
-        if let Some(mode) = operational_mode {
-            let mut detected = state.detected_mode.write().await;
-            if *detected != Some(mode) {
-                info!(mode = %mode, "Detected operational mode from active host");
-                *detected = Some(mode);
-            }
-        }
 
         // ── Multi-device init from mDNS (mirrors broadcast path) ──────
         if !extra_for_init.is_empty() {
@@ -419,9 +418,18 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                 }
             }
 
-            // Populate device identity
+            // Populate device identity (set mode BEFORE identity to prevent
+            // init loop race — see mDNS path comment for details)
             let active_id = state.active_host_id.read().await.unwrap_or(1);
             if host.id == active_id {
+                if let Some(mode) = operational_mode {
+                    let mut detected = state.detected_mode.write().await;
+                    if *detected != Some(mode) {
+                        info!(mode = %mode, "Detected operational mode via HTTP discovery");
+                        *detected = Some(mode);
+                    }
+                }
+
                 let mut identity = state.identity.write().await;
                 if !identity.is_valid() || identity.name != host.device_name {
                     info!(
@@ -432,15 +440,6 @@ pub async fn run_http_discovery(state: Arc<ClientState>, admin_url: String) {
                     identity.name = host.device_name.clone();
                 }
                 drop(identity);
-
-                // Set detected mode
-                if let Some(mode) = operational_mode {
-                    let mut detected = state.detected_mode.write().await;
-                    if *detected != Some(mode) {
-                        info!(mode = %mode, "Detected operational mode via HTTP discovery");
-                        *detected = Some(mode);
-                    }
-                }
 
                 // Multi-device init from HTTP (mirrors broadcast path)
                 if !host.extra_device_names.is_empty() {
@@ -618,9 +617,18 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
         }
     }
 
-    // Populate device identity
+    // Populate device identity (set mode BEFORE identity to prevent
+    // init loop race — see mDNS path comment for details)
     let active_id = state.active_host_id.read().await.unwrap_or(1);
     if resp.host_id == active_id {
+        if let Some(mode) = discovered_mode {
+            let mut detected = state.detected_mode.write().await;
+            if *detected != Some(mode) {
+                info!(mode = %mode, "Detected operational mode via broadcast discovery");
+                *detected = Some(mode);
+            }
+        }
+
         let mut identity = state.identity.write().await;
         if !identity.is_valid() || identity.name != resp.device_name {
             info!(
@@ -635,18 +643,6 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
     // Multi-device: if host reports extra devices, create virtual devices for them
     if !resp.extra_device_names.is_empty() {
         init_multi_devices(state, &resp.device_name, &resp.extra_device_names).await;
-    }
-
-    // Set detected mode
-    let active_id = state.active_host_id.read().await.unwrap_or(1);
-    if resp.host_id == active_id {
-        if let Some(mode) = discovered_mode {
-            let mut detected = state.detected_mode.write().await;
-            if *detected != Some(mode) {
-                info!(mode = %mode, "Detected operational mode via broadcast discovery");
-                *detected = Some(mode);
-            }
-        }
     }
 }
 
