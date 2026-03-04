@@ -31,7 +31,7 @@ use midi_protocol::pipeline::PipelineConfig;
 use midi_protocol::OperationalMode;
 
 use crate::health::{task_pulse, HealthCollector, TaskPulse};
-use crate::virtual_device::{create_virtual_device, VirtualMidiDevice};
+use crate::virtual_device::{create_virtual_device, create_virtual_device_async, VirtualMidiDevice};
 
 #[derive(Parser, Debug)]
 #[command(name = "midi-client", about = "MIDInet client daemon")]
@@ -366,24 +366,24 @@ async fn main() -> anyhow::Result<()> {
                 };
                 drop(identity);
 
-                let mut vdev = state.virtual_device.write().await;
-                match vdev.create(&device_identity) {
-                    Ok(()) => {
-                        let host_count = state.discovered_hosts.read().await.len();
-                        let active_id = state.active_host_id.read().await;
-                        info!(
-                            device = %device_identity.name,
-                            hosts_discovered = host_count,
-                            active_host = ?*active_id,
-                            "Virtual MIDI device created -- apps can now see it"
-                        );
-                        *state.device_ready.write().await = true;
-                        return;
-                    }
-                    Err(e) => {
-                        error!("Failed to create virtual device: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
+                // Create device on a blocking thread with timeout to prevent
+                // Windows MIDI Services COM calls from hanging the async runtime.
+                let (device, success) = create_virtual_device_async(&device_identity).await;
+                if success {
+                    let mut vdev = state.virtual_device.write().await;
+                    *vdev = device;
+                    let host_count = state.discovered_hosts.read().await.len();
+                    let active_id = state.active_host_id.read().await;
+                    info!(
+                        device = %device_identity.name,
+                        hosts_discovered = host_count,
+                        active_host = ?*active_id,
+                        "Virtual MIDI device created -- apps can now see it"
+                    );
+                    *state.device_ready.write().await = true;
+                    return;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
         })

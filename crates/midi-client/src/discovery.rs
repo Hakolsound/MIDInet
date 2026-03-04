@@ -26,7 +26,7 @@ use midi_protocol::{DEFAULT_DISCOVERY_PORT, MDNS_SERVICE_TYPE, OperationalMode, 
 use midi_protocol::identity::DeviceIdentity;
 
 use crate::health::TaskPulse;
-use crate::virtual_device::create_virtual_device;
+use crate::virtual_device::create_virtual_device_async;
 use crate::{ClientState, DiscoveredHost, MultiDeviceSlot};
 
 pub async fn run(state: Arc<ClientState>, pulse: TaskPulse) -> anyhow::Result<()> {
@@ -648,16 +648,18 @@ async fn handle_discover_response(state: &Arc<ClientState>, resp: &DiscoverRespo
 
 /// Initialize multi-device virtual MIDI devices when a host reports multiple controllers.
 /// Creates one virtual device per device_id (including device_id=0 for the primary).
+///
+/// Device creation runs on blocking threads with a timeout to prevent Windows MIDI
+/// Services COM calls from hanging the async runtime (see `create_virtual_device_async`).
 pub(crate) async fn init_multi_devices(
     state: &Arc<ClientState>,
     primary_name: &str,
     extra_names: &[String],
 ) {
-    let mut multi = state.multi_devices.write().await;
     let total = 1 + extra_names.len();
 
     // Already initialized with the right count — skip
-    if multi.len() == total {
+    if state.multi_devices.read().await.len() == total {
         return;
     }
 
@@ -667,44 +669,48 @@ pub(crate) async fn init_multi_devices(
         "Initializing multi-device virtual MIDI devices"
     );
 
-    multi.clear();
-
     // Device 0 = primary
     let all_names: Vec<&str> = std::iter::once(primary_name)
         .chain(extra_names.iter().map(|s| s.as_str()))
         .collect();
 
+    // Create all devices without holding the write lock (creation may take seconds
+    // if MIDI Services hangs and we need to fall back to teVirtualMIDI via timeout).
+    let mut slots = Vec::with_capacity(total);
     for (idx, name) in all_names.iter().enumerate() {
         let mut identity = DeviceIdentity::default();
         identity.name = name.to_string();
         identity.device_id = idx as u8;
 
-        let mut vdev = create_virtual_device();
-        let ready = match vdev.create(&identity) {
-            Ok(()) => {
-                info!(
-                    device_id = idx,
-                    name = %name,
-                    "Multi-device virtual MIDI device created"
-                );
-                true
-            }
-            Err(e) => {
-                error!(
-                    device_id = idx,
-                    name = %name,
-                    "Failed to create multi-device virtual MIDI device: {}", e
-                );
-                false
-            }
-        };
+        let (vdev, ready) = create_virtual_device_async(&identity).await;
+        if ready {
+            info!(
+                device_id = idx,
+                name = %name,
+                "Multi-device virtual MIDI device created"
+            );
+        } else {
+            error!(
+                device_id = idx,
+                name = %name,
+                "Failed to create multi-device virtual MIDI device"
+            );
+        }
 
-        multi.push(MultiDeviceSlot {
+        slots.push(MultiDeviceSlot {
             identity,
             device: vdev,
             ready,
         });
     }
+
+    // Store all devices (re-check under write lock in case another task beat us)
+    let mut multi = state.multi_devices.write().await;
+    if multi.len() == total {
+        return;
+    }
+    multi.clear();
+    *multi = slots;
 }
 
 /// Handle a host disappearing from the network. Remove it from the

@@ -71,6 +71,70 @@ pub fn create_virtual_device() -> Box<dyn VirtualMidiDevice> {
     }
 }
 
+/// Create and initialize a virtual MIDI device on a blocking thread with timeout.
+///
+/// This prevents Windows MIDI Services COM calls from blocking the tokio async
+/// runtime. If `MidiSession::Create()` or `CreateVirtualDevice()` hangs (due to
+/// stale midisrv.exe state), the timeout fires and we retry — the crash sentinel
+/// forces a fallback to teVirtualMIDI on the second attempt.
+pub async fn create_virtual_device_async(
+    identity: &DeviceIdentity,
+) -> (Box<dyn VirtualMidiDevice>, bool) {
+    let id = identity.clone();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::task::spawn_blocking(move || {
+            let mut dev = create_virtual_device();
+            dev.create(&id).map(|_| dev)
+        }),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(Ok(device))) => return (device, true),
+        Ok(Ok(Err(e))) => {
+            tracing::error!(device = %identity.name, "Failed to create virtual device: {}", e);
+            return (create_virtual_device(), false);
+        }
+        Ok(Err(e)) => {
+            tracing::error!(device = %identity.name, "Virtual device creation panicked: {}", e);
+            return (create_virtual_device(), false);
+        }
+        Err(_) => {
+            tracing::warn!(
+                device = %identity.name,
+                "Virtual device creation timed out (15s) — MIDI backend may be hung, retrying..."
+            );
+        }
+    }
+
+    // Retry after timeout. On Windows, the crash sentinel from the hung attempt
+    // causes create_win11() to skip MIDI Services and use teVirtualMIDI instead.
+    let id = identity.clone();
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || {
+            let mut dev = create_virtual_device();
+            dev.create(&id).map(|_| dev)
+        }),
+    )
+    .await
+    {
+        Ok(Ok(Ok(device))) => {
+            tracing::info!(device = %identity.name, "Virtual device created on retry (fallback backend)");
+            (device, true)
+        }
+        Ok(Ok(Err(e))) => {
+            tracing::error!(device = %identity.name, "Virtual device creation failed on retry: {}", e);
+            (create_virtual_device(), false)
+        }
+        _ => {
+            tracing::error!(device = %identity.name, "Virtual device creation failed on retry (panic or timeout)");
+            (create_virtual_device(), false)
+        }
+    }
+}
+
 /// Stub implementation for unsupported platforms
 struct StubVirtualDevice {
     name: String,
