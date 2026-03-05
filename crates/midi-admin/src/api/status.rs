@@ -241,12 +241,20 @@ pub async fn client_heartbeat(
             crate::api::system::resolve_protected_processes(&enabled, &custom, &client_os)
         };
 
+        // Include license key so clients can auto-activate
+        let license_key = if midi_license::current_state().is_licensed() {
+            midi_license::license_key()
+        } else {
+            None
+        };
+
         Json(json!({
             "success": true,
             "focus_command": focus_cmd,
             "host_git_hash": midi_protocol::GIT_HASH,
             "restart_command": restart_cmd,
             "protected_processes": protected,
+            "license_key": license_key,
         }))
     } else {
         Json(json!({ "success": false, "error": "Client not registered" }))

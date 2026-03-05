@@ -251,6 +251,12 @@ pub async fn revalidate(api_base: Option<&str>) -> anyhow::Result<LicenseState> 
     }
 }
 
+/// Get the stored license key (if any). Used by the admin panel to distribute
+/// the key to clients via heartbeat responses.
+pub fn license_key() -> Option<String> {
+    LICENSE_KEY.get().cloned()
+}
+
 /// Get the default data directory for license files.
 pub fn default_data_dir() -> PathBuf {
     storage::default_data_dir()
@@ -332,34 +338,50 @@ async fn determine_initial_state(data_dir: &Path, machine_hash: &str) -> License
         }
     }
 
-    // 2. Check for existing trial
-    if let Some(trial_state) = trial::read_trial(data_dir) {
-        // Verify integrity
-        if !trial_state.verify_checksum() {
-            warn!("Trial file tampered — checksum mismatch");
-            return LicenseState::Degraded {
-                reason: DegradedReason::TamperDetected,
+    // 2. Check for existing trial — search multiple locations so a
+    //    deployment wipe of the active data_dir doesn't grant a fresh trial.
+    let default_dir = storage::default_data_dir();
+    let trial_dirs: Vec<&Path> = if data_dir != default_dir {
+        vec![data_dir, &default_dir]
+    } else {
+        vec![data_dir]
+    };
+
+    for dir in &trial_dirs {
+        if let Some(trial_state) = trial::read_trial(dir) {
+            // Verify integrity
+            if !trial_state.verify_checksum() {
+                warn!("Trial file tampered — checksum mismatch");
+                return LicenseState::Degraded {
+                    reason: DegradedReason::TamperDetected,
+                };
+            }
+
+            // Check clock rollback
+            if trial_state.detect_clock_rollback() {
+                warn!("Clock rollback detected in trial state");
+                return LicenseState::Degraded {
+                    reason: DegradedReason::TamperDetected,
+                };
+            }
+
+            // If found in an alternate dir, copy to active data_dir for future use
+            if *dir != data_dir {
+                info!("Found existing trial in {}, migrating", dir.display());
+                let _ = trial::write_trial(data_dir, &trial_state);
+            }
+
+            if trial_state.is_expired() {
+                return LicenseState::Degraded {
+                    reason: DegradedReason::TrialExpired,
+                };
+            }
+
+            return LicenseState::Trial {
+                remaining_secs: trial_state.remaining_secs(),
+                total_secs: key::TRIAL_BUDGET_SECS,
             };
         }
-
-        // Check clock rollback
-        if trial_state.detect_clock_rollback() {
-            warn!("Clock rollback detected in trial state");
-            return LicenseState::Degraded {
-                reason: DegradedReason::TamperDetected,
-            };
-        }
-
-        if trial_state.is_expired() {
-            return LicenseState::Degraded {
-                reason: DegradedReason::TrialExpired,
-            };
-        }
-
-        return LicenseState::Trial {
-            remaining_secs: trial_state.remaining_secs(),
-            total_secs: key::TRIAL_BUDGET_SECS,
-        };
     }
 
     // 3. Check for secondary marker (trial was deleted to reset)

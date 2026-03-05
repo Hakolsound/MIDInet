@@ -43,6 +43,10 @@ pub async fn run(state: Arc<ClientState>) {
         .build()
         .unwrap_or_default();
 
+    // Track which license key we've already attempted activation for,
+    // so we don't spam the server every 5-second heartbeat.
+    let mut activated_key: Option<String> = None;
+
     // Use admin_url from config if available (for unicast/HTTP-only networks),
     // otherwise wait for mDNS discovery to provide one
     let admin_url = if let Some(ref url) = state.config.network.admin_url {
@@ -182,6 +186,25 @@ pub async fn run(state: Arc<ClientState>) {
                             .filter_map(|v| v.as_str().map(String::from))
                             .collect();
                         *state.protected_processes.write().await = list;
+                    }
+
+                    // Auto-activate license from admin if client isn't licensed
+                    if !midi_license::current_state().is_licensed() {
+                        if let Some(key) = resp_body.get("license_key").and_then(|v| v.as_str()) {
+                            if !key.is_empty() && activated_key.as_deref() != Some(key) {
+                                info!("Received license key from admin, attempting activation");
+                                match midi_license::activate(key, "client", None).await {
+                                    Ok(new_state) => {
+                                        info!(state = new_state.label(), "License activated from admin");
+                                        activated_key = Some(key.to_string());
+                                    }
+                                    Err(e) => {
+                                        warn!("License activation from admin failed: {e}");
+                                        activated_key = Some(key.to_string());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
