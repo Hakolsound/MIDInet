@@ -2163,16 +2163,18 @@ function MultiDeviceSettings({ midiDevices, activity, identifying, isActive, doI
         <div class="ctrl-section-label" style="margin-top:20px">Identify Devices</div>
         <div class="device-id-list">
           ${midiDevices.map(d => {
-            const act = isActive(d.id);
-            const lastMsg = activity[d.id]?.last_message;
+            // Match device to highway index for per-device MIDI activity
+            const hwIdx = (highways || []).findIndex(h => h.name === d.name);
+            const dm = hwIdx >= 0 ? (deviceMidi[String(hwIdx)] || {}) : {};
+            const act = dm.msg_per_sec > 0;
             const isId = identifying[d.id];
-            const flashKey = act ? d.id + '-' + (activity[d.id]?.message_count || 0) : d.id;
+            const flashKey = act ? d.id + '-' + Math.floor(Date.now() / 500) : d.id;
             return html`<div class="device-id-item ${act ? 'active flash' : ''}" key=${flashKey}>
               <div class="device-id-dot ${act ? 'active' : ''}" />
               <div class="device-id-info">
                 <div class="device-id-name">${d.name}</div>
                 <div class="device-id-meta">
-                  ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act && lastMsg ? html` · <span style="color:var(--green)">${lastMsg}</span>` : ''}
+                  ${d.manufacturer}${d.connected ? '' : ' (offline)'}${act ? html` · <span style="color:var(--green)">${fmtRate(dm.msg_per_sec)}/s</span>` : ''}
                 </div>
               </div>
               <button class="btn btn-sm ${isId ? 'btn-identify-active' : ''}" onClick=${() => doIdentify(d.id)} disabled=${isId || !d.connected}>
