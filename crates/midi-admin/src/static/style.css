@@ -821,6 +821,13 @@ a { color: var(--accent); text-decoration: none; }
 }
 .device-id-item:hover { background: rgba(255,255,255,0.04); }
 .device-id-item.active { border-color: var(--green); background: rgba(48,209,88,0.04); }
+.device-id-item.flash {
+    animation: card-flash 0.8s ease-out;
+}
+@keyframes card-flash {
+    0% { background: rgba(48,209,88,0.18); box-shadow: inset 0 0 20px rgba(48,209,88,0.15); }
+    100% { background: rgba(48,209,88,0.04); box-shadow: none; }
+}
 .device-id-dot {
     width: 8px;
     height: 8px;

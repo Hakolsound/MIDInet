@@ -99,10 +99,20 @@ function StatusToasts() {
   const fo = state.status.failover || {};
   const hasMultipleClients = state.clients.length > 1;
   const hostRedundancy = state.status.host_redundancy || false;
+  const opMode = state.status.operational_mode || 'single';
+  const cfgDevices = state.status.configured_devices || [];
+  const connectedDevices = state.devices || [];
 
   const tips = [];
-  // Overview tips
-  if (state.page === 'overview' && noDevice)
+  // Overview tips — per-device disconnect messages in multi mode
+  if (state.page === 'overview' && opMode === 'multi' && cfgDevices.length > 0) {
+    cfgDevices.forEach((name, i) => {
+      const resolvedName = name.startsWith('auto:') ? name.slice(5) : name === 'auto' ? name : name;
+      const found = connectedDevices.some(d => d.connected && d.name.toLowerCase().includes(resolvedName.toLowerCase()));
+      if (!found)
+        tips.push({ id: `tip-device-${i}`, type: 'warning', msg: `Highway #${i} "${resolvedName}" disconnected. Reconnect the controller.` });
+    });
+  } else if (state.page === 'overview' && noDevice)
     tips.push({ id: 'tip-no-device', type: 'warning', msg: 'No MIDI device detected. Connect a USB MIDI controller to the host.' });
   if (state.page === 'overview' && !noDevice && noClients)
     tips.push({ id: 'tip-no-clients', type: 'warning', msg: 'No clients connected. Ensure all machines are on the same subnet.' });
@@ -168,11 +178,15 @@ function reducer(state, action) {
       const da = d.device_activity || state.deviceActivity;
       const ia = {};
       (d.identify_active || []).forEach(id => { ia[id] = true; });
-      // Per-device spark data accumulation
+      // Per-device spark data accumulation (for all configured devices)
       const pds = { ...state.perDeviceSparkData };
       const dm = d.device_midi || {};
-      for (const [did, metrics] of Object.entries(dm)) {
-        const arr = [...(pds[did] || []), metrics.msg_per_sec || 0];
+      const cfgDevices = d.configured_devices || state.status.configured_devices || [];
+      const numDevices = Math.max(cfgDevices.length, Object.keys(dm).length);
+      for (let i = 0; i < numDevices; i++) {
+        const did = String(i);
+        const rate = dm[did]?.msg_per_sec || 0;
+        const arr = [...(pds[did] || []), rate];
         if (arr.length > 120) arr.shift();
         pds[did] = arr;
       }
@@ -180,6 +194,7 @@ function reducer(state, action) {
         ...state, status: { ...state.status, ...d }, sparkData: spark, perDeviceSparkData: pds, trafficLastSeen: ls, deviceActivity: da, identifyActive: ia,
         hosts: d.hosts || state.hosts,
         clients: d.clients || state.clients,
+        devices: d.devices || state.devices,
         designatedPrimary: d.designated_primary !== undefined ? d.designated_primary : state.designatedPrimary,
         designatedFocus: d.designated_focus !== undefined ? d.designated_focus : state.designatedFocus,
       };
@@ -1069,8 +1084,8 @@ function MidiDataCard() {
   const midi = state.status.midi || {};
   const isMulti = mode === 'multi' && devices.length > 0;
 
-  // Multi-device: collect per-device spark datasets
-  const deviceIds = Object.keys(deviceMidi).sort();
+  // Multi-device: collect per-device spark datasets for ALL configured devices
+  const deviceIds = devices.map((_, i) => String(i));
   const multiDatasets = deviceIds.map(did => state.perDeviceSparkData[did] || []);
   const multiColors = deviceIds.map((_, i) => DEVICE_COLORS_RAW[i % DEVICE_COLORS_RAW.length]);
 
@@ -2030,6 +2045,8 @@ function SettingsPage() {
     apiFetch('/api/devices').then(d => dispatch({ type: 'SET_DEVICES', data: d.devices }));
     apiFetch('/api/failover').then(d => dispatch({ type: 'SET_FAILOVER', data: d }));
   }, []);
+  // Poll for device hot-plug changes while settings page is open
+  usePoll('/api/devices', 2000, (d) => dispatch({ type: 'SET_DEVICES', data: d.devices }));
   return html`<div class="page-scroll">
     <div class="page-grid">
       <div class="card-wide"><${ModeSelector} /></div>
@@ -2149,7 +2166,8 @@ function MultiDeviceSettings({ midiDevices, activity, identifying, isActive, doI
             const act = isActive(d.id);
             const lastMsg = activity[d.id]?.last_message;
             const isId = identifying[d.id];
-            return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+            const flashKey = act ? d.id + '-' + (activity[d.id]?.message_count || 0) : d.id;
+            return html`<div class="device-id-item ${act ? 'active flash' : ''}" key=${flashKey}>
               <div class="device-id-dot ${act ? 'active' : ''}" />
               <div class="device-id-info">
                 <div class="device-id-name">${d.name}</div>
@@ -2257,7 +2275,8 @@ function DeviceSettings() {
               const act = isActive(d.id);
               const lastMsg = activity[d.id]?.last_message;
               const isId = identifying[d.id];
-              return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+              const flashKey = act ? d.id + '-' + (activity[d.id]?.message_count || 0) : d.id;
+              return html`<div class="device-id-item ${act ? 'active flash' : ''}" key=${flashKey}>
                 <div class="device-id-dot ${act ? 'active' : ''}" />
                 <div class="device-id-info">
                   <div class="device-id-name">${d.name}</div>
@@ -2316,7 +2335,8 @@ function DeviceSettings() {
             const lastMsg = activity[d.id]?.last_message;
             const isId = identifying[d.id];
             const role = d.id === activeDid ? 'active' : d.id === backupDid ? 'backup' : null;
-            return html`<div class="device-id-item ${act ? 'active' : ''}" key=${d.id}>
+            const flashKey = act ? d.id + '-' + (activity[d.id]?.message_count || 0) : d.id;
+            return html`<div class="device-id-item ${act ? 'active flash' : ''}" key=${flashKey}>
               <div class="device-id-dot ${act ? 'active' : ''}" />
               <div class="device-id-info">
                 <div class="device-id-name">
