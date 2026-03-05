@@ -2484,7 +2484,7 @@ function HelpPage() {
       <div class="help-support-banner-inner">
         <span class="help-support-banner-heart">⚡</span>
         <div class="help-support-banner-text">
-          <strong>MIDInet Licensing</strong> — Free 120-min trial. Perpetual license from $79. Hardware (Pi) not included.
+          <strong>MIDInet Licensing</strong> — Free 36-min trial. Perpetual license from $79. Hardware (Pi) not included.
         </div>
         <div class="help-support-banner-btns">
           <a class="btn btn-support-banner" href="https://midinet.io/pricing/" target="_blank" rel="noopener">View Pricing</a>
@@ -2553,7 +2553,7 @@ function HelpPage() {
 const SUPPORT_MESSAGES = [
   { heading: 'Enjoying MIDInet?', body: 'Your trial has limited runtime. Get a perpetual license starting at $79 — one price, yours forever, with 12 months of free updates.' },
   { heading: 'Go Pro with MIDInet', body: 'Unlock unlimited runtime, redundant mode, and multi-device support. Perpetual license — no subscriptions, no recurring fees.' },
-  { heading: 'Don\'t let the trial run out mid-show', body: 'MIDInet enters degraded mode after your 120-minute trial expires. Get a license now and perform with confidence every night.' },
+  { heading: 'Don\'t let the trial run out mid-show', body: 'MIDInet enters degraded mode after your 36-minute trial expires. Get a license now and perform with confidence every night.' },
   { heading: 'Built for the stage. Licensed for pros.', body: 'Solo ($79), Pro ($149), or Fleet ($349). One-time purchase, perpetual use. Hardware (Raspberry Pi) not included.' },
 ];
 

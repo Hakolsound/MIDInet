@@ -16,7 +16,7 @@ pub enum LicenseState {
     Trial {
         /// Remaining seconds of trial
         remaining_secs: u64,
-        /// Total trial budget in seconds (7200 = 120 min)
+        /// Total trial budget in seconds (2160 = 36 min)
         total_secs: u64,
     },
     /// Trial expired or license invalid — degraded mode

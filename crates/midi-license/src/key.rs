@@ -12,8 +12,8 @@ use crate::state::{FeatureFlags, LicenseTier};
 /// Compiled-in Ed25519 public key (32 bytes).
 const PUBLIC_KEY_BYTES: &[u8; 32] = include_bytes!("../../midi-protocol/license_public_key.bin");
 
-/// Total trial budget: 120 minutes = 7200 seconds.
-pub const TRIAL_BUDGET_SECS: u64 = 7200;
+/// Total trial budget: 36 minutes = 2160 seconds.
+pub const TRIAL_BUDGET_SECS: u64 = 2160;
 
 /// Parsed and verified license payload.
 #[derive(Debug, Clone)]

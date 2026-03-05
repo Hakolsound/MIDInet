@@ -393,7 +393,7 @@ async fn determine_initial_state(data_dir: &Path, machine_hash: &str) -> License
     }
 
     // 4. First run — start trial
-    info!("First run — starting 120-minute trial");
+    info!("First run — starting 36-minute trial");
     let trial_state = TrialState::new();
     trial::set_secondary_marker();
     if let Err(e) = trial::write_trial(data_dir, &trial_state) {
